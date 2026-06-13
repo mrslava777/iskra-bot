@@ -1,4 +1,5 @@
 """Слой базы данных (SQLite через aiosqlite)."""
+import os
 import time
 from typing import Any, Optional
 
@@ -12,6 +13,10 @@ _db: Optional[aiosqlite.Connection] = None
 async def get_db() -> aiosqlite.Connection:
     global _db
     if _db is None:
+        # Гарантируем существование папки для базы (важно для Volume в /data)
+        parent = os.path.dirname(os.path.abspath(DB_PATH))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         _db = await aiosqlite.connect(DB_PATH)
         _db.row_factory = aiosqlite.Row
         await _db.execute("PRAGMA journal_mode=WAL;")

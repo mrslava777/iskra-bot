@@ -9,7 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 import database as db
-from config import BOT_TOKEN
+from config import BOT_TOKEN, DB_PATH, DB_PERSISTENT
 from handlers import setup_routers
 
 logging.basicConfig(
@@ -37,6 +37,15 @@ async def main() -> None:
         )
 
     await db.init_db()
+
+    if DB_PERSISTENT:
+        log.info("✅ База: %s — постоянное хранилище (Volume), анкеты сохраняются.", DB_PATH)
+    else:
+        log.warning(
+            "⚠️ База: %s — ВРЕМЕННОЕ хранилище. На Railway добавь Volume с mount path "
+            "/data, тогда анкеты не будут теряться при перезапуске.",
+            DB_PATH,
+        )
 
     bot = Bot(
         token=BOT_TOKEN,
