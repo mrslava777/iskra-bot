@@ -3,6 +3,10 @@
 Бот знакомств в духе «Дайвинчика», но с фишками, которые делают знакомства живее.
 Написан на **aiogram 3** + **SQLite** (aiosqlite). Готов к деплою на **Railway**.
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new?referralCode=&template=https%3A%2F%2Fgithub.com%2Fmrslava777%2Fiskra-bot)
+
+> Нажми кнопку → войди через GitHub → выбери репозиторий `iskra-bot` → в разделе **Variables** добавь `BOT_TOKEN` → **Deploy**.
+
 ## Чем интереснее обычных ботов
 
 | Фича | Что делает |
