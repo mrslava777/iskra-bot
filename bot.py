@@ -11,6 +11,7 @@ from aiogram.types import BotCommand
 import database as db
 from config import BOT_TOKEN, DB_PATH, DB_PERSISTENT
 from handlers import setup_routers
+from health import mark_alive, start_health_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +54,15 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(setup_routers())
+
+    # Отмечаем «бот жив» на каждом входящем апдейте (бонус к heartbeat'у).
+    @dp.update.outer_middleware()
+    async def _alive_middleware(handler, event, data):  # noqa: ANN001
+        mark_alive()
+        return await handler(event, data)
+
+    # Поднимаем /health для внешнего мониторинга (не влияет на логику бота).
+    await start_health_server()
 
     await set_commands(bot)
     log.info("Искра запущена 🔥")
