@@ -81,10 +81,19 @@ async def show_matches(message: Message) -> None:
             "Мэтчей пока нет 💔 Но всё впереди! Листай анкеты 🔍", reply_markup=MAIN_MENU
         )
         return
-    lines = ["💞 <b>Твои мэтчи:</b>\n"]
+    viewer = await db.get_user(message.from_user.id)
+    await message.answer(f"💞 <b>Твои мэтчи ({len(rows)}):</b>")
     for r in rows:
-        uname = f"@{r['username']}" if r["username"] else "контакт скрыт"
-        lines.append(
-            f"{gender_emoji(r['gender'])} <b>{r['name']}</b>, {r['age']} — {uname}"
-        )
-    await message.answer("\n".join(lines), reply_markup=MAIN_MENU)
+        if r["username"]:
+            contact = f"@{r['username']}"
+        else:
+            contact = f'<a href="tg://user?id={r["tg_id"]}">{r["name"]}</a>'
+        caption = profile_caption(r, viewer=viewer, show_compat=True)
+        caption += f"\n\n📨 Контакт: {contact}"
+        try:
+            await message.answer_photo(
+                photo=r["photo_id"], caption=caption,
+            )
+        except Exception:
+            await message.answer(caption)
+    await message.answer("Это все твои мэтчи ✨", reply_markup=MAIN_MENU)
