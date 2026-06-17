@@ -12,12 +12,36 @@ from data.content import INTERESTS
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔍 Смотреть анкеты")],
+        [KeyboardButton(text="🎭 Свидание вслепую")],
         [KeyboardButton(text="💌 Кто меня лайкнул"), KeyboardButton(text="💞 Мэтчи")],
         [KeyboardButton(text="👤 Моя анкета"), KeyboardButton(text="🎯 Вопрос дня")],
         [KeyboardButton(text="⚙️ Настройки")],
     ],
     resize_keyboard=True,
 )
+
+# Клавиатура внутри анонимного свидания — только выход
+ANON_CHAT_MENU = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="⏹ Завершить свидание")]],
+    resize_keyboard=True,
+)
+
+
+def anon_session_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Открыться", callback_data="anon:reveal")],
+            [InlineKeyboardButton(text="⏹ Завершить", callback_data="anon:stop")],
+        ]
+    )
+
+
+def anon_queue_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⏹ Отменить поиск", callback_data="anon:cancelq")]
+        ]
+    )
 
 
 def gender_kb(prefix: str) -> InlineKeyboardMarkup:

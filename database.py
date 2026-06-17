@@ -75,6 +75,24 @@ async def init_db() -> None:
             to_id   INTEGER,
             created_at INTEGER
         );
+
+        -- Свидание вслепую: очередь ожидания и активные анонимные сессии
+        CREATE TABLE IF NOT EXISTS anon_queue (
+            tg_id      INTEGER PRIMARY KEY,
+            created_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS anon_sessions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            a_id       INTEGER,
+            b_id       INTEGER,
+            a_reveal   INTEGER DEFAULT 0,
+            b_reveal   INTEGER DEFAULT 0,
+            ended      INTEGER DEFAULT 0,
+            created_at INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_anon_active ON anon_sessions(ended);
         """
     )
     await db.commit()
@@ -276,6 +294,113 @@ async def add_report(from_id: int, to_id: int) -> int:
         await db.execute("UPDATE users SET is_banned = 1 WHERE tg_id = ?", (to_id,))
     await db.commit()
     return count
+
+
+# ---------- Свидание вслепую (анонимный чат) ----------
+
+async def anon_session_of(tg_id: int) -> Optional[aiosqlite.Row]:
+    """Активная (не завершённая) сессия пользователя, если есть."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT * FROM anon_sessions WHERE ended = 0 AND (a_id = ? OR b_id = ?) "
+        "ORDER BY id DESC LIMIT 1",
+        (tg_id, tg_id),
+    )
+    return await cur.fetchone()
+
+
+async def anon_active_partner(tg_id: int) -> Optional[int]:
+    """ID собеседника в активной сессии или None."""
+    s = await anon_session_of(tg_id)
+    if not s:
+        return None
+    return s["b_id"] if s["a_id"] == tg_id else s["a_id"]
+
+
+async def anon_in_queue(tg_id: int) -> bool:
+    db = await get_db()
+    cur = await db.execute("SELECT 1 FROM anon_queue WHERE tg_id = ?", (tg_id,))
+    return await cur.fetchone() is not None
+
+
+async def anon_leave_queue(tg_id: int) -> None:
+    db = await get_db()
+    await db.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
+    await db.commit()
+
+
+async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
+    """Подбор собеседника для «Свидания вслепую».
+
+    Возвращает (status, partner_id):
+      'in_session' — уже в активном чате (partner_id — собеседник)
+      'matched'    — нашли собеседника, создана сессия (partner_id)
+      'queued'     — добавлены в очередь ожидания (None)
+      'waiting'    — уже стояли в очереди (None)
+    """
+    db = await get_db()
+    partner = await anon_active_partner(tg_id)
+    if partner is not None:
+        return "in_session", partner
+
+    # Ищем ожидающего собеседника (не себя, активного, не забаненного)
+    cur = await db.execute(
+        """
+        SELECT q.tg_id FROM anon_queue q
+        JOIN users u ON u.tg_id = q.tg_id
+        WHERE q.tg_id != ? AND u.is_banned = 0 AND u.name IS NOT NULL
+        ORDER BY q.created_at ASC LIMIT 1
+        """,
+        (tg_id,),
+    )
+    row = await cur.fetchone()
+    if row is not None:
+        pid = row["tg_id"]
+        now = int(time.time())
+        await db.execute("DELETE FROM anon_queue WHERE tg_id IN (?, ?)", (pid, tg_id))
+        await db.execute(
+            "INSERT INTO anon_sessions (a_id, b_id, created_at) VALUES (?, ?, ?)",
+            (tg_id, pid, now),
+        )
+        await db.commit()
+        return "matched", pid
+
+    # Никого нет — встаём в очередь
+    if await anon_in_queue(tg_id):
+        return "waiting", None
+    await db.execute(
+        "INSERT OR REPLACE INTO anon_queue (tg_id, created_at) VALUES (?, ?)",
+        (tg_id, int(time.time())),
+    )
+    await db.commit()
+    return "queued", None
+
+
+async def anon_set_reveal(tg_id: int) -> Optional[aiosqlite.Row]:
+    """Помечает желание открыться. Возвращает свежую строку сессии."""
+    db = await get_db()
+    s = await anon_session_of(tg_id)
+    if not s:
+        return None
+    col = "a_reveal" if s["a_id"] == tg_id else "b_reveal"
+    await db.execute(f"UPDATE anon_sessions SET {col} = 1 WHERE id = ?", (s["id"],))
+    await db.commit()
+    cur = await db.execute("SELECT * FROM anon_sessions WHERE id = ?", (s["id"],))
+    return await cur.fetchone()
+
+
+async def anon_end(tg_id: int) -> Optional[int]:
+    """Завершает активную сессию и убирает из очереди. Возвращает id собеседника."""
+    db = await get_db()
+    await db.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
+    s = await anon_session_of(tg_id)
+    if not s:
+        await db.commit()
+        return None
+    partner = s["b_id"] if s["a_id"] == tg_id else s["a_id"]
+    await db.execute("UPDATE anon_sessions SET ended = 1 WHERE id = ?", (s["id"],))
+    await db.commit()
+    return partner
 
 
 async def stats() -> dict:
