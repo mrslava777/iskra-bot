@@ -10,6 +10,7 @@ import database as db
 from data.content import daily_question
 from keyboards import (
     MAIN_MENU,
+    confirm_delete_kb,
     interests_kb,
     profile_kb,
     seeking_kb,
@@ -229,6 +230,38 @@ async def on_setting(call: CallbackQuery, state: FSMContext) -> None:
 
     if action == "seeking":
         await call.message.answer("Кого показывать в ленте?", reply_markup=seeking_kb("setseek"))
+        await call.answer()
+        return
+
+    if action == "delete":
+        await call.message.answer(
+            "⚠️ <b>Ты уверен(а)?</b>\n\n"
+            "Будут удалены: анкета, лайки, мэтчи, жалобы и все связанные данные.\n"
+            "Это действие <b>необратимо</b>.",
+            reply_markup=confirm_delete_kb(),
+        )
+        await call.answer()
+        return
+
+    if action == "delete_confirm":
+        await db.delete_user(call.from_user.id)
+        await state.clear()
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await call.message.answer(
+            "✅ Аккаунт полностью удалён. Все данные стёрты.\n\n"
+            "Если захочешь вернуться — просто отправь /start 🔥"
+        )
+        await call.answer()
+        return
+
+    if action == "delete_cancel":
+        try:
+            await call.message.edit_text("↩️ Удаление отменено. Твой аккаунт на месте 🙂")
+        except Exception:
+            pass
         await call.answer()
         return
 
