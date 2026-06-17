@@ -88,12 +88,13 @@ def profile_caption(user, *, viewer=None, show_compat: bool = False) -> str:
         pct = compatibility(viewer["interests"], user["interests"])
         common = common_interests(viewer["interests"], user["interests"])
         bar = compat_bar(pct)
-        extra = f"  ({', '.join(common)})" if common else ""
-        lines.append(f"\n💞 Совместимость: <b>{pct}%</b> {bar}{extra}")
+        lines.append(f"\n💞 Совместимость: <b>{pct}%</b>\n{bar}")
+        if common:
+            lines.append("🏷 Общее: " + ", ".join(common))
 
     return "\n".join(lines)
 
 
 def compat_bar(pct: int) -> str:
     filled = round(pct / 10)
-    return "🟩" * filled + "⬜" * (10 - filled)
+    return "▰" * filled + "▱" * (10 - filled)
