@@ -128,6 +128,21 @@ async def upsert_user(tg_id: int, **fields: Any) -> None:
     await db.commit()
 
 
+async def delete_user(tg_id: int) -> None:
+    """Полное удаление аккаунта: убираем пользователя из всех таблиц."""
+    db = await get_db()
+    await db.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
+    await db.execute(
+        "UPDATE anon_sessions SET ended = 1 WHERE (a_id = ? OR b_id = ?) AND ended = 0",
+        (tg_id, tg_id),
+    )
+    await db.execute("DELETE FROM matches WHERE a_id = ? OR b_id = ?", (tg_id, tg_id))
+    await db.execute("DELETE FROM likes WHERE from_id = ? OR to_id = ?", (tg_id, tg_id))
+    await db.execute("DELETE FROM reports WHERE from_id = ? OR to_id = ?", (tg_id, tg_id))
+    await db.execute("DELETE FROM users WHERE tg_id = ?", (tg_id,))
+    await db.commit()
+
+
 async def set_active(tg_id: int, active: bool) -> None:
     await upsert_user(tg_id, active=1 if active else 0)
 

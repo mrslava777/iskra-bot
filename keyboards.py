@@ -138,5 +138,25 @@ def settings_kb(active: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=toggle, callback_data="set:toggle")],
             [InlineKeyboardButton(text="🎚 Фильтр по возрасту", callback_data="set:age")],
             [InlineKeyboardButton(text="👁 Кого показывать", callback_data="set:seeking")],
+            [InlineKeyboardButton(text="🗑 Удалить аккаунт", callback_data="set:delete")],
+        ]
+    )
+
+
+def confirm_delete_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚠️ Да, удалить всё",
+                    callback_data="set:delete_confirm",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="↩️ Отмена",
+                    callback_data="set:delete_cancel",
+                ),
+            ],
         ]
     )
