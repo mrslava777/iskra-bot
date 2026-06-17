@@ -111,12 +111,15 @@ async def _announce_match(bot: Bot, a_id: int, b_id: int) -> None:
     for me, other in ((a, b), (b, a)):
         common = common_interests(a["interests"], b["interests"])
         common_txt = ("\n🏷 Общее: " + ", ".join(common)) if common else ""
-        uname = f"@{other['username']}" if other["username"] else "—"
+        if other["username"]:
+            contact = f"@{other['username']}"
+        else:
+            contact = f'<a href="tg://user?id={other["tg_id"]}">{other["name"]}</a>'
         text = (
             f"🎉 <b>Это мэтч!</b> {gender_emoji(other['gender'])}\n\n"
             f"Вы понравились друг другу с <b>{other['name']}</b>, {other['age']}."
             f"{common_txt}\n\n"
-            f"📨 Контакт: {uname}\n\n"
+            f"📨 Контакт: {contact}\n\n"
             f"💬 С чего начать:\n<i>{ice}</i>"
         )
         try:
