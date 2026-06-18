@@ -52,7 +52,7 @@ async def cors_middleware(request: web.Request, handler):
     else:
         resp = await handler(request)
     resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
     return resp
 
@@ -221,6 +221,81 @@ async def api_unverify(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "tg_id": tg_id, "action": "unverified"})
 
 
+
+async def api_tickets(request: web.Request) -> web.Response:
+    if not _check_api_auth(request):
+        return _api_error("unauthorized")
+    status = request.query.get("status", "").strip() or None
+    page = int(request.query.get("page", "1"))
+    limit = min(int(request.query.get("limit", "50")), 100)
+    offset = (page - 1) * limit
+    rows = await db.get_tickets(status=status, limit=limit, offset=offset)
+    total = await db.tickets_count(status=status)
+    tickets = []
+    for r in rows:
+        tickets.append({
+            "id": r["id"],
+            "tg_id": r["tg_id"],
+            "name": r["name"],
+            "username": r["username"],
+            "category": r["category"],
+            "message": r["message"],
+            "status": r["status"],
+            "admin_reply": r["admin_reply"],
+            "created_at": r["created_at"],
+            "replied_at": r["replied_at"],
+        })
+    return web.json_response({"tickets": tickets, "total": total, "page": page, "limit": limit})
+
+
+async def api_ticket_reply(request: web.Request) -> web.Response:
+    if not _check_api_auth(request):
+        return _api_error("unauthorized")
+    try:
+        data = await request.json()
+        ticket_id = int(data["id"])
+        reply_text = data["reply"].strip()
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return _api_error("bad request: need {id, reply}", 400)
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        return _api_error("ticket not found", 404)
+    await db.reply_ticket(ticket_id, reply_text)
+    # Send reply to user via bot
+    try:
+        from bot import bot as tg_bot
+        await tg_bot.send_message(
+            ticket["tg_id"],
+            f"\U0001f4ac <b>Ответ от поддержки:</b>\n\n{reply_text}",
+        )
+    except Exception:
+        pass
+    return web.json_response({"ok": True, "id": ticket_id})
+
+
+async def api_ticket_close(request: web.Request) -> web.Response:
+    if not _check_api_auth(request):
+        return _api_error("unauthorized")
+    try:
+        data = await request.json()
+        ticket_id = int(data["id"])
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return _api_error("bad request: need {id}", 400)
+    await db.close_ticket(ticket_id)
+    return web.json_response({"ok": True, "id": ticket_id})
+
+
+async def api_ticket_delete(request: web.Request) -> web.Response:
+    if not _check_api_auth(request):
+        return _api_error("unauthorized")
+    try:
+        data = await request.json()
+        ticket_id = int(data["id"])
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return _api_error("bad request: need {id}", 400)
+    await db.delete_ticket(ticket_id)
+    return web.json_response({"ok": True, "id": ticket_id})
+
 # ── Server startup ─────────────────────────────────────────────────
 
 async def start_health_server() -> None:
@@ -240,6 +315,12 @@ async def start_health_server() -> None:
         app.router.add_post("/api/ban", api_ban)
         app.router.add_post("/api/unban", api_unban)
         app.router.add_post("/api/unverify", api_unverify)
+
+        # Tickets API
+        app.router.add_get("/api/tickets", api_tickets)
+        app.router.add_post("/api/ticket/reply", api_ticket_reply)
+        app.router.add_post("/api/ticket/close", api_ticket_close)
+        app.router.add_post("/api/ticket/delete", api_ticket_delete)
 
         runner = web.AppRunner(app)
         await runner.setup()

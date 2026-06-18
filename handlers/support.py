@@ -79,6 +79,7 @@ async def _process_ticket(
 ) -> None:
     data = await state.get_data()
     cat_label = data.get("support_label", "❓")
+    cat_key = data.get("support_cat", "other")
     await state.clear()
 
     user = await db.get_user(message.from_user.id)
@@ -86,8 +87,11 @@ async def _process_ticket(
     username = f"@{message.from_user.username}" if message.from_user.username else "—"
     uid = message.from_user.id
 
+    # Save ticket to DB
+    ticket_id = await db.create_ticket(uid, cat_key, text[:1000], photo_id)
+
     ticket_text = (
-        f"📩 <b>Тикет поддержки</b>\n\n"
+        f"📩 <b>Тикет #{ticket_id}</b>\n\n"
         f"<b>Категория:</b> {cat_label}\n"
         f"<b>Пользователь:</b> {name} ({username})\n"
         f"<b>ID:</b> <code>{uid}</code>\n\n"
@@ -117,7 +121,7 @@ async def _process_ticket(
     )
 
 
-# ---------- Ответ админа ----------
+# ---------- Ответ админа (из Telegram) ----------
 
 @router.callback_query(F.data.startswith("supreply:"))
 async def on_admin_reply(call: CallbackQuery, state: FSMContext) -> None:

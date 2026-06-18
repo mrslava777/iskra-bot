@@ -94,6 +94,21 @@ async def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_anon_active ON anon_sessions(ended);
 
+        -- Тикеты поддержки
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id      INTEGER NOT NULL,
+            category   TEXT    NOT NULL,
+            message    TEXT    NOT NULL,
+            photo_id   TEXT,
+            status     TEXT    DEFAULT 'open',  -- open / replied / closed
+            admin_reply TEXT,
+            created_at INTEGER,
+            replied_at INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status);
+
         -- Дополнительные фото пользователя (до 5 шт.)
         CREATE TABLE IF NOT EXISTS user_photos (
             tg_id      INTEGER NOT NULL,
@@ -652,3 +667,86 @@ async def admin_all_active_ids() -> list[int]:
     )
     rows = await cur.fetchall()
     return [r["tg_id"] for r in rows]
+
+
+# ---------- Тикеты поддержки ----------
+
+async def create_ticket(tg_id: int, category: str, message: str, photo_id: str | None = None) -> int:
+    """Создаёт тикет, возвращает id."""
+    db = await get_db()
+    now = int(time.time())
+    cur = await db.execute(
+        "INSERT INTO support_tickets (tg_id, category, message, photo_id, status, created_at) "
+        "VALUES (?, ?, ?, ?, 'open', ?)",
+        (tg_id, category, message, photo_id, now),
+    )
+    await db.commit()
+    return cur.lastrowid
+
+
+async def get_tickets(status: str | None = None, limit: int = 50, offset: int = 0) -> list[aiosqlite.Row]:
+    db = await get_db()
+    if status:
+        cur = await db.execute(
+            """SELECT t.*, u.name, u.username FROM support_tickets t
+               LEFT JOIN users u ON u.tg_id = t.tg_id
+               WHERE t.status = ?
+               ORDER BY t.created_at DESC LIMIT ? OFFSET ?""",
+            (status, limit, offset),
+        )
+    else:
+        cur = await db.execute(
+            """SELECT t.*, u.name, u.username FROM support_tickets t
+               LEFT JOIN users u ON u.tg_id = t.tg_id
+               ORDER BY t.created_at DESC LIMIT ? OFFSET ?""",
+            (limit, offset),
+        )
+    return await cur.fetchall()
+
+
+async def get_ticket(ticket_id: int) -> aiosqlite.Row | None:
+    db = await get_db()
+    cur = await db.execute(
+        """SELECT t.*, u.name, u.username FROM support_tickets t
+           LEFT JOIN users u ON u.tg_id = t.tg_id
+           WHERE t.id = ?""",
+        (ticket_id,),
+    )
+    return await cur.fetchone()
+
+
+async def reply_ticket(ticket_id: int, reply_text: str) -> None:
+    db = await get_db()
+    now = int(time.time())
+    await db.execute(
+        "UPDATE support_tickets SET status = 'replied', admin_reply = ?, replied_at = ? WHERE id = ?",
+        (reply_text, now, ticket_id),
+    )
+    await db.commit()
+
+
+async def close_ticket(ticket_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE support_tickets SET status = 'closed' WHERE id = ?",
+        (ticket_id,),
+    )
+    await db.commit()
+
+
+async def delete_ticket(ticket_id: int) -> None:
+    db = await get_db()
+    await db.execute("DELETE FROM support_tickets WHERE id = ?", (ticket_id,))
+    await db.commit()
+
+
+async def tickets_count(status: str | None = None) -> int:
+    db = await get_db()
+    if status:
+        cur = await db.execute(
+            "SELECT COUNT(*) c FROM support_tickets WHERE status = ?", (status,)
+        )
+    else:
+        cur = await db.execute("SELECT COUNT(*) c FROM support_tickets")
+    row = await cur.fetchone()
+    return row["c"] if row else 0
