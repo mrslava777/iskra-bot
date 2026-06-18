@@ -128,6 +128,7 @@ async def api_users(request: web.Request) -> web.Response:
             "name": r["name"],
             "age": r["age"],
             "gender": r["gender"],
+            "seeking": r["seeking"],
             "city": r["city"],
             "bio": r["bio"],
             "interests": r["interests"],
