@@ -122,8 +122,9 @@ async def on_edit(call: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(Verify.photo)
         text = (
             "🎭 <b>Верификация профиля</b>\n\n"
-            "Сделай селфи с жестом:\n"
+            "Запиши кружочек (видеосообщение) с жестом:\n"
             f"<b>{gesture_text}</b>\n\n"
+            "Зажми кнопку микрофона 🎤 и переключись на видео 📹\n\n"
             "Это подтвердит, что ты — реальный человек. "
             "После проверки администратором в анкете появится ✅"
         )
@@ -394,17 +395,17 @@ async def photo_add_receive(message: Message, state: FSMContext) -> None:
 
 # ---------- Верификация ----------
 
-@router.message(Verify.photo, F.photo)
-async def verify_photo_received(message: Message, state: FSMContext) -> None:
+@router.message(Verify.photo, F.video_note)
+async def verify_video_received(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     gesture = data.get("verify_gesture", "unknown")
     gesture_text = data.get("verify_gesture_text", "")
-    photo_id = message.photo[-1].file_id
-    await db.submit_verification(message.from_user.id, photo_id, gesture)
+    video_id = message.video_note.file_id
+    await db.submit_verification(message.from_user.id, video_id, gesture)
     await state.clear()
     await message.answer(
         "✅ Заявка на верификацию отправлена!\n"
-        "Администратор проверит твоё фото. Обычно это занимает несколько часов.\n"
+        "Администратор проверит твоё видео. Обычно это занимает несколько часов.\n"
         "Ты получишь уведомление о результате.",
         reply_markup=MAIN_MENU,
     )
@@ -416,10 +417,13 @@ async def verify_photo_received(message: Message, state: FSMContext) -> None:
     username = f"@{user['username']}" if user and user["username"] else "—"
     for admin_id in ADMIN_IDS:
         try:
-            await message.bot.send_photo(
+            await message.bot.send_video_note(
                 admin_id,
-                photo=photo_id,
-                caption=(
+                video_note=video_id,
+            )
+            await message.bot.send_message(
+                admin_id,
+                text=(
                     f"🎭 <b>Заявка на верификацию</b>\n\n"
                     f"👤 {name} ({username})\n"
                     f"🆔 {message.from_user.id}\n"
@@ -433,8 +437,12 @@ async def verify_photo_received(message: Message, state: FSMContext) -> None:
 
 
 @router.message(Verify.photo)
-async def verify_photo_invalid(message: Message) -> None:
-    await message.answer("Нужно именно фото-селфи 📷 с жестом.")
+async def verify_video_invalid(message: Message) -> None:
+    await message.answer(
+        "Нужен именно *кружочек* (видеосообщение) 🎥\n"
+        "Зажми 🎤 → переключись на 📹 → запиши и отправь.",
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data.startswith("vrf:"))
