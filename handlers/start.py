@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import database as db
-from keyboards import MAIN_MENU, gender_kb, interests_kb, seeking_kb
+from keyboards import MAIN_MENU, extra_photos_kb, gender_kb, interests_kb, seeking_kb
 from services.matching import profile_caption
 from states import Reg
 
@@ -138,17 +138,65 @@ async def reg_photo(message: Message, state: FSMContext) -> None:
         photo_id=photo_id,
         active=1,
     )
+    # Сохраняем главное фото в галерею
+    await db.sync_photos_to_gallery(message.from_user.id)
     await db.touch_activity(message.from_user.id)
-    await state.clear()
 
-    user = await db.get_user(message.from_user.id)
+    await state.update_data(extra_count=0)
+    await state.set_state(Reg.extra_photos)
+    await message.answer(
+        "📸 Хочешь добавить ещё фото? (до 4 дополнительных)\n"
+        "Просто отправь фото или нажми «Пропустить».",
+        reply_markup=extra_photos_kb(),
+    )
+
+
+@router.callback_query(Reg.extra_photos, F.data == "regph:skip")
+async def reg_skip_extra(call: CallbackQuery, state: FSMContext) -> None:
+    await _finish_registration(call.message, call.from_user.id, state)
+    await call.answer()
+
+
+@router.message(Reg.extra_photos, F.photo)
+async def reg_extra_photo(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    count = data.get("extra_count", 0)
+    if count >= 4:
+        await message.answer("Максимум 5 фото 🙂 Сохраняю анкету!")
+        await _finish_registration(message, message.from_user.id, state)
+        return
+    photo_id = message.photo[-1].file_id
+    await db.add_photo(message.from_user.id, photo_id)
+    count += 1
+    await state.update_data(extra_count=count)
+    remaining = 4 - count
+    if remaining > 0:
+        await message.answer(
+            f"✅ Фото добавлено! ({count + 1}/5)\nМожно ещё {remaining} шт. или нажми «Пропустить».",
+            reply_markup=extra_photos_kb(),
+        )
+    else:
+        await message.answer("✅ Все 5 фото загружены!")
+        await _finish_registration(message, message.from_user.id, state)
+
+
+async def _finish_registration(message: Message, user_id: int, state: FSMContext) -> None:
+    await state.clear()
+    user = await db.get_user(user_id)
+    n_photos = await db.photo_count(user_id)
+    photo_note = f"\n📸 Фото в анкете: {n_photos}" if n_photos > 1 else ""
     await message.answer_photo(
-        photo=photo_id,
-        caption="✨ Готово! Вот твоя анкета:\n\n" + profile_caption(user),
+        photo=user["photo_id"],
+        caption=f"✨ Готово! Вот твоя анкета:\n\n{profile_caption(user)}{photo_note}",
     )
     await message.answer(
         "Поехали искать! Жми «🔍 Смотреть анкеты».", reply_markup=MAIN_MENU
     )
+
+
+@router.message(Reg.extra_photos)
+async def reg_extra_invalid(message: Message) -> None:
+    await message.answer("Отправь фото 📷 или нажми «Пропустить».", reply_markup=extra_photos_kb())
 
 
 @router.message(Reg.photo)
