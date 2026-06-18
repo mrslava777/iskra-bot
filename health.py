@@ -136,6 +136,7 @@ async def api_users(request: web.Request) -> web.Response:
             "is_banned": bool(r["is_banned"]),
             "rating": r["rating"],
             "streak": r["streak"],
+            "verified": bool(r["verified"]) if r["verified"] else False,
             "created_at": r["created_at"],
             "last_active": r["last_active"],
         })
