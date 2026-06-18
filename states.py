@@ -25,3 +25,7 @@ class Edit(StatesGroup):
 
 class Verify(StatesGroup):
     photo = State()
+
+
+class Support(StatesGroup):
+    message = State()

@@ -311,6 +311,15 @@ async def on_setting(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer()
         return
 
+    if action == "support":
+        from keyboards import support_kb
+        await call.message.answer(
+            "📩 <b>Поддержка</b>\n\nС чем у вас возникла проблема?",
+            reply_markup=support_kb(),
+        )
+        await call.answer()
+        return
+
     if action == "delete":
         await call.message.answer(
             "⚠️ <b>Ты уверен(а)?</b>\n\n"
