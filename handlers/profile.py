@@ -110,7 +110,7 @@ async def on_edit(call: CallbackQuery, state: FSMContext) -> None:
 
     if field == "verify":
         user = await db.get_user(call.from_user.id)
-        if user and user["verified"]:
+        if user and user.keys() and "verified" in user.keys() and user["verified"]:
             await call.answer("✅ Ты уже верифицирован!", show_alert=True)
             return
         status = await db.get_verification_status(call.from_user.id)
