@@ -114,25 +114,26 @@ def like_response_kb(uid: int) -> InlineKeyboardMarkup:
     )
 
 
-def profile_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✏️ Имя", callback_data="ed:name"),
-                InlineKeyboardButton(text="🎂 Возраст", callback_data="ed:age"),
-            ],
-            [
-                InlineKeyboardButton(text="📍 Город", callback_data="ed:city"),
-                InlineKeyboardButton(text="📝 О себе", callback_data="ed:bio"),
-            ],
-            [
-                InlineKeyboardButton(text="🏷 Интересы", callback_data="ed:interests"),
-                InlineKeyboardButton(text="🖼 Фото", callback_data="ed:photos"),
-            ],
-            [InlineKeyboardButton(text="🎯 Ответить на вопрос дня", callback_data="ed:daily")],
-            [InlineKeyboardButton(text="✅ Верификация", callback_data="ed:verify")],
-        ]
-    )
+def profile_kb(has_daily: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="✏️ Имя", callback_data="ed:name"),
+            InlineKeyboardButton(text="🎂 Возраст", callback_data="ed:age"),
+        ],
+        [
+            InlineKeyboardButton(text="📍 Город", callback_data="ed:city"),
+            InlineKeyboardButton(text="📝 О себе", callback_data="ed:bio"),
+        ],
+        [
+            InlineKeyboardButton(text="🏷 Интересы", callback_data="ed:interests"),
+            InlineKeyboardButton(text="🖼 Фото", callback_data="ed:photos"),
+        ],
+        [InlineKeyboardButton(text="🎯 Ответить на вопрос дня", callback_data="ed:daily")],
+    ]
+    if has_daily:
+        rows.append([InlineKeyboardButton(text="🗑 Удалить ответ дня", callback_data="ed:del_daily")])
+    rows.append([InlineKeyboardButton(text="✅ Верификация", callback_data="ed:verify")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def photos_manage_kb(photo_count: int, max_photos: int = 5) -> InlineKeyboardMarkup:
