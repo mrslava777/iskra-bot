@@ -27,12 +27,12 @@ async def show_next(message: Message, viewer_id: int) -> None:
     viewer = await db.get_user(viewer_id)
     await db.mark_shown(cand["tg_id"])
     caption = profile_caption(cand, viewer=viewer, show_compat=True)
+    extra = await db.photo_count(cand["tg_id"]) > 1
+    kb = browse_kb(cand["tg_id"], has_extra_photos=extra)
     try:
-        await message.answer_photo(
-            photo=cand["photo_id"], caption=caption, reply_markup=browse_kb(cand["tg_id"])
-        )
+        await message.answer_photo(photo=cand["photo_id"], caption=caption, reply_markup=kb)
     except Exception:
-        await message.answer(caption, reply_markup=browse_kb(cand["tg_id"]))
+        await message.answer(caption, reply_markup=kb)
 
 
 @router.message(F.text == "🔍 Смотреть анкеты")
@@ -62,6 +62,22 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
 
     target_id = int(parts[2])
     await call.message.edit_reply_markup(reply_markup=None)
+
+    if action == "photos":
+        # Показать дополнительные фото
+        photos = await db.get_photos(target_id)
+        extras = [p for p in photos if p["position"] > 0]
+        if extras:
+            from aiogram.types import InputMediaPhoto
+            media = [InputMediaPhoto(media=p["photo_id"]) for p in extras]
+            try:
+                await call.message.answer_media_group(media)
+            except Exception:
+                pass
+        else:
+            await call.answer("Нет дополнительных фото")
+        await call.answer()
+        return
 
     if action == "report":
         await db.add_report(viewer_id, target_id)
