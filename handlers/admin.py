@@ -210,6 +210,27 @@ async def cmd_unban(message: Message) -> None:
     )
 
 
+@router.message(Command("unverify"))
+async def cmd_unverify(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await message.answer("Использование: <code>/unverify 123456789</code>")
+    tg_id = int(parts[1])
+    user = await db.get_user(tg_id)
+    if not user:
+        return await message.answer("❌ Пользователь не найден.")
+    await db.upsert_user(tg_id, verified=0)
+    await message.answer(
+        f"✅ Верификация снята у <b>{user['name']}</b> (ID: <code>{tg_id}</code>)."
+    )
+    try:
+        await message.bot.send_message(tg_id, "ℹ️ Ваша верификация была снята администратором.")
+    except Exception:
+        pass
+
+
 # ── Рассылка ───────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm:broadcast")
 async def cb_broadcast_help(cq: CallbackQuery) -> None:
