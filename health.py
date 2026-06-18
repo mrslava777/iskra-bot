@@ -206,6 +206,21 @@ async def api_unban(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "tg_id": tg_id, "action": "unbanned"})
 
 
+async def api_unverify(request: web.Request) -> web.Response:
+    if not _check_api_auth(request):
+        return _api_error("unauthorized")
+    try:
+        data = await request.json()
+        tg_id = int(data["tg_id"])
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return _api_error("bad request: need {\"tg_id\": 123}", 400)
+    user = await db.get_user(tg_id)
+    if not user:
+        return _api_error("user not found", 404)
+    await db.upsert_user(tg_id, verified=0)
+    return web.json_response({"ok": True, "tg_id": tg_id, "action": "unverified"})
+
+
 # ── Server startup ─────────────────────────────────────────────────
 
 async def start_health_server() -> None:
@@ -224,6 +239,7 @@ async def start_health_server() -> None:
         app.router.add_get("/api/reports", api_reports)
         app.router.add_post("/api/ban", api_ban)
         app.router.add_post("/api/unban", api_unban)
+        app.router.add_post("/api/unverify", api_unverify)
 
         runner = web.AppRunner(app)
         await runner.setup()
