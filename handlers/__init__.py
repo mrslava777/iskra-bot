@@ -1,7 +1,7 @@
 """Сборка всех роутеров."""
 from aiogram import Router
 
-from . import admin, start, browse, profile, likes, anon, misc
+from . import admin, start, browse, profile, likes, anon, support, misc
 
 
 def setup_routers() -> Router:
@@ -12,5 +12,6 @@ def setup_routers() -> Router:
     root.include_router(likes.router)
     root.include_router(browse.router)
     root.include_router(anon.router)  # перед misc: ловит чат-сессии и /stop
+    root.include_router(support.router)
     root.include_router(misc.router)
     return root
