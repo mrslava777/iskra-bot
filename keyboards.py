@@ -84,20 +84,23 @@ def interests_kb(selected: list[int], prefix: str = "int") -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def browse_kb(uid: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="❤️", callback_data=f"sw:like:{uid}"),
-                InlineKeyboardButton(text="💬", callback_data=f"sw:msglike:{uid}"),
-                InlineKeyboardButton(text="👎", callback_data=f"sw:dislike:{uid}"),
-            ],
-            [
-                InlineKeyboardButton(text="🚩 Пожаловаться", callback_data=f"sw:report:{uid}"),
-                InlineKeyboardButton(text="⏹ Стоп", callback_data="sw:stop:0"),
-            ],
-        ]
-    )
+def browse_kb(uid: int, has_extra_photos: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="❤️", callback_data=f"sw:like:{uid}"),
+            InlineKeyboardButton(text="💬", callback_data=f"sw:msglike:{uid}"),
+            InlineKeyboardButton(text="👎", callback_data=f"sw:dislike:{uid}"),
+        ],
+    ]
+    if has_extra_photos:
+        rows.append([
+            InlineKeyboardButton(text="📸 Ещё фото", callback_data=f"sw:photos:{uid}"),
+        ])
+    rows.append([
+        InlineKeyboardButton(text="🚩 Пожаловаться", callback_data=f"sw:report:{uid}"),
+        InlineKeyboardButton(text="⏹ Стоп", callback_data="sw:stop:0"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def like_response_kb(uid: int) -> InlineKeyboardMarkup:
@@ -124,9 +127,43 @@ def profile_kb() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🏷 Интересы", callback_data="ed:interests"),
-                InlineKeyboardButton(text="📷 Фото", callback_data="ed:photo"),
+                InlineKeyboardButton(text="🖼 Фото", callback_data="ed:photos"),
             ],
             [InlineKeyboardButton(text="🎯 Ответить на вопрос дня", callback_data="ed:daily")],
+            [InlineKeyboardButton(text="✅ Верификация", callback_data="ed:verify")],
+        ]
+    )
+
+
+def photos_manage_kb(photo_count: int, max_photos: int = 5) -> InlineKeyboardMarkup:
+    """Клавиатура управления фотогалереей."""
+    rows = []
+    if photo_count < max_photos:
+        rows.append([InlineKeyboardButton(text="➕ Добавить фото", callback_data="ph:add")])
+    if photo_count > 1:
+        btns = []
+        for i in range(photo_count):
+            btns.append(InlineKeyboardButton(text=f"🗑 {i+1}", callback_data=f"ph:del:{i}"))
+        rows.append(btns)
+    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="ph:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def extra_photos_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⏭ Пропустить", callback_data="regph:skip")],
+        ]
+    )
+
+
+def verify_kb(tg_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"vrf:approve:{tg_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"vrf:reject:{tg_id}"),
+            ]
         ]
     )
 
