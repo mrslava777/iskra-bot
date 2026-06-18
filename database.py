@@ -93,8 +93,32 @@ async def init_db() -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_anon_active ON anon_sessions(ended);
+
+        -- Дополнительные фото пользователя (до 5 шт.)
+        CREATE TABLE IF NOT EXISTS user_photos (
+            tg_id      INTEGER NOT NULL,
+            photo_id   TEXT    NOT NULL,
+            position   INTEGER NOT NULL DEFAULT 0,  -- 0..4
+            created_at INTEGER,
+            PRIMARY KEY (tg_id, position)
+        );
+
+        -- Верификация: запросы на проверку
+        CREATE TABLE IF NOT EXISTS verify_requests (
+            tg_id      INTEGER PRIMARY KEY,
+            photo_id   TEXT    NOT NULL,
+            gesture    TEXT    NOT NULL,
+            status     TEXT    DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+            created_at INTEGER
+        );
         """
     )
+    # Миграция: добавляем поле verified если его нет
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")
+        await db.commit()
+    except Exception:
+        pass  # уже существует
     await db.commit()
 
 
@@ -139,6 +163,8 @@ async def delete_user(tg_id: int) -> None:
     await db.execute("DELETE FROM matches WHERE a_id = ? OR b_id = ?", (tg_id, tg_id))
     await db.execute("DELETE FROM likes WHERE from_id = ? OR to_id = ?", (tg_id, tg_id))
     await db.execute("DELETE FROM reports WHERE from_id = ? OR to_id = ?", (tg_id, tg_id))
+    await db.execute("DELETE FROM user_photos WHERE tg_id = ?", (tg_id,))
+    await db.execute("DELETE FROM verify_requests WHERE tg_id = ?", (tg_id,))
     await db.execute("DELETE FROM users WHERE tg_id = ?", (tg_id,))
     await db.commit()
 
@@ -416,6 +442,132 @@ async def anon_end(tg_id: int) -> Optional[int]:
     await db.execute("UPDATE anon_sessions SET ended = 1 WHERE id = ?", (s["id"],))
     await db.commit()
     return partner
+
+
+# ---------- Фото галерея ----------
+
+async def get_photos(tg_id: int) -> list[aiosqlite.Row]:
+    """Все фото пользователя по порядку."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT * FROM user_photos WHERE tg_id = ? ORDER BY position", (tg_id,)
+    )
+    return await cur.fetchall()
+
+
+async def add_photo(tg_id: int, photo_id: str) -> int:
+    """Добавляет фото на следующую позицию. Возвращает position."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 AS next_pos FROM user_photos WHERE tg_id = ?",
+        (tg_id,),
+    )
+    row = await cur.fetchone()
+    pos = row["next_pos"]
+    now = int(time.time())
+    await db.execute(
+        "INSERT OR REPLACE INTO user_photos (tg_id, photo_id, position, created_at) VALUES (?, ?, ?, ?)",
+        (tg_id, photo_id, pos, now),
+    )
+    await db.commit()
+    return pos
+
+
+async def remove_photo(tg_id: int, position: int) -> None:
+    """Удаляет фото и перенумеровывает остальные."""
+    db = await get_db()
+    await db.execute(
+        "DELETE FROM user_photos WHERE tg_id = ? AND position = ?", (tg_id, position)
+    )
+    # Перенумеруем
+    cur = await db.execute(
+        "SELECT photo_id FROM user_photos WHERE tg_id = ? ORDER BY position", (tg_id,)
+    )
+    rows = await cur.fetchall()
+    await db.execute("DELETE FROM user_photos WHERE tg_id = ?", (tg_id,))
+    for i, r in enumerate(rows):
+        await db.execute(
+            "INSERT INTO user_photos (tg_id, photo_id, position, created_at) VALUES (?, ?, ?, ?)",
+            (tg_id, r["photo_id"], i, int(time.time())),
+        )
+    await db.commit()
+
+
+async def set_main_photo(tg_id: int, photo_id: str) -> None:
+    """Обновляет photo_id в users и ставит фото на позицию 0 в user_photos."""
+    await upsert_user(tg_id, photo_id=photo_id)
+
+
+async def sync_photos_to_gallery(tg_id: int) -> None:
+    """Если gallery пуста, заполняем из users.photo_id."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT COUNT(*) AS c FROM user_photos WHERE tg_id = ?", (tg_id,)
+    )
+    row = await cur.fetchone()
+    if row["c"] == 0:
+        user = await get_user(tg_id)
+        if user and user["photo_id"]:
+            await add_photo(tg_id, user["photo_id"])
+
+
+async def photo_count(tg_id: int) -> int:
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT COUNT(*) AS c FROM user_photos WHERE tg_id = ?", (tg_id,)
+    )
+    row = await cur.fetchone()
+    return row["c"]
+
+
+# ---------- Верификация ----------
+
+async def submit_verification(tg_id: int, photo_id: str, gesture: str) -> None:
+    db = await get_db()
+    now = int(time.time())
+    await db.execute(
+        "INSERT OR REPLACE INTO verify_requests (tg_id, photo_id, gesture, status, created_at) "
+        "VALUES (?, ?, ?, 'pending', ?)",
+        (tg_id, photo_id, gesture, now),
+    )
+    await db.commit()
+
+
+async def get_pending_verifications() -> list[aiosqlite.Row]:
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT v.*, u.name, u.username FROM verify_requests v "
+        "JOIN users u ON u.tg_id = v.tg_id "
+        "WHERE v.status = 'pending' ORDER BY v.created_at"
+    )
+    return await cur.fetchall()
+
+
+async def approve_verification(tg_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE verify_requests SET status = 'approved' WHERE tg_id = ?", (tg_id,)
+    )
+    await db.execute("UPDATE users SET verified = 1 WHERE tg_id = ?", (tg_id,))
+    await db.commit()
+
+
+async def reject_verification(tg_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE verify_requests SET status = 'rejected' WHERE tg_id = ?", (tg_id,)
+    )
+    await db.commit()
+
+
+async def get_verification_status(tg_id: int) -> str | None:
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT status FROM verify_requests WHERE tg_id = ? ORDER BY created_at DESC LIMIT 1",
+        (tg_id,),
+    )
+    row = await cur.fetchone()
+    return row["status"] if row else None
 
 
 async def stats() -> dict:
