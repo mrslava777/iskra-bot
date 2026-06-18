@@ -219,12 +219,13 @@ def support_kb() -> InlineKeyboardMarkup:
         ]
     )
 
-def support_reply_kb(tg_id: int) -> InlineKeyboardMarkup:
+def support_reply_kb(tg_id: int, ticket_id: int | None = None) -> InlineKeyboardMarkup:
+    cb = f"supreply:{tg_id}:{ticket_id}" if ticket_id else f"supreply:{tg_id}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
                 text="💬 Ответить",
-                callback_data=f"supreply:{tg_id}",
+                callback_data=cb,
             )],
         ]
     )
