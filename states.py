@@ -29,3 +29,4 @@ class Verify(StatesGroup):
 
 class Support(StatesGroup):
     message = State()
+    admin_reply = State()

@@ -1,4 +1,4 @@
-"""Поддержка пользователей — меню категорий + пересылка тикетов админам."""
+"""Поддержка пользователей — меню категорий + тикеты админам + ответ."""
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, Message
 
 import database as db
 from config import ADMIN_IDS
-from keyboards import MAIN_MENU, support_kb
+from keyboards import MAIN_MENU, support_kb, support_reply_kb
 from states import Support
 
 router = Router()
@@ -79,7 +79,6 @@ async def _process_ticket(
 ) -> None:
     data = await state.get_data()
     cat_label = data.get("support_label", "❓")
-    cat_key = data.get("support_cat", "other")
     await state.clear()
 
     user = await db.get_user(message.from_user.id)
@@ -95,16 +94,18 @@ async def _process_ticket(
         f"<b>Сообщение:</b>\n{text[:1000]}"
     )
 
-    sent_count = 0
     for admin_id in ADMIN_IDS:
         try:
             if photo_id:
                 await message.bot.send_photo(
                     admin_id, photo=photo_id, caption=ticket_text,
+                    reply_markup=support_reply_kb(uid),
                 )
             else:
-                await message.bot.send_message(admin_id, text=ticket_text)
-            sent_count += 1
+                await message.bot.send_message(
+                    admin_id, text=ticket_text,
+                    reply_markup=support_reply_kb(uid),
+                )
         except Exception:
             pass
 
@@ -114,3 +115,45 @@ async def _process_ticket(
         "Ответ придёт в этот чат.",
         reply_markup=MAIN_MENU,
     )
+
+
+# ---------- Ответ админа ----------
+
+@router.callback_query(F.data.startswith("supreply:"))
+async def on_admin_reply(call: CallbackQuery, state: FSMContext) -> None:
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("Только для админов", show_alert=True)
+        return
+    tg_id = int(call.data.split(":")[1])
+    await state.update_data(reply_to_user=tg_id)
+    await state.set_state(Support.admin_reply)
+    await call.message.answer(
+        f"✏️ Напиши ответ пользователю <code>{tg_id}</code>:\n"
+        "(или /cancel для отмены)"
+    )
+    await call.answer()
+
+
+@router.message(Support.admin_reply, Command("cancel"))
+async def admin_reply_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("↩️ Ответ отменён.")
+
+
+@router.message(Support.admin_reply, F.text)
+async def admin_reply_send(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    tg_id = data.get("reply_to_user")
+    if not tg_id:
+        await state.clear()
+        return
+    reply_text = message.text.strip()
+    await state.clear()
+    try:
+        await message.bot.send_message(
+            tg_id,
+            f"💬 <b>Ответ от поддержки:</b>\n\n{reply_text}",
+        )
+        await message.answer(f"✅ Ответ отправлен пользователю {tg_id}.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить: {e}")
