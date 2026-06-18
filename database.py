@@ -431,3 +431,72 @@ async def stats() -> dict:
         row = await cur.fetchone()
         out[key] = row["c"] if row else 0
     return out
+
+
+# ---------- Админ-функции ----------
+
+async def admin_extended_stats() -> dict:
+    """Расширенная статистика для админ-панели."""
+    db = await get_db()
+    now = int(time.time())
+    today_start = now - (now % 86400)
+    out: dict = {}
+    for key, q in {
+        "new_today": f"SELECT COUNT(*) c FROM users WHERE created_at >= {today_start}",
+        "banned": "SELECT COUNT(*) c FROM users WHERE is_banned = 1",
+        "reports": "SELECT COUNT(*) c FROM reports",
+        "males": "SELECT COUNT(*) c FROM users WHERE gender = 'm'",
+        "females": "SELECT COUNT(*) c FROM users WHERE gender = 'f'",
+    }.items():
+        cur = await db.execute(q)
+        row = await cur.fetchone()
+        out[key] = row["c"] if row else 0
+    return out
+
+
+async def admin_recent_users(limit: int = 20) -> list[aiosqlite.Row]:
+    """Последние зарегистрированные пользователи."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT * FROM users WHERE name IS NOT NULL ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    return await cur.fetchall()
+
+
+async def admin_recent_reports(limit: int = 10) -> list[aiosqlite.Row]:
+    """Самые свежие жалобы (с подсчётом)."""
+    db = await get_db()
+    cur = await db.execute(
+        """
+        SELECT to_id, COUNT(*) AS report_count, MAX(created_at) AS last_report
+        FROM reports
+        GROUP BY to_id
+        ORDER BY last_report DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    return await cur.fetchall()
+
+
+async def admin_ban_user(tg_id: int) -> None:
+    db = await get_db()
+    await db.execute("UPDATE users SET is_banned = 1 WHERE tg_id = ?", (tg_id,))
+    await db.commit()
+
+
+async def admin_unban_user(tg_id: int) -> None:
+    db = await get_db()
+    await db.execute("UPDATE users SET is_banned = 0 WHERE tg_id = ?", (tg_id,))
+    await db.commit()
+
+
+async def admin_all_active_ids() -> list[int]:
+    """Все активные незабаненные пользователи (для рассылки)."""
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT tg_id FROM users WHERE active = 1 AND is_banned = 0 AND name IS NOT NULL"
+    )
+    rows = await cur.fetchall()
+    return [r["tg_id"] for r in rows]

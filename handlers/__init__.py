@@ -1,11 +1,12 @@
 """Сборка всех роутеров."""
 from aiogram import Router
 
-from . import start, browse, profile, likes, anon, misc
+from . import admin, start, browse, profile, likes, anon, misc
 
 
 def setup_routers() -> Router:
     root = Router()
+    root.include_router(admin.router)  # первый: перехватывает /admin, /ban, /unban, /broadcast
     root.include_router(start.router)
     root.include_router(profile.router)
     root.include_router(likes.router)
