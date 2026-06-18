@@ -35,12 +35,13 @@ router = Router()
 
 async def _send_profile(message: Message, user) -> None:
     caption = "👤 <b>Твоя анкета</b>\n\n" + profile_caption(user)
+    has_daily = bool(user["daily_a"])
     try:
         await message.answer_photo(
-            photo=user["photo_id"], caption=caption, reply_markup=profile_kb()
+            photo=user["photo_id"], caption=caption, reply_markup=profile_kb(has_daily)
         )
     except Exception:
-        await message.answer(caption, reply_markup=profile_kb())
+        await message.answer(caption, reply_markup=profile_kb(has_daily))
 
 
 @router.message(F.text == "👤 Моя анкета")
@@ -147,6 +148,21 @@ async def on_edit(call: CallbackQuery, state: FSMContext) -> None:
     if field == "daily":
         await _ask_daily(call.message, state)
         await call.answer()
+        return
+
+    if field == "del_daily":
+        await db.upsert_user(call.from_user.id, daily_q=None, daily_a=None)
+        await call.answer("🗑 Ответ на вопрос дня удалён", show_alert=True)
+        user = await db.get_user(call.from_user.id)
+        if user:
+            caption = "👤 <b>Твоя анкета</b>\n\n" + profile_caption(user)
+            try:
+                await call.message.edit_caption(caption=caption, reply_markup=profile_kb(False))
+            except Exception:
+                try:
+                    await call.message.edit_text(text=caption, reply_markup=profile_kb(False))
+                except Exception:
+                    pass
         return
 
 
