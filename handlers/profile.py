@@ -12,12 +12,23 @@ from keyboards import (
     MAIN_MENU,
     confirm_delete_kb,
     interests_kb,
+    photos_manage_kb,
     profile_kb,
     seeking_kb,
     settings_kb,
 )
 from services.matching import parse_interests, profile_caption
-from states import Edit
+from states import Edit, Verify
+
+import random
+
+GESTURES = [
+    ("✌️ два пальца (V)", "peace"),
+    ("👍 большой палец вверх", "thumbup"),
+    ("🤟 рокерская коза", "rock"),
+    ("☝️ один палец вверх", "pointup"),
+    ("✋ открытая ладонь", "palm"),
+]
 
 router = Router()
 
@@ -68,6 +79,55 @@ async def on_edit(call: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(Edit.value)
         await state.update_data(edit_field="photo")
         await call.message.answer("Пришли новое фото 📷")
+        await call.answer()
+        return
+
+    if field == "photos":
+        await db.sync_photos_to_gallery(call.from_user.id)
+        photos = await db.get_photos(call.from_user.id)
+        count = len(photos)
+        if count > 0:
+            from aiogram.types import InputMediaPhoto
+            if count == 1:
+                await call.message.answer_photo(
+                    photo=photos[0]["photo_id"],
+                    caption=f"📸 Твои фото ({count}/5):",
+                    reply_markup=photos_manage_kb(count),
+                )
+            else:
+                media = [InputMediaPhoto(media=p["photo_id"]) for p in photos]
+                media[0] = InputMediaPhoto(media=photos[0]["photo_id"], caption=f"📸 Твои фото ({count}/5):")
+                await call.message.answer_media_group(media)
+                await call.message.answer("Управление фото:", reply_markup=photos_manage_kb(count))
+        else:
+            await call.message.answer(
+                "У тебя ещё нет фото.",
+                reply_markup=photos_manage_kb(0),
+            )
+        await state.set_state(Edit.photos)
+        await call.answer()
+        return
+
+    if field == "verify":
+        user = await db.get_user(call.from_user.id)
+        if user and user["verified"]:
+            await call.answer("✅ Ты уже верифицирован!", show_alert=True)
+            return
+        status = await db.get_verification_status(call.from_user.id)
+        if status == "pending":
+            await call.answer("⏳ Твоя заявка на рассмотрении", show_alert=True)
+            return
+        gesture_text, gesture_key = random.choice(GESTURES)
+        await state.update_data(verify_gesture=gesture_key, verify_gesture_text=gesture_text)
+        await state.set_state(Verify.photo)
+        text = (
+            "🎭 <b>Верификация профиля</b>\n\n"
+            "Сделай селфи с жестом:\n"
+            f"<b>{gesture_text}</b>\n\n"
+            "Это подтвердит, что ты — реальный человек. "
+            "После проверки администратором в анкете появится ✅"
+        )
+        await call.message.answer(text)
         await call.answer()
         return
 
@@ -272,6 +332,140 @@ async def set_seeking(call: CallbackQuery) -> None:
     await db.upsert_user(call.from_user.id, seeking=s)
     label = {"m": "парней", "f": "девушек", "any": "всех"}[s]
     await call.message.edit_text(f"✅ Теперь показываю {label}.")
+    await call.answer()
+
+
+# ---------- Управление фотогалереей ----------
+
+@router.callback_query(F.data == "ph:add")
+async def photo_add(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Edit.photos)
+    await state.update_data(photos_action="add")
+    await call.message.answer("📷 Отправь фото для добавления:")
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("ph:del:"))
+async def photo_delete(call: CallbackQuery, state: FSMContext) -> None:
+    pos = int(call.data.split(":")[2])
+    photos = await db.get_photos(call.from_user.id)
+    if pos >= len(photos):
+        await call.answer("Фото не найдено")
+        return
+    if len(photos) <= 1:
+        await call.answer("Нельзя удалить единственное фото!", show_alert=True)
+        return
+    # Если удаляем первое — нужно обновить photo_id в users
+    await db.remove_photo(call.from_user.id, pos)
+    new_photos = await db.get_photos(call.from_user.id)
+    if new_photos:
+        await db.set_main_photo(call.from_user.id, new_photos[0]["photo_id"])
+    count = len(new_photos)
+    await call.message.edit_text(
+        f"🗑 Фото удалено! Осталось: {count}/5",
+        reply_markup=photos_manage_kb(count),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "ph:back")
+async def photo_back(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user = await db.get_user(call.from_user.id)
+    await _send_profile(call.message, user)
+    await call.answer()
+
+
+@router.message(Edit.photos, F.photo)
+async def photo_add_receive(message: Message, state: FSMContext) -> None:
+    count = await db.photo_count(message.from_user.id)
+    if count >= 5:
+        await message.answer("Максимум 5 фото! Сначала удали одно из существующих.")
+        return
+    photo_id = message.photo[-1].file_id
+    pos = await db.add_photo(message.from_user.id, photo_id)
+    new_count = count + 1
+    await state.clear()
+    await message.answer(
+        f"✅ Фото добавлено! ({new_count}/5)",
+        reply_markup=photos_manage_kb(new_count),
+    )
+
+
+# ---------- Верификация ----------
+
+@router.message(Verify.photo, F.photo)
+async def verify_photo_received(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    gesture = data.get("verify_gesture", "unknown")
+    gesture_text = data.get("verify_gesture_text", "")
+    photo_id = message.photo[-1].file_id
+    await db.submit_verification(message.from_user.id, photo_id, gesture)
+    await state.clear()
+    await message.answer(
+        "✅ Заявка на верификацию отправлена!\n"
+        "Администратор проверит твоё фото. Обычно это занимает несколько часов.\n"
+        "Ты получишь уведомление о результате.",
+        reply_markup=MAIN_MENU,
+    )
+    # Уведомляем админов
+    from config import ADMIN_IDS
+    from keyboards import verify_kb
+    user = await db.get_user(message.from_user.id)
+    name = user["name"] if user else "?"
+    username = f"@{user['username']}" if user and user["username"] else "—"
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_photo(
+                admin_id,
+                photo=photo_id,
+                caption=(
+                    f"🎭 <b>Заявка на верификацию</b>\n\n"
+                    f"👤 {name} ({username})\n"
+                    f"🆔 {message.from_user.id}\n"
+                    f"Жест: {gesture_text}\n\n"
+                    "Проверь и одобри/отклони:"
+                ),
+                reply_markup=verify_kb(message.from_user.id),
+            )
+        except Exception:
+            pass
+
+
+@router.message(Verify.photo)
+async def verify_photo_invalid(message: Message) -> None:
+    await message.answer("Нужно именно фото-селфи 📷 с жестом.")
+
+
+@router.callback_query(F.data.startswith("vrf:"))
+async def on_verify_decision(call: CallbackQuery) -> None:
+    parts = call.data.split(":")
+    action = parts[1]
+    tg_id = int(parts[2])
+    if action == "approve":
+        await db.approve_verification(tg_id)
+        await call.message.edit_caption(
+            caption=call.message.caption + "\n\n✅ <b>ОДОБРЕНО</b>",
+        )
+        try:
+            await call.bot.send_message(
+                tg_id, "✅ Поздравляем! Твой профиль верифицирован! Теперь в анкете видна ✅"
+            )
+        except Exception:
+            pass
+    elif action == "reject":
+        await db.reject_verification(tg_id)
+        await call.message.edit_caption(
+            caption=call.message.caption + "\n\n❌ <b>ОТКЛОНЕНО</b>",
+        )
+        try:
+            await call.bot.send_message(
+                tg_id,
+                "❌ К сожалению, верификация не пройдена.\n"
+                "Убедись, что на фото хорошо видно твоё лицо и жест, и попробуй снова."
+            )
+        except Exception:
+            pass
     await call.answer()
 
 
