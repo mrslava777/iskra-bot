@@ -25,6 +25,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📊 Статистика", callback_data="adm:stats")],
             [InlineKeyboardButton(text="👥 Пользователи", callback_data="adm:users")],
             [InlineKeyboardButton(text="🚩 Жалобы", callback_data="adm:reports")],
+            [InlineKeyboardButton(text="✅ Верификация", callback_data="adm:verified")],
             [InlineKeyboardButton(text="🔨 Бан / Разбан", callback_data="adm:ban")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="adm:broadcast")],
         ]
@@ -146,6 +147,59 @@ async def cb_reports(cq: CallbackQuery) -> None:
     )
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await cq.message.edit_text("\n".join(lines), reply_markup=kb)
+
+
+# ── Бан / Разбан (инструкция) ──────────────────────────────────────
+# ── Верификация ────────────────────────────────────────────────────
+@router.callback_query(F.data == "adm:verified")
+async def cb_verified(cq: CallbackQuery) -> None:
+    if not is_admin(cq.from_user.id):
+        return await cq.answer("⛔")
+    conn = await db.get_db()
+    cur = await conn.execute(
+        "SELECT tg_id, name, username FROM users WHERE verified = 1 ORDER BY created_at DESC LIMIT 20"
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        return await cq.message.edit_text(
+            "✅ Верифицированных пользователей пока нет.", reply_markup=back_kb()
+        )
+    lines = ["✅ <b>Верифицированные пользователи:</b>\n"]
+    buttons = []
+    for r in rows:
+        uname = f"@{r['username']}" if r["username"] else f"ID:{r['tg_id']}"
+        lines.append(f"• <b>{r['name']}</b> — {uname}")
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"❌ Снять верификацию — {r['name']}",
+                    callback_data=f"adm:unverify:{r['tg_id']}",
+                )
+            ]
+        )
+    lines.append(f"\nИли: <code>/unverify 123456789</code>")
+    buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data="adm:menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await cq.message.edit_text("\n".join(lines), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("adm:unverify:"))
+async def cb_do_unverify(cq: CallbackQuery) -> None:
+    if not is_admin(cq.from_user.id):
+        return await cq.answer("⛔")
+    tg_id = int(cq.data.split(":")[2])
+    user = await db.get_user(tg_id)
+    if not user:
+        return await cq.answer("❌ Пользователь не найден")
+    await db.upsert_user(tg_id, verified=0)
+    name = user["name"]
+    await cq.answer(f"✅ Верификация снята у {name}")
+    try:
+        await cq.bot.send_message(tg_id, "ℹ️ Ваша верификация была снята администратором.")
+    except Exception:
+        pass
+    # Обновим список
+    await cb_verified(cq)
 
 
 # ── Бан / Разбан (инструкция) ──────────────────────────────────────
