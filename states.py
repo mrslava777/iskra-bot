@@ -11,6 +11,7 @@ class Reg(StatesGroup):
     interests = State()
     bio = State()
     photo = State()
+    extra_photos = State()
 
 
 class Edit(StatesGroup):
@@ -19,3 +20,8 @@ class Edit(StatesGroup):
     interests = State()
     daily = State()
     filters_age = State()
+    photos = State()
+
+
+class Verify(StatesGroup):
+    photo = State()
