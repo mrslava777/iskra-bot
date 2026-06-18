@@ -124,7 +124,8 @@ async def on_edit(call: CallbackQuery, state: FSMContext) -> None:
             "🎭 <b>Верификация профиля</b>\n\n"
             "Запиши кружочек (видеосообщение) с жестом:\n"
             f"<b>{gesture_text}</b>\n\n"
-            "Зажми кнопку микрофона 🎤 и переключись на видео 📹\n\n"
+            "Нажми на кнопку микрофона 🎙, переключись на видео 📹 "
+            "и отправь кружочек\n\n"
             "Это подтвердит, что ты — реальный человек. "
             "После проверки администратором в анкете появится ✅"
         )
@@ -439,9 +440,8 @@ async def verify_video_received(message: Message, state: FSMContext) -> None:
 @router.message(Verify.photo)
 async def verify_video_invalid(message: Message) -> None:
     await message.answer(
-        "Нужен именно *кружочек* (видеосообщение) 🎥\n"
-        "Зажми 🎤 → переключись на 📹 → запиши и отправь.",
-        parse_mode="HTML",
+        "Нужен именно кружочек (видеосообщение) 🎥\n"
+        "Нажми на кнопку микрофона 🎙, переключись на видео 📹 и отправь кружочек."
     )
 
 
@@ -452,8 +452,9 @@ async def on_verify_decision(call: CallbackQuery) -> None:
     tg_id = int(parts[2])
     if action == "approve":
         await db.approve_verification(tg_id)
-        await call.message.edit_caption(
-            caption=call.message.caption + "\n\n✅ <b>ОДОБРЕНО</b>",
+        await call.message.edit_text(
+            text=call.message.text + "\n\n✅ <b>ОДОБРЕНО</b>",
+            reply_markup=None,
         )
         try:
             await call.bot.send_message(
@@ -463,14 +464,15 @@ async def on_verify_decision(call: CallbackQuery) -> None:
             pass
     elif action == "reject":
         await db.reject_verification(tg_id)
-        await call.message.edit_caption(
-            caption=call.message.caption + "\n\n❌ <b>ОТКЛОНЕНО</b>",
+        await call.message.edit_text(
+            text=call.message.text + "\n\n❌ <b>ОТКЛОНЕНО</b>",
+            reply_markup=None,
         )
         try:
             await call.bot.send_message(
                 tg_id,
                 "❌ К сожалению, верификация не пройдена.\n"
-                "Убедись, что на фото хорошо видно твоё лицо и жест, и попробуй снова."
+                "Убедись, что на кружочке хорошо видно твоё лицо и жест, и попробуй снова."
             )
         except Exception:
             pass
