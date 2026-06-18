@@ -103,12 +103,12 @@ async def _process_ticket(
             if photo_id:
                 await message.bot.send_photo(
                     admin_id, photo=photo_id, caption=ticket_text,
-                    reply_markup=support_reply_kb(uid),
+                    reply_markup=support_reply_kb(uid, ticket_id),
                 )
             else:
                 await message.bot.send_message(
                     admin_id, text=ticket_text,
-                    reply_markup=support_reply_kb(uid),
+                    reply_markup=support_reply_kb(uid, ticket_id),
                 )
         except Exception:
             pass
@@ -128,8 +128,10 @@ async def on_admin_reply(call: CallbackQuery, state: FSMContext) -> None:
     if call.from_user.id not in ADMIN_IDS:
         await call.answer("Только для админов", show_alert=True)
         return
-    tg_id = int(call.data.split(":")[1])
-    await state.update_data(reply_to_user=tg_id)
+    parts = call.data.split(":")
+    tg_id = int(parts[1])
+    ticket_id = int(parts[2]) if len(parts) > 2 else None
+    await state.update_data(reply_to_user=tg_id, reply_ticket_id=ticket_id)
     await state.set_state(Support.admin_reply)
     await call.message.answer(
         f"✏️ Напиши ответ пользователю <code>{tg_id}</code>:\n"
@@ -151,6 +153,7 @@ async def admin_reply_send(message: Message, state: FSMContext) -> None:
     if not tg_id:
         await state.clear()
         return
+    ticket_id = data.get("reply_ticket_id")
     reply_text = message.text.strip()
     await state.clear()
     try:
@@ -158,6 +161,9 @@ async def admin_reply_send(message: Message, state: FSMContext) -> None:
             tg_id,
             f"💬 <b>Ответ от поддержки:</b>\n\n{reply_text}",
         )
+        # Обновляем статус тикета в БД → 'replied'
+        if ticket_id:
+            await db.reply_ticket(ticket_id, reply_text)
         await message.answer(f"✅ Ответ отправлен пользователю {tg_id}.")
     except Exception as e:
         await message.answer(f"❌ Не удалось отправить: {e}")
