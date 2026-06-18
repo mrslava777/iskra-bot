@@ -66,7 +66,10 @@ def profile_caption(user, *, viewer=None, show_compat: bool = False) -> str:
     name = user["name"] or "Без имени"
     age = user["age"]
     city = user["city"] or "—"
-    verified = " ✅" if user.get("verified") else ""
+    try:
+        verified = " ✅" if user["verified"] else ""
+    except (KeyError, IndexError):
+        verified = ""
     lines = [f"<b>{name}</b>{verified}, {age} {gender_emoji(user['gender'])}  •  📍 {city}"]
 
     interests = interests_text(user["interests"])
