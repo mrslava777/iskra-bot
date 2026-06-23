@@ -13,7 +13,6 @@ _db: Optional[aiosqlite.Connection] = None
 async def get_db() -> aiosqlite.Connection:
     global _db
     if _db is None:
-        # Гарантируем существование папки для базы (важно для Volume в /data)
         parent = os.path.dirname(os.path.abspath(DB_PATH))
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -33,19 +32,19 @@ async def init_db() -> None:
             username    TEXT,
             name        TEXT,
             age         INTEGER,
-            gender      TEXT,            -- 'm' / 'f'
-            seeking     TEXT,            -- 'm' / 'f' / 'any'
+            gender      TEXT,
+            seeking     TEXT,
             city        TEXT,
             bio         TEXT,
             photo_id    TEXT,
-            interests   TEXT DEFAULT '', -- индексы интересов через запятую
-            daily_q     INTEGER,         -- индекс дня, на который отвечали
-            daily_a     TEXT,            -- ответ на вопрос дня
+            interests   TEXT DEFAULT '',
+            daily_q     INTEGER,
+            daily_a     TEXT,
             active      INTEGER DEFAULT 1,
             is_banned   INTEGER DEFAULT 0,
             streak      INTEGER DEFAULT 0,
             last_active INTEGER DEFAULT 0,
-            rating      INTEGER DEFAULT 0, -- сколько лайков получил всего
+            rating      INTEGER DEFAULT 0,
             shown       INTEGER DEFAULT 0,
             min_age     INTEGER DEFAULT 18,
             max_age     INTEGER DEFAULT 99,
@@ -55,7 +54,7 @@ async def init_db() -> None:
         CREATE TABLE IF NOT EXISTS likes (
             from_id  INTEGER,
             to_id    INTEGER,
-            is_like  INTEGER,   -- 1 лайк, 0 дизлайк
+            is_like  INTEGER,
             seen     INTEGER DEFAULT 0,
             created_at INTEGER,
             PRIMARY KEY (from_id, to_id)
@@ -76,7 +75,6 @@ async def init_db() -> None:
             created_at INTEGER
         );
 
-        -- Свидание вслепую: очередь ожидания и активные анонимные сессии
         CREATE TABLE IF NOT EXISTS anon_queue (
             tg_id      INTEGER PRIMARY KEY,
             created_at INTEGER
@@ -94,14 +92,13 @@ async def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_anon_active ON anon_sessions(ended);
 
-        -- Тикеты поддержки
         CREATE TABLE IF NOT EXISTS support_tickets (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             tg_id      INTEGER NOT NULL,
             category   TEXT    NOT NULL,
             message    TEXT    NOT NULL,
             photo_id   TEXT,
-            status     TEXT    DEFAULT 'open',  -- open / replied / closed
+            status     TEXT    DEFAULT 'open',
             admin_reply TEXT,
             created_at INTEGER,
             replied_at INTEGER
@@ -109,35 +106,36 @@ async def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status);
 
-        -- Дополнительные фото пользователя (до 5 шт.)
         CREATE TABLE IF NOT EXISTS user_photos (
             tg_id      INTEGER NOT NULL,
             photo_id   TEXT    NOT NULL,
-            position   INTEGER NOT NULL DEFAULT 0,  -- 0..4
+            position   INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER,
             PRIMARY KEY (tg_id, position)
         );
 
-        -- Верификация: запросы на проверку
         CREATE TABLE IF NOT EXISTS verify_requests (
             tg_id      INTEGER PRIMARY KEY,
             photo_id   TEXT    NOT NULL,
             gesture    TEXT    NOT NULL,
-            status     TEXT    DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
+            status     TEXT    DEFAULT 'pending',
             created_at INTEGER
         );
         """
     )
-    # Миграция: добавляем поле verified если его нет
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")
-        await db.commit()
-    except Exception:
-        pass  # уже существует
+    # Миграции
+    for col, dtype in [
+        ("verified", "INTEGER DEFAULT 0"),
+        ("voice_id", "TEXT"),
+        ("voice_duration", "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            await db.execute(f"ALTER TABLE users ADD COLUMN {col} {dtype}")
+            await db.commit()
+        except Exception:
+            pass
     await db.commit()
 
-
-# ---------- Пользователи ----------
 
 async def get_user(tg_id: int) -> Optional[aiosqlite.Row]:
     db = await get_db()
@@ -168,7 +166,6 @@ async def upsert_user(tg_id: int, **fields: Any) -> None:
 
 
 async def delete_user(tg_id: int) -> None:
-    """Полное удаление аккаунта: убираем пользователя из всех таблиц."""
     db = await get_db()
     await db.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
     await db.execute(
@@ -189,7 +186,6 @@ async def set_active(tg_id: int, active: bool) -> None:
 
 
 async def touch_activity(tg_id: int) -> None:
-    """Обновляем стрик активности (раз в сутки +1, если пропуск >2 дней — сброс)."""
     db = await get_db()
     user = await get_user(tg_id)
     if user is None:
@@ -210,18 +206,13 @@ async def touch_activity(tg_id: int) -> None:
         await db.commit()
 
 
-# ---------- Лента ----------
-
 async def next_candidate(tg_id: int) -> Optional[aiosqlite.Row]:
-    """Следующая анкета для показа с учётом фильтров пола/возраста."""
     db = await get_db()
     me = await get_user(tg_id)
     if me is None:
         return None
-
     seeking = me["seeking"] or "any"
     gender_clause = "" if seeking == "any" else "AND u.gender = :seeking"
-    # Кого хотят видеть встречные анкеты — пусть тоже совпадает по возможности
     cur = await db.execute(
         f"""
         SELECT u.* FROM users u
@@ -252,10 +243,7 @@ async def mark_shown(tg_id: int) -> None:
     await db.commit()
 
 
-# ---------- Лайки и мэтчи ----------
-
 async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
-    """Сохраняет реакцию. Возвращает True, если образовался взаимный мэтч."""
     db = await get_db()
     now = int(time.time())
     await db.execute(
@@ -268,10 +256,8 @@ async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
             "UPDATE users SET rating = rating + 1 WHERE tg_id = ?", (to_id,)
         )
     await db.commit()
-
     if not is_like:
         return False
-
     cur = await db.execute(
         "SELECT 1 FROM likes WHERE from_id = ? AND to_id = ? AND is_like = 1",
         (to_id, from_id),
@@ -288,7 +274,6 @@ async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
 
 
 async def incoming_likes(tg_id: int) -> list[aiosqlite.Row]:
-    """Кто лайкнул меня, но я ещё не ответил взаимно."""
     db = await get_db()
     cur = await db.execute(
         """
@@ -326,8 +311,6 @@ async def get_matches(tg_id: int) -> list[aiosqlite.Row]:
     return await cur.fetchall()
 
 
-# ---------- Жалобы ----------
-
 async def add_report(from_id: int, to_id: int) -> int:
     db = await get_db()
     now = int(time.time())
@@ -335,7 +318,6 @@ async def add_report(from_id: int, to_id: int) -> int:
         "INSERT INTO reports (from_id, to_id, created_at) VALUES (?, ?, ?)",
         (from_id, to_id, now),
     )
-    # Дизлайкаем заодно, чтобы не показывать снова
     await db.execute(
         "INSERT OR REPLACE INTO likes (from_id, to_id, is_like, seen, created_at) "
         "VALUES (?, ?, 0, 1, ?)",
@@ -352,10 +334,7 @@ async def add_report(from_id: int, to_id: int) -> int:
     return count
 
 
-# ---------- Свидание вслепую (анонимный чат) ----------
-
 async def anon_session_of(tg_id: int) -> Optional[aiosqlite.Row]:
-    """Активная (не завершённая) сессия пользователя, если есть."""
     db = await get_db()
     cur = await db.execute(
         "SELECT * FROM anon_sessions WHERE ended = 0 AND (a_id = ? OR b_id = ?) "
@@ -366,7 +345,6 @@ async def anon_session_of(tg_id: int) -> Optional[aiosqlite.Row]:
 
 
 async def anon_active_partner(tg_id: int) -> Optional[int]:
-    """ID собеседника в активной сессии или None."""
     s = await anon_session_of(tg_id)
     if not s:
         return None
@@ -386,20 +364,10 @@ async def anon_leave_queue(tg_id: int) -> None:
 
 
 async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
-    """Подбор собеседника для «Свидания вслепую».
-
-    Возвращает (status, partner_id):
-      'in_session' — уже в активном чате (partner_id — собеседник)
-      'matched'    — нашли собеседника, создана сессия (partner_id)
-      'queued'     — добавлены в очередь ожидания (None)
-      'waiting'    — уже стояли в очереди (None)
-    """
     db = await get_db()
     partner = await anon_active_partner(tg_id)
     if partner is not None:
         return "in_session", partner
-
-    # Ищем ожидающего собеседника (не себя, активного, не забаненного)
     cur = await db.execute(
         """
         SELECT q.tg_id FROM anon_queue q
@@ -420,8 +388,6 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
         )
         await db.commit()
         return "matched", pid
-
-    # Никого нет — встаём в очередь
     if await anon_in_queue(tg_id):
         return "waiting", None
     await db.execute(
@@ -433,7 +399,6 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
 
 
 async def anon_set_reveal(tg_id: int) -> Optional[aiosqlite.Row]:
-    """Помечает желание открыться. Возвращает свежую строку сессии."""
     db = await get_db()
     s = await anon_session_of(tg_id)
     if not s:
@@ -446,7 +411,6 @@ async def anon_set_reveal(tg_id: int) -> Optional[aiosqlite.Row]:
 
 
 async def anon_end(tg_id: int) -> Optional[int]:
-    """Завершает активную сессию и убирает из очереди. Возвращает id собеседника."""
     db = await get_db()
     await db.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
     s = await anon_session_of(tg_id)
@@ -459,10 +423,7 @@ async def anon_end(tg_id: int) -> Optional[int]:
     return partner
 
 
-# ---------- Фото галерея ----------
-
 async def get_photos(tg_id: int) -> list[aiosqlite.Row]:
-    """Все фото пользователя по порядку."""
     db = await get_db()
     cur = await db.execute(
         "SELECT * FROM user_photos WHERE tg_id = ? ORDER BY position", (tg_id,)
@@ -471,7 +432,6 @@ async def get_photos(tg_id: int) -> list[aiosqlite.Row]:
 
 
 async def add_photo(tg_id: int, photo_id: str) -> int:
-    """Добавляет фото на следующую позицию. Возвращает position."""
     db = await get_db()
     cur = await db.execute(
         "SELECT COALESCE(MAX(position), -1) + 1 AS next_pos FROM user_photos WHERE tg_id = ?",
@@ -489,12 +449,10 @@ async def add_photo(tg_id: int, photo_id: str) -> int:
 
 
 async def remove_photo(tg_id: int, position: int) -> None:
-    """Удаляет фото и перенумеровывает остальные."""
     db = await get_db()
     await db.execute(
         "DELETE FROM user_photos WHERE tg_id = ? AND position = ?", (tg_id, position)
     )
-    # Перенумеруем
     cur = await db.execute(
         "SELECT photo_id FROM user_photos WHERE tg_id = ? ORDER BY position", (tg_id,)
     )
@@ -509,12 +467,10 @@ async def remove_photo(tg_id: int, position: int) -> None:
 
 
 async def set_main_photo(tg_id: int, photo_id: str) -> None:
-    """Обновляет photo_id в users и ставит фото на позицию 0 в user_photos."""
     await upsert_user(tg_id, photo_id=photo_id)
 
 
 async def sync_photos_to_gallery(tg_id: int) -> None:
-    """Если gallery пуста, заполняем из users.photo_id."""
     db = await get_db()
     cur = await db.execute(
         "SELECT COUNT(*) AS c FROM user_photos WHERE tg_id = ?", (tg_id,)
@@ -534,8 +490,6 @@ async def photo_count(tg_id: int) -> int:
     row = await cur.fetchone()
     return row["c"]
 
-
-# ---------- Верификация ----------
 
 async def submit_verification(tg_id: int, photo_id: str, gesture: str) -> None:
     db = await get_db()
@@ -600,10 +554,7 @@ async def stats() -> dict:
     return out
 
 
-# ---------- Админ-функции ----------
-
 async def admin_extended_stats() -> dict:
-    """Расширенная статистика для админ-панели."""
     db = await get_db()
     now = int(time.time())
     today_start = now - (now % 86400)
@@ -622,7 +573,6 @@ async def admin_extended_stats() -> dict:
 
 
 async def admin_recent_users(limit: int = 20) -> list[aiosqlite.Row]:
-    """Последние зарегистрированные пользователи."""
     db = await get_db()
     cur = await db.execute(
         "SELECT * FROM users WHERE name IS NOT NULL ORDER BY created_at DESC LIMIT ?",
@@ -632,7 +582,6 @@ async def admin_recent_users(limit: int = 20) -> list[aiosqlite.Row]:
 
 
 async def admin_recent_reports(limit: int = 10) -> list[aiosqlite.Row]:
-    """Самые свежие жалобы (с подсчётом)."""
     db = await get_db()
     cur = await db.execute(
         """
@@ -660,7 +609,6 @@ async def admin_unban_user(tg_id: int) -> None:
 
 
 async def admin_all_active_ids() -> list[int]:
-    """Все активные незабаненные пользователи (для рассылки)."""
     db = await get_db()
     cur = await db.execute(
         "SELECT tg_id FROM users WHERE active = 1 AND is_banned = 0 AND name IS NOT NULL"
@@ -669,10 +617,7 @@ async def admin_all_active_ids() -> list[int]:
     return [r["tg_id"] for r in rows]
 
 
-# ---------- Тикеты поддержки ----------
-
 async def create_ticket(tg_id: int, category: str, message: str, photo_id: str | None = None) -> int:
-    """Создаёт тикет, возвращает id."""
     db = await get_db()
     now = int(time.time())
     cur = await db.execute(
