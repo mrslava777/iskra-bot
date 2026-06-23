@@ -10,7 +10,6 @@ from services.matching import (
     common_interests,
     compatibility,
     gender_emoji,
-    is_night_mode,
     profile_caption,
 )
 
@@ -27,12 +26,9 @@ async def show_next(message: Message, viewer_id: int) -> None:
         return
     viewer = await db.get_user(viewer_id)
     await db.mark_shown(cand["tg_id"])
-
-    night = is_night_mode()
-    caption = profile_caption(cand, viewer=viewer, show_compat=True, night_mode=night)
+    caption = profile_caption(cand, viewer=viewer, show_compat=True)
     extra = await db.photo_count(cand["tg_id"]) > 1
-    kb = browse_kb(cand["tg_id"], has_extra_photos=extra, night_mode=night)
-
+    kb = browse_kb(cand["tg_id"], has_extra_photos=extra)
     try:
         await message.answer_photo(photo=cand["photo_id"], caption=caption, reply_markup=kb)
     except Exception:
@@ -68,11 +64,7 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     await call.message.edit_reply_markup(reply_markup=None)
 
     if action == "photos":
-        # Показать дополнительные фото (только в дневном режиме)
-        if is_night_mode():
-            await call.answer("\U0001F319 Ночью фото скрыты")
-            await show_next(call.message, viewer_id)
-            return
+        # Показать дополнительные фото
         photos = await db.get_photos(target_id)
         extras = [p for p in photos if p["position"] > 0]
         if extras:
@@ -114,18 +106,12 @@ async def _notify_liked(bot: Bot, from_id: int, to_id: int, with_message: bool) 
         return
     pct = compatibility(me["interests"], target["interests"])
     text = (
-        "💌 Кто-то проявил симпатию!
-"
-        f"Совместимость с этим человеком — <b>{pct}%</b>.
-"
+        "💌 Кто-то проявил симпатию!\n"
+        f"Совместимость с этим человеком — <b>{pct}%</b>.\n"
     )
     if with_message:
-        text += f"
-💬 Подсказка для первого сообщения:
-<i>{icebreaker(from_id + to_id)}</i>
-"
-    text += "
-Открой «💌 Кто меня лайкнул», чтобы посмотреть анкету."
+        text += f"\n💬 Подсказка для первого сообщения:\n<i>{icebreaker(from_id + to_id)}</i>\n"
+    text += "\nОткрой «💌 Кто меня лайкнул», чтобы посмотреть анкету."
     try:
         await bot.send_message(to_id, text)
     except Exception:
@@ -138,46 +124,19 @@ async def _announce_match(bot: Bot, a_id: int, b_id: int) -> None:
     if not a or not b:
         return
     ice = icebreaker(a_id + b_id)
-    night = is_night_mode()
-    night_prefix = "\U0001F319 <b>Ночной мэтч!</b>
-
-" if night else ""
-
     for me, other in ((a, b), (b, a)):
         common = common_interests(a["interests"], b["interests"])
-        common_txt = ("
-🏷 Общее: " + ", ".join(common)) if common else ""
-
-        if night:
-            from data.content import night_nickname
-            display_name = night_nickname(other["tg_id"])
-            if other["username"]:
-                contact = f"@{other['username']}"
-            else:
-                contact = f'<a href="tg://user?id={other["tg_id"]}">{display_name}</a>'
-            contact += "
-<i>Имя откроется с рассветом \u2600\uFE0F</i>"
+        common_txt = ("\n🏷 Общее: " + ", ".join(common)) if common else ""
+        if other["username"]:
+            contact = f"@{other['username']}"
         else:
-            display_name = other["name"]
-            if other["username"]:
-                contact = f"@{other['username']}"
-            else:
-                contact = f'<a href="tg://user?id={other["tg_id"]}">{other["name"]}</a>'
-
+            contact = f'<a href="tg://user?id={other["tg_id"]}">{other["name"]}</a>'
         text = (
-            f"{night_prefix}"
-            f"🎉 <b>Это мэтч!</b> {gender_emoji(other['gender'])}
-
-"
-            f"Вы понравились друг другу с <b>{display_name}</b>, {other['age']}."
-            f"{common_txt}
-
-"
-            f"📨 Контакт: {contact}
-
-"
-            f"💬 С чего начать:
-<i>{ice}</i>"
+            f"🎉 <b>Это мэтч!</b> {gender_emoji(other['gender'])}\n\n"
+            f"Вы понравились друг другу с <b>{other['name']}</b>, {other['age']}."
+            f"{common_txt}\n\n"
+            f"📨 Контакт: {contact}\n\n"
+            f"💬 С чего начать:\n<i>{ice}</i>"
         )
         try:
             await bot.send_photo(me["tg_id"], photo=other["photo_id"], caption=text)
