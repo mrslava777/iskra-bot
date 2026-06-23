@@ -46,7 +46,7 @@ async def night_mode_notifier(bot: Bot) -> None:
                 try:
                     await bot.send_message(
                         uid,
-                        "\U0001F319 <b>Ночной режим активирован</b>
+                        "<b>Ночной режим активирован</b>
 
 "
                         "С 00:00 до 06:00 анкеты становятся загадочнее:
@@ -74,7 +74,7 @@ async def night_mode_notifier(bot: Bot) -> None:
                 try:
                     await bot.send_message(
                         uid,
-                        "\u2600\uFE0F <b>Рассвет!</b>
+                        "<b>Рассвет!</b>
 
 "
                         "Ночной режим завершен. Анкеты снова открыты, "
