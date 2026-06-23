@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-*.db
-*.db-wal
-*.db-shm
-.env
-.venv/
-venv/
-todo.md
