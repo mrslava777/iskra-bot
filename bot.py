@@ -1,4 +1,4 @@
-"""Точка входа бота Искра 🔥."""
+"""Точка входа бота Искра."""
 import asyncio
 import logging
 
@@ -35,31 +35,21 @@ async def night_mode_notifier(bot: Bot) -> None:
     """Отправляет уведомление о начале/окончании ночного режима."""
     notified_night = False
     while True:
-        await asyncio.sleep(300)  # проверяем каждые 5 минут
+        await asyncio.sleep(300)
         night = is_night_mode()
 
         if night and not notified_night:
-            # Начался ночной режим
             users = await db.admin_all_active_ids()
             sent = 0
             for uid in users:
                 try:
-                    await bot.send_message(
-                        uid,
-                        "<b>Ночной режим активирован</b>
-
-"
-                        "С 00:00 до 06:00 анкеты становятся загадочнее:
-"
-                        "• Имена скрыты за псевдонимами
-"
-                        "• Вопросы — более интимные
-"
-                        "• Атмосфера тайны и интриги
-
-"
-                        "Иногда тени говорят громче слов...",
-                    )
+                    text = "<b>Ночной режим активирован</b>\n\n"
+                    text += "С 00:00 до 06:00 анкеты становятся загадочнее:\n"
+                    text += "- Имена скрыты за псевдонимами\n"
+                    text += "- Вопросы - более интимные\n"
+                    text += "- Атмосфера тайны и интриги\n\n"
+                    text += "Иногда тени говорят громче слов..."
+                    await bot.send_message(uid, text)
                     sent += 1
                 except Exception:
                     pass
@@ -67,22 +57,15 @@ async def night_mode_notifier(bot: Bot) -> None:
             notified_night = True
 
         elif not night and notified_night:
-            # Рассвет — сбрасываем флаг
             users = await db.admin_all_active_ids()
             sent = 0
             for uid in users:
                 try:
-                    await bot.send_message(
-                        uid,
-                        "<b>Рассвет!</b>
-
-"
-                        "Ночной режим завершен. Анкеты снова открыты, "
-                        "имена видны, а тайны ночи остались в прошлом.
-
-"
-                        "Удачных знакомств!",
-                    )
+                    text = "<b>Рассвет!</b>\n\n"
+                    text += "Ночной режим завершен. Анкеты снова открыты, "
+                    text += "имена видны, а тайны ночи остались в прошлом.\n\n"
+                    text += "Удачных знакомств!"
+                    await bot.send_message(uid, text)
                     sent += 1
                 except Exception:
                     pass
@@ -100,11 +83,10 @@ async def main() -> None:
     await db.init_db()
 
     if DB_PERSISTENT:
-        log.info("База: %s — постоянное хранилище (Volume), анкеты сохраняются.", DB_PATH)
+        log.info("База: %s - постоянное хранилище (Volume).", DB_PATH)
     else:
         log.warning(
-            "База: %s — ВРЕМЕННОЕ хранилище. На Railway добавь Volume с mount path "
-            "/data, тогда анкеты не будут теряться при перезапуске.",
+            "База: %s - ВРЕМЕННОЕ хранилище. На Railway добавь Volume.",
             DB_PATH,
         )
 
@@ -115,16 +97,12 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(setup_routers())
 
-    # Отмечаем «бот жив» на каждом входящем апдейте (бонус к heartbeat'у).
     @dp.update.outer_middleware()
-    async def _alive_middleware(handler, event, data):  # noqa: ANN001
+    async def _alive_middleware(handler, event, data):
         mark_alive()
         return await handler(event, data)
 
-    # Поднимаем /health для внешнего мониторинга (не влияет на логику бота).
     await start_health_server()
-
-    # Запускаем ночной нотификатор
     asyncio.create_task(night_mode_notifier(bot))
 
     await set_commands(bot)
