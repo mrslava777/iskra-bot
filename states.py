@@ -11,6 +11,7 @@ class Reg(StatesGroup):
     interests = State()
     bio = State()
     photo = State()
+    voice = State()          # <-- NEW: голосовое приветствие
     extra_photos = State()
 
 
@@ -21,6 +22,7 @@ class Edit(StatesGroup):
     daily = State()
     filters_age = State()
     photos = State()
+    voice = State()          # <-- NEW
 
 
 class Verify(StatesGroup):
