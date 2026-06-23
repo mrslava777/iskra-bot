@@ -84,24 +84,7 @@ def interests_kb(selected: list[int], prefix: str = "int") -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def browse_kb(uid: int, has_extra_photos: bool = False, night_mode: bool = False) -> InlineKeyboardMarkup:
-    """Клавиатура ленты анкет. night_mode=True — ночные эмодзи."""
-    if night_mode:
-        rows = [
-            [
-                InlineKeyboardButton(text="\U0001F319 Лайк", callback_data=f"sw:like:{uid}"),
-                InlineKeyboardButton(text="💫 С сообщением", callback_data=f"sw:msglike:{uid}"),
-                InlineKeyboardButton(text="🌑 Пропустить", callback_data=f"sw:dislike:{uid}"),
-            ],
-        ]
-        # В ночном режиме не показываем доп. фото
-        rows.append([
-            InlineKeyboardButton(text="🚩 Пожаловаться", callback_data=f"sw:report:{uid}"),
-            InlineKeyboardButton(text="⏹ Стоп", callback_data="sw:stop:0"),
-        ])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
-    # Обычный дневной режим
+def browse_kb(uid: int, has_extra_photos: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(text="❤️", callback_data=f"sw:like:{uid}"),
@@ -235,7 +218,6 @@ def support_kb() -> InlineKeyboardMarkup:
             )],
         ]
     )
-
 
 def support_reply_kb(tg_id: int, ticket_id: int | None = None) -> InlineKeyboardMarkup:
     cb = f"supreply:{tg_id}:{ticket_id}" if ticket_id else f"supreply:{tg_id}"
