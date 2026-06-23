@@ -14,18 +14,14 @@ import database as db
 
 log = logging.getLogger("iskra.health")
 
-# Сколько секунд без heartbeat считаем «завис»
 STALE_AFTER = int(os.getenv("HEALTH_STALE_AFTER", "120"))
-# Период heartbeat
 BEAT_INTERVAL = int(os.getenv("HEALTH_BEAT_INTERVAL", "30"))
-# Секрет для API (ставится в Railway Variables)
 API_SECRET = os.getenv("API_SECRET", "")
 
 _state = {"started_at": time.time(), "last_beat": time.time()}
 
 
 def mark_alive() -> None:
-    """Отметить, что бот жив (вызывается heartbeat'ом и на каждом апдейте)."""
     _state["last_beat"] = time.time()
 
 
@@ -33,16 +29,6 @@ async def _heartbeat() -> None:
     while True:
         mark_alive()
         await asyncio.sleep(BEAT_INTERVAL)
-
-
-# ── Middleware: CORS + API auth ────────────────────────────────────
-
-def _check_api_auth(request: web.Request) -> bool:
-    """Проверка токена для /api/* эндпоинтов."""
-    if not API_SECRET:
-        return False  # API отключён если секрет не задан
-    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    return token == API_SECRET
 
 
 @web.middleware
@@ -57,7 +43,12 @@ async def cors_middleware(request: web.Request, handler):
     return resp
 
 
-# ── Health ─────────────────────────────────────────────────────────
+def _check_api_auth(request: web.Request) -> bool:
+    if not API_SECRET:
+        return False
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    return token == API_SECRET
+
 
 async def _health(_request: web.Request) -> web.Response:
     now = time.time()
@@ -72,8 +63,6 @@ async def _health(_request: web.Request) -> web.Response:
         status=200 if healthy else 503,
     )
 
-
-# ── Admin API endpoints ───────────────────────────────────────────
 
 def _api_error(msg: str, status: int = 401) -> web.Response:
     return web.json_response({"error": msg}, status=status)
@@ -137,6 +126,8 @@ async def api_users(request: web.Request) -> web.Response:
             "rating": r["rating"],
             "streak": r["streak"],
             "verified": bool(r["verified"]) if r["verified"] else False,
+            "voice_id": r["voice_id"] if r["voice_id"] else None,
+            "voice_duration": r["voice_duration"] if r["voice_duration"] else 0,
             "created_at": r["created_at"],
             "last_active": r["last_active"],
         })
@@ -221,7 +212,6 @@ async def api_unverify(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "tg_id": tg_id, "action": "unverified"})
 
 
-
 async def api_tickets(request: web.Request) -> web.Response:
     if not _check_api_auth(request):
         return _api_error("unauthorized")
@@ -261,7 +251,6 @@ async def api_ticket_reply(request: web.Request) -> web.Response:
     if not ticket:
         return _api_error("ticket not found", 404)
     await db.reply_ticket(ticket_id, reply_text)
-    # Send reply to user via bot
     try:
         from bot import bot as tg_bot
         await tg_bot.send_message(
@@ -296,19 +285,15 @@ async def api_ticket_delete(request: web.Request) -> web.Response:
     await db.delete_ticket(ticket_id)
     return web.json_response({"ok": True, "id": ticket_id})
 
-# ── Server startup ─────────────────────────────────────────────────
 
 async def start_health_server() -> None:
-    """Поднять /health + Admin API сервер и фоновый heartbeat."""
     try:
         port = int(os.getenv("PORT", "8080"))
         app = web.Application(middlewares=[cors_middleware])
 
-        # Health
         app.router.add_get("/health", _health)
         app.router.add_get("/", _health)
 
-        # Admin API
         app.router.add_get("/api/stats", api_stats)
         app.router.add_get("/api/users", api_users)
         app.router.add_get("/api/reports", api_reports)
@@ -316,7 +301,6 @@ async def start_health_server() -> None:
         app.router.add_post("/api/unban", api_unban)
         app.router.add_post("/api/unverify", api_unverify)
 
-        # Tickets API
         app.router.add_get("/api/tickets", api_tickets)
         app.router.add_post("/api/ticket/reply", api_ticket_reply)
         app.router.add_post("/api/ticket/close", api_ticket_close)
@@ -329,5 +313,5 @@ async def start_health_server() -> None:
         asyncio.create_task(_heartbeat())
         api_status = "включён" if API_SECRET else "ВЫКЛЮЧЕН (задай API_SECRET)"
         log.info("✅ Сервер на :%s — health + API (%s)", port, api_status)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("⚠️ Не удалось поднять сервер: %s", exc)
