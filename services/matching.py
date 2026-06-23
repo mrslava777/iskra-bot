@@ -29,11 +29,10 @@ def compatibility(a_raw: str | None, b_raw: str | None) -> int:
     a = set(parse_interests(a_raw))
     b = set(parse_interests(b_raw))
     if not a or not b:
-        return 50  # нейтрально, если интересы не заполнены
+        return 50
     inter = len(a & b)
     union = len(a | b)
     base = inter / union if union else 0
-    # Немного «подсластим» шкалу, чтобы цифры были живее
     pct = int(round(40 + base * 60))
     if inter >= 3:
         pct = min(99, pct + 5)
@@ -75,6 +74,12 @@ def profile_caption(user, *, viewer=None, show_compat: bool = False) -> str:
     interests = interests_text(user["interests"])
     if interests != "—":
         lines.append(f"\n🏷 {interests}")
+
+    # NEW: индикатор голосового
+    if user.get("voice_id"):
+        dur = user.get("voice_duration", 0)
+        dur_str = f"{dur//60}:{dur%60:02d}" if dur >= 60 else f"{dur}с"
+        lines.append(f"\n🎙 Есть голосовое приветствие ({dur_str})")
 
     if user["daily_a"]:
         from data.content import daily_question
