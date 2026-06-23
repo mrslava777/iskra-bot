@@ -11,20 +11,12 @@ from states import Reg
 
 router = Router()
 
-WELCOME = (
-    "🔥 <b>Искра</b> — бот знакомств, где важнее не только фото.
-
-"
-    "Здесь мы считаем <b>совместимость по интересам</b>, подсказываем, "
-    "с чего начать разговор, и каждый день задаём новый вопрос для анкеты.
-
-"
-    "А с полуночи до рассвета включается <b>🌙 Ночной режим</b> — "
-    "анкеты становятся загадочнее, имена скрыты, а вопросы — интимнее.
-
-"
-    "Давай создадим твою анкету за минуту. Как тебя зовут?"
-)
+WELCOME = "<b>Искра</b> - бот знакомств, где важнее не только фото.\n\n"
+WELCOME += "Здесь мы считаем <b>совместимость по интересам</b>, подсказываем, "
+WELCOME += "с чего начать разговор, и каждый день задаем новый вопрос для анкеты.\n\n"
+WELCOME += "А с полуночи до рассвета включается <b>Ночной режим</b> - "
+WELCOME += "анкеты становятся загадочнее, имена скрыты, а вопросы - интимнее.\n\n"
+WELCOME += "Давай создадим твою анкету за минуту. Как тебя зовут?"
 
 
 @router.message(CommandStart())
@@ -34,7 +26,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if user and user["name"] and user["photo_id"]:
         await db.touch_activity(message.from_user.id)
         await message.answer(
-            "С возвращением! 🔥 Выбирай, что делаем дальше.", reply_markup=MAIN_MENU
+            "С возвращением! Выбирай, что делаем дальше.", reply_markup=MAIN_MENU
         )
         return
     await message.answer(WELCOME)
@@ -45,7 +37,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 async def reg_name(message: Message, state: FSMContext) -> None:
     name = message.text.strip()
     if len(name) > 32:
-        await message.answer("Слишком длинно 🙂 До 32 символов, пожалуйста.")
+        await message.answer("Слишком длинно. До 32 символов, пожалуйста.")
         return
     await state.update_data(name=name)
     await message.answer("Сколько тебе лет?")
@@ -56,7 +48,7 @@ async def reg_name(message: Message, state: FSMContext) -> None:
 async def reg_age(message: Message, state: FSMContext) -> None:
     txt = message.text.strip()
     if not txt.isdigit() or not (14 <= int(txt) <= 99):
-        await message.answer("Введи возраст числом (14–99).")
+        await message.answer("Введи возраст числом (14-99).")
         return
     await state.update_data(age=int(txt))
     await message.answer("Твой пол?", reply_markup=gender_kb("rgender"))
@@ -87,7 +79,7 @@ async def reg_city(message: Message, state: FSMContext) -> None:
     await state.update_data(city=message.text.strip()[:48])
     await state.update_data(sel_interests=[])
     await message.answer(
-        "Выбери интересы (до 5) — по ним считается совместимость 💞",
+        "Выбери интересы (до 5) - по ним считается совместимость",
         reply_markup=interests_kb([], "rint"),
     )
     await state.set_state(Reg.interests)
@@ -101,7 +93,7 @@ async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
 
     if payload == "done":
         await call.message.edit_text(
-            "📝 Напиши пару слов о себе (или отправь «-», чтобы пропустить)."
+            "Напиши пару слов о себе (или отправь '-', чтобы пропустить)."
         )
         await state.set_state(Reg.bio)
         await call.answer()
@@ -113,7 +105,7 @@ async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
     elif len(sel) < 5:
         sel.append(idx)
     else:
-        await call.answer("Можно максимум 5 🙂", show_alert=False)
+        await call.answer("Можно максимум 5", show_alert=False)
         return
     await state.update_data(sel_interests=sel)
     await call.message.edit_reply_markup(reply_markup=interests_kb(sel, "rint"))
@@ -124,7 +116,7 @@ async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
 async def reg_bio(message: Message, state: FSMContext) -> None:
     bio = "" if message.text.strip() == "-" else message.text.strip()[:300]
     await state.update_data(bio=bio)
-    await message.answer("📷 Последний шаг — пришли своё фото.")
+    await message.answer("Последний шаг - пришли свое фото.")
     await state.set_state(Reg.photo)
 
 
@@ -146,16 +138,14 @@ async def reg_photo(message: Message, state: FSMContext) -> None:
         photo_id=photo_id,
         active=1,
     )
-    # Сохраняем главное фото в галерею
     await db.sync_photos_to_gallery(message.from_user.id)
     await db.touch_activity(message.from_user.id)
 
     await state.update_data(extra_count=0)
     await state.set_state(Reg.extra_photos)
     await message.answer(
-        "📸 Хочешь добавить ещё фото? (до 4 дополнительных)
-"
-        "Просто отправь фото или нажми «Пропустить».",
+        "Хочешь добавить еще фото? (до 4 дополнительных)\n"
+        "Просто отправь фото или нажми 'Пропустить'.",
         reply_markup=extra_photos_kb(),
     )
 
@@ -171,7 +161,7 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     count = data.get("extra_count", 0)
     if count >= 4:
-        await message.answer("Максимум 5 фото 🙂 Сохраняю анкету!")
+        await message.answer("Максимум 5 фото. Сохраняю анкету!")
         await _finish_registration(message, message.from_user.id, state)
         return
     photo_id = message.photo[-1].file_id
@@ -181,12 +171,11 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
     remaining = 4 - count
     if remaining > 0:
         await message.answer(
-            f"✅ Фото добавлено! ({count + 1}/5)
-Можно ещё {remaining} шт. или нажми «Пропустить».",
+            f"Фото добавлено! ({count + 1}/5)\nМожно еще {remaining} шт. или нажми 'Пропустить'.",
             reply_markup=extra_photos_kb(),
         )
     else:
-        await message.answer("✅ Все 5 фото загружены!")
+        await message.answer("Все 5 фото загружены!")
         await _finish_registration(message, message.from_user.id, state)
 
 
@@ -194,57 +183,38 @@ async def _finish_registration(message: Message, user_id: int, state: FSMContext
     await state.clear()
     user = await db.get_user(user_id)
     n_photos = await db.photo_count(user_id)
-    photo_note = f"
-📸 Фото в анкете: {n_photos}" if n_photos > 1 else ""
+    photo_note = f"\nФото в анкете: {n_photos}" if n_photos > 1 else ""
     await message.answer_photo(
         photo=user["photo_id"],
-        caption=f"✨ Готово! Вот твоя анкета:
-
-{profile_caption(user)}{photo_note}",
+        caption=f"Готово! Вот твоя анкета:\n\n{profile_caption(user)}{photo_note}",
     )
     await message.answer(
-        "Поехали искать! Жми «🔍 Смотреть анкеты».", reply_markup=MAIN_MENU
+        "Поехали искать! Жми 'Смотреть анкеты'.", reply_markup=MAIN_MENU
     )
 
 
 @router.message(Reg.extra_photos)
 async def reg_extra_invalid(message: Message) -> None:
-    await message.answer("Отправь фото 📷 или нажми «Пропустить».", reply_markup=extra_photos_kb())
+    await message.answer("Отправь фото или нажми 'Пропустить'.", reply_markup=extra_photos_kb())
 
 
 @router.message(Reg.photo)
 async def reg_photo_invalid(message: Message) -> None:
-    await message.answer("Нужно именно фото 📷 (как изображение, не файлом).")
+    await message.answer("Нужно именно фото (как изображение, не файлом).")
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(
-        "🔥 <b>Искра</b> — знакомства с умом.
-
-"
-        "• 🔍 Смотреть анкеты — лента с расчётом совместимости
-"
-        "• 🎭 Свидание вслепую — анонимный чат вживую; откроетесь оба — будет мэтч
-"
-        "• 💌 Кто меня лайкнул — входящие симпатии
-"
-        "• 💞 Мэтчи — взаимные лайки и контакты
-"
-        "• 🎯 Вопрос дня — добавь изюминку в анкету
-"
-        "• ⚙️ Настройки — фильтры и видимость
-
-"
-        "🌙 <b>Ночной режим</b> (00:00–06:00):
-"
-        "• Анкеты с псевдонимами и тайной атмосферой
-"
-        "• Вопросы становятся более интимными
-"
-        "• Имена скрыты до рассвета
-
-"
-        "Команды: /start /myprofile /help /stop (выйти со свидания)",
-        reply_markup=MAIN_MENU,
-    )
+    text = "<b>Искра</b> - знакомства с умом.\n\n"
+    text += "- Смотреть анкеты - лента с расчетом совместимости\n"
+    text += "- Свидание вслепую - анонимный чат вживую\n"
+    text += "- Кто меня лайкнул - входящие симпатии\n"
+    text += "- Мэтчи - взаимные лайки и контакты\n"
+    text += "- Вопрос дня - добавь изюминку в анкету\n"
+    text += "- Настройки - фильтры и видимость\n\n"
+    text += "<b>Ночной режим</b> (00:00-06:00):\n"
+    text += "- Анкеты с псевдонимами и тайной атмосферой\n"
+    text += "- Вопросы становятся более интимными\n"
+    text += "- Имена скрыты до рассвета\n\n"
+    text += "Команды: /start /myprofile /help /stop"
+    await message.answer(text, reply_markup=MAIN_MENU)
