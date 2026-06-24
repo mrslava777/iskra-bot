@@ -85,7 +85,10 @@ def profile_caption(user, *, viewer=None, show_compat: bool = False) -> str:
     if user["bio"]:
         lines.append(f"\n📝 {user['bio']}")
 
-    fire = fire_level(user["rating"] or 0)
+    if user.get('voice_file_id'):
+        lines.append('\n🎤 Есть голосовая визитка')
+
+    fire = fire_level(user['rating'] or 0)
     lines.append(f"\n{fire}  Симпатий: {user['rating'] or 0}")
 
     if show_compat and viewer is not None:
