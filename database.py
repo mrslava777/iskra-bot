@@ -49,9 +49,7 @@ async def init_db() -> None:
             shown       INTEGER DEFAULT 0,
             min_age     INTEGER DEFAULT 18,
             max_age     INTEGER DEFAULT 99,
-            created_at  INTEGER,
-            voice_file_id TEXT,
-            voice_duration INTEGER DEFAULT 0
+            created_at  INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS likes (
@@ -133,16 +131,7 @@ async def init_db() -> None:
     # Миграция: добавляем поле verified если его нет
     try:
         await db.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")
-        
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN voice_file_id TEXT")
-    except Exception:
-        pass
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN voice_duration INTEGER DEFAULT 0")
-    except Exception:
-        pass
-    await db.commit()
+        await db.commit()
     except Exception:
         pass  # уже существует
     await db.commit()
@@ -761,7 +750,3 @@ async def tickets_count(status: str | None = None) -> int:
         cur = await db.execute("SELECT COUNT(*) c FROM support_tickets")
     row = await cur.fetchone()
     return row["c"] if row else 0
-
-
-async def save_voice_profile(tg_id:int,file_id:str,duration:int)->None:
-    await upsert_user(tg_id, voice_file_id=file_id, voice_duration=duration)
