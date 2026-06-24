@@ -18,7 +18,7 @@ from keyboards import (
     settings_kb,
 )
 from services.matching import parse_interests, profile_caption
-from states import Edit, Verify
+from states import Edit, Verify, VoiceProfile
 
 import random
 
@@ -131,6 +131,14 @@ async def on_edit(call: CallbackQuery, state: FSMContext) -> None:
             "После проверки администратором в анкете появится ✅"
         )
         await call.message.answer(text)
+        await call.answer()
+        return
+
+    
+
+    if field == "voice":
+        await state.set_state(VoiceProfile.waiting_voice)
+        await call.message.answer("🎤 Отправь голосовую визитку (5–30 сек).")
         await call.answer()
         return
 
@@ -521,3 +529,14 @@ async def set_age_filter(message: Message, state: FSMContext) -> None:
     await db.upsert_user(message.from_user.id, min_age=lo_i, max_age=hi_i)
     await state.clear()
     await message.answer(f"✅ Фильтр возраста: {lo_i}–{hi_i}.", reply_markup=MAIN_MENU)
+
+
+@router.message(VoiceProfile.waiting_voice, F.voice)
+async def save_voice_card(message: Message, state: FSMContext):
+    d=message.voice.duration
+    if d<5 or d>30:
+        await message.answer("Длительность должна быть 5–30 секунд.")
+        return
+    await db.save_voice_profile(message.from_user.id,message.voice.file_id,d)
+    await state.clear()
+    await message.answer("✅ Голосовая визитка сохранена")
