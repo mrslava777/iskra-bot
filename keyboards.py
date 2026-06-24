@@ -129,6 +129,7 @@ def profile_kb(has_daily: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🖼 Фото", callback_data="ed:photos"),
         ],
         [InlineKeyboardButton(text="🎯 Ответить на вопрос дня", callback_data="ed:daily")],
+        [InlineKeyboardButton(text="🎤 Голосовая визитка", callback_data="ed:voice")],
     ]
     if has_daily:
         rows.append([InlineKeyboardButton(text="🗑 Удалить ответ дня", callback_data="ed:del_daily")])
