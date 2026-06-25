@@ -1,9 +1,10 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 """Точка входа — polling + health-сервер."""
 import asyncio
 import logging
-import os
-import sys
-
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 
