@@ -4,8 +4,8 @@ from aiogram.filters import BaseFilter, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-import database as db
-from handlers.browse import _announce_match
+from .. import database as db
+from .browse import _announce_match
 from keyboards import ANON_CHAT_MENU, MAIN_MENU, anon_queue_kb, anon_session_kb
 
 router = Router()

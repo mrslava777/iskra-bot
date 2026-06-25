@@ -4,7 +4,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-import database as db
+from .. import database as db
 from config import ADMIN_IDS
 from keyboards import MAIN_MENU, support_kb, support_reply_kb
 from states import Support

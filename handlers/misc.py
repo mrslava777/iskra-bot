@@ -3,7 +3,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-import database as db
+from .. import database as db
 from config import ADMIN_IDS
 from keyboards import MAIN_MENU
 
@@ -16,14 +16,10 @@ async def cmd_stats(message: Message) -> None:
         return
     s = await db.stats()
     await message.answer(
-        "📊 <b>Статистика Искры</b>
-"
-        f"👥 Пользователей: {s['users']}
-"
-        f"🟢 Активных: {s['active']}
-"
-        f"❤️ Лайков: {s['likes']}
-"
+        "📊 <b>Статистика Искры</b>\n"
+        f"👥 Пользователей: {s['users']}\n"
+        f"🟢 Активных: {s['active']}\n"
+        f"❤️ Лайков: {s['likes']}\n"
         f"💞 Мэтчей: {s['matches']}"
     )
 

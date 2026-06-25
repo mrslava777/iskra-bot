@@ -2,10 +2,11 @@
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, Message
 
-import database as db
+from .. import database as db
 from keyboards import MAIN_MENU, like_response_kb
-from services.matching import gender_emoji, profile_caption
-from handlers.browse import _announce_match
+from ..services.matching import gender_emoji, profile_caption_async
+from ..services.badges import check_and_award, format_badge_card, get_user_badges, format_user_badges_inline
+from .browse import _announce_match
 
 router = Router()
 
@@ -25,7 +26,10 @@ async def show_incoming(message: Message) -> None:
         return
     await message.answer(f"💌 Тебя лайкнули: <b>{len(rows)}</b>. Показываю по одному:")
     first = rows[0]
-    caption = profile_caption(first, viewer=user, show_compat=True)
+
+    # NEW: Показываем значки во входящих лайках
+    caption = await profile_caption_async(first, viewer=user, show_compat=True, show_badges=True)
+
     try:
         await message.answer_photo(
             photo=first["photo_id"], caption=caption,
@@ -42,7 +46,10 @@ async def _show_next_incoming(message: Message, viewer_id: int) -> None:
         await message.answer("Это были все входящие симпатии ✨", reply_markup=MAIN_MENU)
         return
     nxt = rows[0]
-    caption = profile_caption(nxt, viewer=user, show_compat=True)
+
+    # NEW: Показываем значки во входящих лайках
+    caption = await profile_caption_async(nxt, viewer=user, show_compat=True, show_badges=True)
+
     try:
         await message.answer_photo(
             photo=nxt["photo_id"], caption=caption,
@@ -70,6 +77,11 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
         await db.add_like(viewer_id, target_id, False)
         await call.answer("👎")
 
+    # Проверяем значки после ответа на лайк
+    new_badges = await check_and_award(viewer_id)
+    for badge in new_badges:
+        await call.message.answer(format_badge_card(badge, is_new=True))
+
     await _show_next_incoming(call.message, viewer_id)
 
 
@@ -88,8 +100,11 @@ async def show_matches(message: Message) -> None:
             contact = f"@{r['username']}"
         else:
             contact = f'<a href="tg://user?id={r["tg_id"]}">{r["name"]}</a>'
-        caption = profile_caption(r, viewer=viewer, show_compat=True)
+
+        # NEW: Показываем значки в мэтчах
+        caption = await profile_caption_async(r, viewer=viewer, show_compat=True, show_badges=True)
         caption += f"\n\n📨 Контакт: {contact}"
+
         try:
             await message.answer_photo(
                 photo=r["photo_id"], caption=caption,

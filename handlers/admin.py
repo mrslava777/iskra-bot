@@ -5,7 +5,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
-import database as db
+from .. import database as db
 from config import ADMIN_IDS
 
 router = Router()
