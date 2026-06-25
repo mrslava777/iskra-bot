@@ -1,7 +1,7 @@
 """Расчёт совместимости и оформление анкет."""
 from typing import Iterable
 
-from data.content import INTERESTS
+from ..data.content import INTERESTS
 
 
 def parse_interests(raw: str | None) -> list[int]:
