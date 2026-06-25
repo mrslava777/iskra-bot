@@ -64,11 +64,7 @@ def fire_level(rating: int) -> str:
 # ===== НОВАЯ ФУНКЦИЯ: Асинхронная версия profile_caption со значками =====
 
 async def profile_caption_async(user, *, viewer=None, show_compat: bool = False, show_badges: bool = True) -> str:
-    """Текст-карточка анкеты с поддержкой значков (асинхронная версия).
-
-    viewer — кто смотрит (для совместимости).
-    show_badges — показывать ли значки пользователя.
-    """
+    """Текст-карточка анкеты с поддержкой значков (асинхронная версия).\n\n    viewer — кто смотрит (для совместимости).\n    show_badges — показывать ли значки пользователя.\n    """
     from services.badges import get_user_badges, format_user_badges_inline
 
     name = user["name"] or "Без имени"
@@ -90,44 +86,33 @@ async def profile_caption_async(user, *, viewer=None, show_compat: bool = False,
 
     interests = interests_text(user["interests"])
     if interests != "—":
-        lines.append(f"
-🏷 {interests}")
+        lines.append(f"\n🏷 {interests}")
 
     if user["daily_a"]:
         from data.content import daily_question
 
         q = daily_question(user["daily_q"] or 0)
-        lines.append(f"
-💭 <i>{q}</i>
-— {user['daily_a']}")
+        lines.append(f"\n💭 <i>{q}</i>\n— {user['daily_a']}")
 
     if user["bio"]:
-        lines.append(f"
-📝 {user['bio']}")
+        lines.append(f"\n📝 {user['bio']}")
 
     fire = fire_level(user["rating"] or 0)
-    lines.append(f"
-{fire}  Симпатий: {user['rating'] or 0}")
+    lines.append(f"\n{fire}  Симпатий: {user['rating'] or 0}")
 
     if show_compat and viewer is not None:
         pct = compatibility(viewer["interests"], user["interests"])
         common = common_interests(viewer["interests"], user["interests"])
         bar = compat_bar(pct)
-        lines.append(f"
-💞 Совместимость: <b>{pct}%</b>
-{bar}")
+        lines.append(f"\n💞 Совместимость: <b>{pct}%</b>\n{bar}")
         if common:
             lines.append("🏷 Общее: " + ", ".join(common))
 
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 
 def profile_caption(user, *, viewer=None, show_compat: bool = False) -> str:
-    """Текст-карточка анкеты (синхронная версия, без значков — для обратной совместимости).
-
-    Для показа значков используй profile_caption_async.
-    """
+    """Текст-карточка анкеты (синхронная версия, без значков — для обратной совместимости).\n\n    Для показа значков используй profile_caption_async.\n    """
     name = user["name"] or "Без имени"
     age = user["age"]
     city = user["city"] or "—"
@@ -139,37 +124,29 @@ def profile_caption(user, *, viewer=None, show_compat: bool = False) -> str:
 
     interests = interests_text(user["interests"])
     if interests != "—":
-        lines.append(f"
-🏷 {interests}")
+        lines.append(f"\n🏷 {interests}")
 
     if user["daily_a"]:
         from data.content import daily_question
 
         q = daily_question(user["daily_q"] or 0)
-        lines.append(f"
-💭 <i>{q}</i>
-— {user['daily_a']}")
+        lines.append(f"\n💭 <i>{q}</i>\n— {user['daily_a']}")
 
     if user["bio"]:
-        lines.append(f"
-📝 {user['bio']}")
+        lines.append(f"\n📝 {user['bio']}")
 
     fire = fire_level(user["rating"] or 0)
-    lines.append(f"
-{fire}  Симпатий: {user['rating'] or 0}")
+    lines.append(f"\n{fire}  Симпатий: {user['rating'] or 0}")
 
     if show_compat and viewer is not None:
         pct = compatibility(viewer["interests"], user["interests"])
         common = common_interests(viewer["interests"], user["interests"])
         bar = compat_bar(pct)
-        lines.append(f"
-💞 Совместимость: <b>{pct}%</b>
-{bar}")
+        lines.append(f"\n💞 Совместимость: <b>{pct}%</b>\n{bar}")
         if common:
             lines.append("🏷 Общее: " + ", ".join(common))
 
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 
 def compat_bar(pct: int) -> str:
