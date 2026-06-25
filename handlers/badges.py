@@ -3,9 +3,9 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
-from .. import database as db
+import database as db
 from keyboards import MAIN_MENU, badges_kb, badge_detail_kb
-from ..services.badges import (
+from services.badges import (
     check_and_award,
     format_badge_card,
     format_badges_list,

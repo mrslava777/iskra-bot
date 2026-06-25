@@ -2,10 +2,10 @@
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, Message
 
-from .. import database as db
+import database as db
 from keyboards import MAIN_MENU, like_response_kb
-from ..services.matching import gender_emoji, profile_caption_async
-from ..services.badges import check_and_award, format_badge_card, get_user_badges, format_user_badges_inline
+from services.matching import gender_emoji, profile_caption_async
+from services.badges import check_and_award, format_badge_card, get_user_badges, format_user_badges_inline
 from .browse import _announce_match
 
 router = Router()

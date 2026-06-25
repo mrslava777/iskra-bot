@@ -3,7 +3,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from .. import database as db
+import database as db
 from config import ADMIN_IDS
 from keyboards import MAIN_MENU
 

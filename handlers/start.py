@@ -4,10 +4,10 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import database as db
+import database as db
 from keyboards import MAIN_MENU, extra_photos_kb, gender_kb, interests_kb, seeking_kb
-from ..services.matching import profile_caption
-from ..services.badges import check_and_award, format_badge_card
+from services.matching import profile_caption
+from services.badges import check_and_award, format_badge_card
 from states import Reg
 
 router = Router()

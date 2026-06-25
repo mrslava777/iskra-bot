@@ -3,16 +3,16 @@ from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import database as db
-from ..data.content import icebreaker
+import database as db
+from data.content import icebreaker
 from keyboards import MAIN_MENU, browse_kb
-from ..services.matching import (
+from services.matching import (
     common_interests,
     compatibility,
     gender_emoji,
     profile_caption_async,  # NEW: асинхронная версия со значками
 )
-from ..services.badges import check_and_award, format_badge_card
+from services.badges import check_and_award, format_badge_card
 
 router = Router()
 

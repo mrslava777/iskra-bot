@@ -6,8 +6,8 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import database as db
-from ..data.content import daily_question
+import database as db
+from data.content import daily_question
 from keyboards import (
     MAIN_MENU,
     confirm_delete_kb,
@@ -17,8 +17,8 @@ from keyboards import (
     seeking_kb,
     settings_kb,
 )
-from ..services.matching import parse_interests, profile_caption_async
-from ..services.badges import check_and_award, format_badge_card, get_user_badges, format_user_badges_inline
+from services.matching import parse_interests, profile_caption_async
+from services.badges import check_and_award, format_badge_card, get_user_badges, format_user_badges_inline
 from states import Edit, Verify
 
 import random
