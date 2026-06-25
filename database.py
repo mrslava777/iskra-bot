@@ -49,7 +49,9 @@ async def init_db() -> None:
             shown       INTEGER DEFAULT 0,
             min_age     INTEGER DEFAULT 18,
             max_age     INTEGER DEFAULT 99,
-            created_at  INTEGER
+            created_at  INTEGER,
+            verified    INTEGER DEFAULT 0,
+            anon_messages_count INTEGER DEFAULT 0  -- счётчик сообщений в анонимном чате
         );
 
         CREATE TABLE IF NOT EXISTS likes (
@@ -126,14 +128,29 @@ async def init_db() -> None:
             status     TEXT    DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
             created_at INTEGER
         );
+
+        -- ===== СИСТЕМА АРТЕФАКТОВ (ЗНАЧКИ) =====
+        CREATE TABLE IF NOT EXISTS user_badges (
+            tg_id       INTEGER NOT NULL,
+            badge_id    TEXT    NOT NULL,
+            awarded_at  INTEGER NOT NULL,
+            PRIMARY KEY (tg_id, badge_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_badges_user ON user_badges(tg_id);
         """
     )
-    # Миграция: добавляем поле verified если его нет
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0")
-        await db.commit()
-    except Exception:
-        pass  # уже существует
+    # Миграции: добавляем поля, которых может не быть в старых базах
+    migrations = [
+        ("ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0", "verified"),
+        ("ALTER TABLE users ADD COLUMN anon_messages_count INTEGER DEFAULT 0", "anon_messages_count"),
+    ]
+    for sql, col_name in migrations:
+        try:
+            await db.execute(sql)
+            await db.commit()
+        except Exception:
+            pass  # уже существует
     await db.commit()
 
 
@@ -180,6 +197,7 @@ async def delete_user(tg_id: int) -> None:
     await db.execute("DELETE FROM reports WHERE from_id = ? OR to_id = ?", (tg_id, tg_id))
     await db.execute("DELETE FROM user_photos WHERE tg_id = ?", (tg_id,))
     await db.execute("DELETE FROM verify_requests WHERE tg_id = ?", (tg_id,))
+    await db.execute("DELETE FROM user_badges WHERE tg_id = ?", (tg_id,))  -- NEW
     await db.execute("DELETE FROM users WHERE tg_id = ?", (tg_id,))
     await db.commit()
 
@@ -208,6 +226,16 @@ async def touch_activity(tg_id: int) -> None:
             (streak, now, tg_id),
         )
         await db.commit()
+
+
+async def increment_anon_messages(tg_id: int) -> None:
+    """Увеличивает счётчик сообщений в анонимном чате."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE users SET anon_messages_count = anon_messages_count + 1 WHERE tg_id = ?",
+        (tg_id,),
+    )
+    await db.commit()
 
 
 # ---------- Лента ----------
@@ -532,7 +560,7 @@ async def photo_count(tg_id: int) -> int:
         "SELECT COUNT(*) AS c FROM user_photos WHERE tg_id = ?", (tg_id,)
     )
     row = await cur.fetchone()
-    return row["c"]
+    return row["c"] if row else 0
 
 
 # ---------- Верификация ----------

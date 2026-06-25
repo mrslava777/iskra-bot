@@ -8,13 +8,14 @@ from aiogram.types import (
 
 from data.content import INTERESTS
 
-# Главное меню (reply-клавиатура)
+# Главное меню (reply-клавиатура) — ДОБАВЛЕНА КНОПКА АРТЕФАКТОВ
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔍 Смотреть анкеты")],
         [KeyboardButton(text="🎭 Свидание вслепую")],
         [KeyboardButton(text="💌 Кто меня лайкнул"), KeyboardButton(text="💞 Мэтчи")],
         [KeyboardButton(text="👤 Моя анкета"), KeyboardButton(text="🎯 Вопрос дня")],
+        [KeyboardButton(text="🏆 Артефакты")],
         [KeyboardButton(text="⚙️ Настройки")],
     ],
     resize_keyboard=True,
@@ -129,7 +130,6 @@ def profile_kb(has_daily: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🖼 Фото", callback_data="ed:photos"),
         ],
         [InlineKeyboardButton(text="🎯 Ответить на вопрос дня", callback_data="ed:daily")],
-        [InlineKeyboardButton(text="🎤 Голосовая визитка", callback_data="ed:voice")],
     ]
     if has_daily:
         rows.append([InlineKeyboardButton(text="🗑 Удалить ответ дня", callback_data="ed:del_daily")])
@@ -220,6 +220,7 @@ def support_kb() -> InlineKeyboardMarkup:
         ]
     )
 
+
 def support_reply_kb(tg_id: int, ticket_id: int | None = None) -> InlineKeyboardMarkup:
     cb = f"supreply:{tg_id}:{ticket_id}" if ticket_id else f"supreply:{tg_id}"
     return InlineKeyboardMarkup(
@@ -228,5 +229,26 @@ def support_reply_kb(tg_id: int, ticket_id: int | None = None) -> InlineKeyboard
                 text="💬 Ответить",
                 callback_data=cb,
             )],
+        ]
+    )
+
+
+# ===== НОВЫЕ КЛАВИАТУРЫ ДЛЯ АРТЕФАКТОВ =====
+
+def badges_kb(total: int) -> InlineKeyboardMarkup:
+    """Клавиатура раздела Артефакты."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📈 Прогресс", callback_data="bdg:progress")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="bdg:collection")],
+            [InlineKeyboardButton(text="↩️ В меню", callback_data="bdg:back")],
+        ]
+    )
+
+
+def badge_detail_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="↩️ Назад к коллекции", callback_data="bdg:collection")],
         ]
     )
