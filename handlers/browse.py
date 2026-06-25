@@ -121,18 +121,12 @@ async def _notify_liked(bot: Bot, from_id: int, to_id: int, with_message: bool) 
         return
     pct = compatibility(me["interests"], target["interests"])
     text = (
-        "💌 Кто-то проявил симпатию!
-"
-        f"Совместимость с этим человеком — <b>{pct}%</b>.
-"
+        "💌 Кто-то проявил симпатию!\n"
+        f"Совместимость с этим человеком — <b>{pct}%</b>.\n"
     )
     if with_message:
-        text += f"
-💬 Подсказка для первого сообщения:
-<i>{icebreaker(from_id + to_id)}</i>
-"
-    text += "
-Открой «💌 Кто меня лайкнул», чтобы посмотреть анкету."
+        text += f"\n💬 Подсказка для первого сообщения:\n<i>{icebreaker(from_id + to_id)}</i>\n"
+    text += "\nОткрой «💌 Кто меня лайкнул», чтобы посмотреть анкету."
     try:
         await bot.send_message(to_id, text)
     except Exception:
@@ -157,8 +151,7 @@ async def _announce_match(bot: Bot, a_id: int, b_id: int) -> None:
 
     for me, other in ((a, b), (b, a)):
         common = common_interests(a["interests"], b["interests"])
-        common_txt = ("
-🏷 Общее: " + ", ".join(common)) if common else ""
+        common_txt = ("\n🏷 Общее: " + ", ".join(common)) if common else ""
         if other["username"]:
             contact = f"@{other['username']}"
         else:
@@ -170,19 +163,12 @@ async def _announce_match(bot: Bot, a_id: int, b_id: int) -> None:
         badges_line = format_user_badges_inline(other_badges, max_show=5)
 
         text = (
-            f"🎉 <b>Это мэтч!</b> {gender_emoji(other['gender'])}
-
-"
+            f"🎉 <b>Это мэтч!</b> {gender_emoji(other['gender'])}\n\n"
             f"Вы понравились друг другу с <b>{other['name']}</b>, {other['age']}."
             f"{badges_line}"
-            f"{common_txt}
-
-"
-            f"📨 Контакт: {contact}
-
-"
-            f"💬 С чего начать:
-<i>{ice}</i>"
+            f"{common_txt}\n\n"
+            f"📨 Контакт: {contact}\n\n"
+            f"💬 С чего начать:\n<i>{ice}</i>"
         )
         try:
             await bot.send_photo(me["tg_id"], photo=other["photo_id"], caption=text)
