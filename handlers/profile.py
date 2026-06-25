@@ -17,7 +17,8 @@ from keyboards import (
     seeking_kb,
     settings_kb,
 )
-from services.matching import parse_interests, profile_caption
+from services.matching import parse_interests, profile_caption_async
+from services.badges import check_and_award, format_badge_card, get_user_badges, format_user_badges_inline
 from states import Edit, Verify
 
 import random
@@ -34,7 +35,10 @@ router = Router()
 
 
 async def _send_profile(message: Message, user) -> None:
-    caption = "👤 <b>Твоя анкета</b>\n\n" + profile_caption(user)
+    # NEW: Используем profile_caption_async для показа своих значков
+    caption = "👤 <b>Твоя анкета</b>
+
+" + await profile_caption_async(user, show_compat=False, show_badges=True)
     has_daily = bool(user["daily_a"])
     try:
         await message.answer_photo(
@@ -52,6 +56,12 @@ async def my_profile(message: Message, state: FSMContext) -> None:
     if not user or not user["name"]:
         await message.answer("У тебя ещё нет анкеты. Отправь /start.")
         return
+
+    # Проверяем значки при просмотре профиля
+    new_badges = await check_and_award(message.from_user.id)
+    for badge in new_badges:
+        await message.answer(format_badge_card(badge, is_new=True))
+
     await _send_profile(message, user)
 
 
@@ -122,11 +132,18 @@ async def on_edit(call: CallbackQuery, state: FSMContext) -> None:
         await state.update_data(verify_gesture=gesture_key, verify_gesture_text=gesture_text)
         await state.set_state(Verify.photo)
         text = (
-            "🎭 <b>Верификация профиля</b>\n\n"
-            "Запиши кружочек (видеосообщение) с жестом:\n"
-            f"<b>{gesture_text}</b>\n\n"
+            "🎭 <b>Верификация профиля</b>
+
+"
+            "Запиши кружочек (видеосообщение) с жестом:
+"
+            f"<b>{gesture_text}</b>
+
+"
             "Нажми на кнопку микрофона 🎙, переключись на видео 📹 "
-            "и отправь кружочек\n\n"
+            "и отправь кружочек
+
+"
             "Это подтвердит, что ты — реальный человек. "
             "После проверки администратором в анкете появится ✅"
         )
@@ -155,7 +172,9 @@ async def on_edit(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("🗑 Ответ на вопрос дня удалён", show_alert=True)
         user = await db.get_user(call.from_user.id)
         if user:
-            caption = "👤 <b>Твоя анкета</b>\n\n" + profile_caption(user)
+            caption = "👤 <b>Твоя анкета</b>
+
+" + await profile_caption_async(user, show_compat=False, show_badges=True)
             try:
                 await call.message.edit_caption(caption=caption, reply_markup=profile_kb(False))
             except Exception:
@@ -245,7 +264,10 @@ async def _ask_daily(message: Message, state: FSMContext) -> None:
     q = daily_question(di)
     await state.update_data(daily_idx=di)
     await state.set_state(Edit.daily)
-    await message.answer(f"🎯 <b>Вопрос дня:</b>\n{q}\n\nНапиши свой ответ (он появится в анкете):")
+    await message.answer(f"🎯 <b>Вопрос дня:</b>
+{q}
+
+Напиши свой ответ (он появится в анкете):")
 
 
 @router.message(F.text == "🎯 Вопрос дня")
@@ -281,7 +303,8 @@ async def settings(message: Message, state: FSMContext) -> None:
         await message.answer("Сначала создай анкету — /start.")
         return
     await message.answer(
-        "⚙️ <b>Настройки</b>\nУправляй видимостью и фильтрами:",
+        "⚙️ <b>Настройки</b>
+Управляй видимостью и фильтрами:",
         reply_markup=settings_kb(bool(user["active"])),
     )
 
@@ -314,7 +337,9 @@ async def on_setting(call: CallbackQuery, state: FSMContext) -> None:
     if action == "support":
         from keyboards import support_kb
         await call.message.answer(
-            "📩 <b>Поддержка</b>\n\nС чем у вас возникла проблема?",
+            "📩 <b>Поддержка</b>
+
+С чем у вас возникла проблема?",
             reply_markup=support_kb(),
         )
         await call.answer()
@@ -322,8 +347,11 @@ async def on_setting(call: CallbackQuery, state: FSMContext) -> None:
 
     if action == "delete":
         await call.message.answer(
-            "⚠️ <b>Ты уверен(а)?</b>\n\n"
-            "Будут удалены: анкета, лайки, мэтчи, жалобы и все связанные данные.\n"
+            "⚠️ <b>Ты уверен(а)?</b>
+
+"
+            "Будут удалены: анкета, лайки, мэтчи, жалобы, значки и все связанные данные.
+"
             "Это действие <b>необратимо</b>.",
             reply_markup=confirm_delete_kb(),
         )
@@ -338,7 +366,9 @@ async def on_setting(call: CallbackQuery, state: FSMContext) -> None:
         except Exception:
             pass
         await call.message.answer(
-            "✅ Аккаунт полностью удалён. Все данные стёрты.\n\n"
+            "✅ Аккаунт полностью удалён. Все данные стёрты.
+
+"
             "Если захочешь вернуться — просто отправь /start 🔥"
         )
         await call.answer()
@@ -382,7 +412,6 @@ async def photo_delete(call: CallbackQuery, state: FSMContext) -> None:
     if len(photos) <= 1:
         await call.answer("Нельзя удалить единственное фото!", show_alert=True)
         return
-    # Если удаляем первое — нужно обновить photo_id в users
     await db.remove_photo(call.from_user.id, pos)
     new_photos = await db.get_photos(call.from_user.id)
     if new_photos:
@@ -412,6 +441,12 @@ async def photo_add_receive(message: Message, state: FSMContext) -> None:
     photo_id = message.photo[-1].file_id
     pos = await db.add_photo(message.from_user.id, photo_id)
     new_count = count + 1
+
+    # Проверяем значок "Фотограф"
+    new_badges = await check_and_award(message.from_user.id)
+    for badge in new_badges:
+        await message.answer(format_badge_card(badge, is_new=True))
+
     await state.clear()
     await message.answer(
         f"✅ Фото добавлено! ({new_count}/5)",
@@ -430,12 +465,13 @@ async def verify_video_received(message: Message, state: FSMContext) -> None:
     await db.submit_verification(message.from_user.id, video_id, gesture)
     await state.clear()
     await message.answer(
-        "✅ Заявка на верификацию отправлена!\n"
-        "Администратор проверит твоё видео. Обычно это занимает несколько часов.\n"
+        "✅ Заявка на верификацию отправлена!
+"
+        "Администратор проверит твоё видео. Обычно это занимает несколько часов.
+"
         "Ты получишь уведомление о результате.",
         reply_markup=MAIN_MENU,
     )
-    # Уведомляем админов
     from config import ADMIN_IDS
     from keyboards import verify_kb
     user = await db.get_user(message.from_user.id)
@@ -443,17 +479,20 @@ async def verify_video_received(message: Message, state: FSMContext) -> None:
     username = f"@{user['username']}" if user and user["username"] else "—"
     for admin_id in ADMIN_IDS:
         try:
-            await message.bot.send_video_note(
-                admin_id,
-                video_note=video_id,
-            )
+            await message.bot.send_video_note(admin_id, video_note=video_id)
             await message.bot.send_message(
                 admin_id,
                 text=(
-                    f"🎭 <b>Заявка на верификацию</b>\n\n"
-                    f"👤 {name} ({username})\n"
-                    f"🆔 {message.from_user.id}\n"
-                    f"Жест: {gesture_text}\n\n"
+                    f"🎭 <b>Заявка на верификацию</b>
+
+"
+                    f"👤 {name} ({username})
+"
+                    f"🆔 {message.from_user.id}
+"
+                    f"Жест: {gesture_text}
+
+"
                     "Проверь и одобри/отклони:"
                 ),
                 reply_markup=verify_kb(message.from_user.id),
@@ -465,7 +504,8 @@ async def verify_video_received(message: Message, state: FSMContext) -> None:
 @router.message(Verify.photo)
 async def verify_video_invalid(message: Message) -> None:
     await message.answer(
-        "Нужен именно кружочек (видеосообщение) 🎥\n"
+        "Нужен именно кружочек (видеосообщение) 🎥
+"
         "Нажми на кнопку микрофона 🎙, переключись на видео 📹 и отправь кружочек."
     )
 
@@ -478,25 +518,34 @@ async def on_verify_decision(call: CallbackQuery) -> None:
     if action == "approve":
         await db.approve_verification(tg_id)
         await call.message.edit_text(
-            text=call.message.text + "\n\n✅ <b>ОДОБРЕНО</b>",
+            text=call.message.text + "
+
+✅ <b>ОДОБРЕНО</b>",
             reply_markup=None,
         )
         try:
             await call.bot.send_message(
                 tg_id, "✅ Поздравляем! Твой профиль верифицирован! Теперь в анкете видна ✅"
             )
+            # Проверяем значок "Проверенный"
+            new_badges = await check_and_award(tg_id)
+            for badge in new_badges:
+                await call.bot.send_message(tg_id, format_badge_card(badge, is_new=True))
         except Exception:
             pass
     elif action == "reject":
         await db.reject_verification(tg_id)
         await call.message.edit_text(
-            text=call.message.text + "\n\n❌ <b>ОТКЛОНЕНО</b>",
+            text=call.message.text + "
+
+❌ <b>ОТКЛОНЕНО</b>",
             reply_markup=None,
         )
         try:
             await call.bot.send_message(
                 tg_id,
-                "❌ К сожалению, верификация не пройдена.\n"
+                "❌ К сожалению, верификация не пройдена.
+"
                 "Убедись, что на кружочке хорошо видно твоё лицо и жест, и попробуй снова."
             )
         except Exception:

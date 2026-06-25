@@ -10,8 +10,9 @@ from services.matching import (
     common_interests,
     compatibility,
     gender_emoji,
-    profile_caption,
+    profile_caption_async,  # NEW: асинхронная версия со значками
 )
+from services.badges import check_and_award, format_badge_card
 
 router = Router()
 
@@ -26,7 +27,10 @@ async def show_next(message: Message, viewer_id: int) -> None:
         return
     viewer = await db.get_user(viewer_id)
     await db.mark_shown(cand["tg_id"])
-    caption = profile_caption(cand, viewer=viewer, show_compat=True)
+
+    # NEW: Используем profile_caption_async для показа значков
+    caption = await profile_caption_async(cand, viewer=viewer, show_compat=True, show_badges=True)
+
     extra = await db.photo_count(cand["tg_id"]) > 1
     kb = browse_kb(cand["tg_id"], has_extra_photos=extra)
     try:
@@ -81,6 +85,12 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
 
     if action == "report":
         await db.add_report(viewer_id, target_id)
+
+        # Проверяем значки после жалобы
+        new_badges = await check_and_award(viewer_id)
+        for badge in new_badges:
+            await call.message.answer(format_badge_card(badge, is_new=True))
+
         await call.answer("Спасибо, жалоба отправлена 🚩")
         await show_next(call.message, viewer_id)
         return
@@ -92,6 +102,11 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
         await _notify_liked(bot, viewer_id, target_id, with_message=(action == "msglike"))
     if matched:
         await _announce_match(bot, viewer_id, target_id)
+
+    # Проверяем значки после лайка/мэтча
+    new_badges = await check_and_award(viewer_id)
+    for badge in new_badges:
+        await call.message.answer(format_badge_card(badge, is_new=True))
 
     await call.answer("❤️" if is_like else "👎")
     await show_next(call.message, viewer_id)
@@ -106,12 +121,18 @@ async def _notify_liked(bot: Bot, from_id: int, to_id: int, with_message: bool) 
         return
     pct = compatibility(me["interests"], target["interests"])
     text = (
-        "💌 Кто-то проявил симпатию!\n"
-        f"Совместимость с этим человеком — <b>{pct}%</b>.\n"
+        "💌 Кто-то проявил симпатию!
+"
+        f"Совместимость с этим человеком — <b>{pct}%</b>.
+"
     )
     if with_message:
-        text += f"\n💬 Подсказка для первого сообщения:\n<i>{icebreaker(from_id + to_id)}</i>\n"
-    text += "\nОткрой «💌 Кто меня лайкнул», чтобы посмотреть анкету."
+        text += f"
+💬 Подсказка для первого сообщения:
+<i>{icebreaker(from_id + to_id)}</i>
+"
+    text += "
+Открой «💌 Кто меня лайкнул», чтобы посмотреть анкету."
     try:
         await bot.send_message(to_id, text)
     except Exception:
@@ -124,19 +145,44 @@ async def _announce_match(bot: Bot, a_id: int, b_id: int) -> None:
     if not a or not b:
         return
     ice = icebreaker(a_id + b_id)
+
+    # Проверяем значки для обоих при мэтче
+    for uid in (a_id, b_id):
+        new_badges = await check_and_award(uid)
+        for badge in new_badges:
+            try:
+                await bot.send_message(uid, format_badge_card(badge, is_new=True))
+            except Exception:
+                pass
+
     for me, other in ((a, b), (b, a)):
         common = common_interests(a["interests"], b["interests"])
-        common_txt = ("\n🏷 Общее: " + ", ".join(common)) if common else ""
+        common_txt = ("
+🏷 Общее: " + ", ".join(common)) if common else ""
         if other["username"]:
             contact = f"@{other['username']}"
         else:
             contact = f'<a href="tg://user?id={other["tg_id"]}">{other["name"]}</a>'
+
+        # NEW: Показываем значки в мэтче
+        from services.badges import get_user_badges, format_user_badges_inline
+        other_badges = await get_user_badges(other["tg_id"])
+        badges_line = format_user_badges_inline(other_badges, max_show=5)
+
         text = (
-            f"🎉 <b>Это мэтч!</b> {gender_emoji(other['gender'])}\n\n"
+            f"🎉 <b>Это мэтч!</b> {gender_emoji(other['gender'])}
+
+"
             f"Вы понравились друг другу с <b>{other['name']}</b>, {other['age']}."
-            f"{common_txt}\n\n"
-            f"📨 Контакт: {contact}\n\n"
-            f"💬 С чего начать:\n<i>{ice}</i>"
+            f"{badges_line}"
+            f"{common_txt}
+
+"
+            f"📨 Контакт: {contact}
+
+"
+            f"💬 С чего начать:
+<i>{ice}</i>"
         )
         try:
             await bot.send_photo(me["tg_id"], photo=other["photo_id"], caption=text)

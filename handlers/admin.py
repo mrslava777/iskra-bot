@@ -26,6 +26,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="👥 Пользователи", callback_data="adm:users")],
             [InlineKeyboardButton(text="🚩 Жалобы", callback_data="adm:reports")],
             [InlineKeyboardButton(text="✅ Верификация", callback_data="adm:verified")],
+            [InlineKeyboardButton(text="🏆 Артефакты", callback_data="adm:badges")],
             [InlineKeyboardButton(text="🔨 Бан / Разбан", callback_data="adm:ban")],
             [InlineKeyboardButton(text="📣 Рассылка", callback_data="adm:broadcast")],
         ]
@@ -46,7 +47,9 @@ async def cmd_admin(message: Message) -> None:
     if not is_admin(message.from_user.id):
         return
     await message.answer(
-        "🛡 <b>Админ-панель Искра</b>\n\nВыбери раздел:",
+        "🛡 <b>Админ-панель Искра</b>
+
+Выбери раздел:",
         reply_markup=admin_menu_kb(),
     )
 
@@ -56,7 +59,9 @@ async def cb_admin_menu(cq: CallbackQuery) -> None:
     if not is_admin(cq.from_user.id):
         return await cq.answer("⛔")
     await cq.message.edit_text(
-        "🛡 <b>Админ-панель Искра</b>\n\nВыбери раздел:",
+        "🛡 <b>Админ-панель Искра</b>
+
+Выбери раздел:",
         reply_markup=admin_menu_kb(),
     )
 
@@ -67,21 +72,32 @@ async def cb_stats(cq: CallbackQuery) -> None:
     if not is_admin(cq.from_user.id):
         return await cq.answer("⛔")
     s = await db.stats()
-    # Дополним расширенной статистикой
     ext = await db.admin_extended_stats()
     now = int(time.time())
     today_start = now - (now % 86400)
 
     text = (
-        "📊 <b>Статистика Искра</b>\n\n"
-        f"👥 Всего пользователей: <b>{s['users']}</b>\n"
-        f"🟢 Активных: <b>{s['active']}</b>\n"
-        f"🆕 Новых сегодня: <b>{ext['new_today']}</b>\n"
-        f"🚫 Забанено: <b>{ext['banned']}</b>\n\n"
-        f"❤️ Лайков: <b>{s['likes']}</b>\n"
-        f"💞 Мэтчей: <b>{s['matches']}</b>\n"
-        f"🚩 Жалоб: <b>{ext['reports']}</b>\n\n"
-        f"👨 Парней: <b>{ext['males']}</b>\n"
+        "📊 <b>Статистика Искра</b>
+
+"
+        f"👥 Всего пользователей: <b>{s['users']}</b>
+"
+        f"🟢 Активных: <b>{s['active']}</b>
+"
+        f"🆕 Новых сегодня: <b>{ext['new_today']}</b>
+"
+        f"🚫 Забанено: <b>{ext['banned']}</b>
+
+"
+        f"❤️ Лайков: <b>{s['likes']}</b>
+"
+        f"💞 Мэтчей: <b>{s['matches']}</b>
+"
+        f"🚩 Жалоб: <b>{ext['reports']}</b>
+
+"
+        f"👨 Парней: <b>{ext['males']}</b>
+"
         f"👩 Девушек: <b>{ext['females']}</b>"
     )
     await cq.message.edit_text(text, reply_markup=back_kb())
@@ -97,14 +113,16 @@ async def cb_users(cq: CallbackQuery) -> None:
         return await cq.message.edit_text(
             "Пользователей пока нет.", reply_markup=back_kb()
         )
-    lines = ["👥 <b>Последние 20 пользователей:</b>\n"]
+    lines = ["👥 <b>Последние 20 пользователей:</b>
+"]
     for u in users:
         status = "🚫" if u["is_banned"] else ("🟢" if u["active"] else "🔴")
         uname = f"@{u['username']}" if u["username"] else f"ID:{u['tg_id']}"
         lines.append(
             f"{status} <b>{u['name']}</b>, {u['age']} — {uname}"
         )
-    await cq.message.edit_text("\n".join(lines), reply_markup=back_kb())
+    await cq.message.edit_text("
+".join(lines), reply_markup=back_kb())
 
 
 # ── Жалобы ─────────────────────────────────────────────────────────
@@ -117,19 +135,18 @@ async def cb_reports(cq: CallbackQuery) -> None:
         return await cq.message.edit_text(
             "🚩 Жалоб нет 🎉", reply_markup=back_kb()
         )
-    lines = ["🚩 <b>Последние жалобы:</b>\n"]
+    lines = ["🚩 <b>Последние жалобы:</b>
+"]
     for r in reports:
         target = await db.get_user(r["to_id"])
         name = target["name"] if target else "удалён"
         banned = " 🚫BANNED" if target and target["is_banned"] else ""
         count = r["report_count"]
-        btn_label = f"🔨 Бан {r['to_id']}"
         lines.append(
             f"• <b>{name}</b> (ID: <code>{r['to_id']}</code>) — "
             f"{count} жалоб(ы){banned}"
         )
 
-    # Добавим инлайн-кнопки для бана каждого
     buttons = []
     for r in reports:
         target = await db.get_user(r["to_id"])
@@ -146,10 +163,55 @@ async def cb_reports(cq: CallbackQuery) -> None:
         [InlineKeyboardButton(text="↩️ Назад", callback_data="adm:menu")]
     )
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await cq.message.edit_text("\n".join(lines), reply_markup=kb)
+    await cq.message.edit_text("
+".join(lines), reply_markup=kb)
 
 
-# ── Бан / Разбан (инструкция) ──────────────────────────────────────
+# ── Артефакты (статистика по значкам) ──────────────────────────────
+@router.callback_query(F.data == "adm:badges")
+async def cb_badges_stats(cq: CallbackQuery) -> None:
+    if not is_admin(cq.from_user.id):
+        return await cq.answer("⛔")
+    conn = await db.get_db()
+
+    # Статистика по каждому значку
+    from data.badges import BADGES, RARITY_EMOJI, rarity_label
+    lines = ["🏆 <b>Статистика Артефактов</b>
+"]
+
+    for badge in BADGES:
+        cur = await conn.execute(
+            "SELECT COUNT(*) c FROM user_badges WHERE badge_id = ?",
+            (badge["id"],)
+        )
+        row = await cur.fetchone()
+        count = row["c"] if row else 0
+        rarity_emoji = RARITY_EMOJI.get(badge["rarity"], "⚪")
+        lines.append(
+            f"{badge['icon']} <b>{badge['name']}</b> — {count} чел. "
+            f"({rarity_emoji} {rarity_label(badge['rarity'])}"
+        )
+
+    # Топ-10 по количеству значков
+    cur = await conn.execute(
+        """
+        SELECT tg_id, COUNT(*) as cnt FROM user_badges 
+        GROUP BY tg_id ORDER BY cnt DESC LIMIT 10
+        """
+    )
+    top = await cur.fetchall()
+    if top:
+        lines.append("
+<b>Топ-10 коллекционеров:</b>")
+        for i, r in enumerate(top, 1):
+            user = await db.get_user(r["tg_id"])
+            name = user["name"] if user else f"ID:{r['tg_id']}"
+            lines.append(f"{i}. <b>{name}</b> — {r['cnt']} значков")
+
+    await cq.message.edit_text("
+".join(lines), reply_markup=back_kb())
+
+
 # ── Верификация ────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm:verified")
 async def cb_verified(cq: CallbackQuery) -> None:
@@ -164,7 +226,8 @@ async def cb_verified(cq: CallbackQuery) -> None:
         return await cq.message.edit_text(
             "✅ Верифицированных пользователей пока нет.", reply_markup=back_kb()
         )
-    lines = ["✅ <b>Верифицированные пользователи:</b>\n"]
+    lines = ["✅ <b>Верифицированные пользователи:</b>
+"]
     buttons = []
     for r in rows:
         uname = f"@{r['username']}" if r["username"] else f"ID:{r['tg_id']}"
@@ -177,10 +240,12 @@ async def cb_verified(cq: CallbackQuery) -> None:
                 )
             ]
         )
-    lines.append(f"\nИли: <code>/unverify 123456789</code>")
+    lines.append(f"
+Или: <code>/unverify 123456789</code>")
     buttons.append([InlineKeyboardButton(text="↩️ Назад", callback_data="adm:menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await cq.message.edit_text("\n".join(lines), reply_markup=kb)
+    await cq.message.edit_text("
+".join(lines), reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("adm:unverify:"))
@@ -198,7 +263,6 @@ async def cb_do_unverify(cq: CallbackQuery) -> None:
         await cq.bot.send_message(tg_id, "ℹ️ Ваша верификация была снята администратором.")
     except Exception:
         pass
-    # Обновим список
     await cb_verified(cq)
 
 
@@ -208,10 +272,16 @@ async def cb_ban_help(cq: CallbackQuery) -> None:
     if not is_admin(cq.from_user.id):
         return await cq.answer("⛔")
     text = (
-        "🔨 <b>Бан / Разбан</b>\n\n"
-        "Отправь команду:\n"
-        "<code>/ban 123456789</code> — забанить\n"
-        "<code>/unban 123456789</code> — разбанить\n\n"
+        "🔨 <b>Бан / Разбан</b>
+
+"
+        "Отправь команду:
+"
+        "<code>/ban 123456789</code> — забанить
+"
+        "<code>/unban 123456789</code> — разбанить
+
+"
         "Или нажми кнопку бана в разделе «Жалобы»."
     )
     await cq.message.edit_text(text, reply_markup=back_kb())
@@ -227,7 +297,6 @@ async def cb_do_ban(cq: CallbackQuery) -> None:
     user = await db.get_user(tg_id)
     name = user["name"] if user else "?"
     await cq.answer(f"✅ {name} забанен")
-    # Обновим список жалоб
     await cb_reports(cq)
 
 
@@ -291,9 +360,14 @@ async def cb_broadcast_help(cq: CallbackQuery) -> None:
     if not is_admin(cq.from_user.id):
         return await cq.answer("⛔")
     text = (
-        "📣 <b>Рассылка</b>\n\n"
-        "Отправь команду:\n"
-        "<code>/broadcast Текст сообщения</code>\n\n"
+        "📣 <b>Рассылка</b>
+
+"
+        "Отправь команду:
+"
+        "<code>/broadcast Текст сообщения</code>
+
+"
         "Сообщение получат все активные пользователи."
     )
     await cq.message.edit_text(text, reply_markup=back_kb())
@@ -319,6 +393,9 @@ async def cmd_broadcast(message: Message) -> None:
         except Exception:
             failed += 1
     await status.edit_text(
-        f"📣 <b>Рассылка завершена</b>\n\n"
-        f"✅ Доставлено: {sent}\n❌ Ошибок: {failed}"
+        f"📣 <b>Рассылка завершена</b>
+
+"
+        f"✅ Доставлено: {sent}
+❌ Ошибок: {failed}"
     )

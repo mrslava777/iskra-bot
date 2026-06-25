@@ -18,7 +18,9 @@ CATEGORIES = {
 }
 
 SUPPORT_INTRO = (
-    "📩 <b>Поддержка</b>\n\n"
+    "📩 <b>Поддержка</b>
+
+"
     "С чем у вас возникла проблема?"
 )
 
@@ -40,9 +42,14 @@ async def on_support_category(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(support_cat=cat, support_label=label)
     await state.set_state(Support.message)
     await call.message.edit_text(
-        f"{label}\n\n"
-        "Опишите вашу проблему одним сообщением.\n"
-        "Можете прикрепить скриншот 📷\n\n"
+        f"{label}
+
+"
+        "Опишите вашу проблему одним сообщением.
+"
+        "Можете прикрепить скриншот 📷
+
+"
         "Для отмены — /cancel"
     )
     await call.answer()
@@ -91,11 +98,18 @@ async def _process_ticket(
     ticket_id = await db.create_ticket(uid, cat_key, text[:1000], photo_id)
 
     ticket_text = (
-        f"📩 <b>Тикет #{ticket_id}</b>\n\n"
-        f"<b>Категория:</b> {cat_label}\n"
-        f"<b>Пользователь:</b> {name} ({username})\n"
-        f"<b>ID:</b> <code>{uid}</code>\n\n"
-        f"<b>Сообщение:</b>\n{text[:1000]}"
+        f"📩 <b>Тикет #{ticket_id}</b>
+
+"
+        f"<b>Категория:</b> {cat_label}
+"
+        f"<b>Пользователь:</b> {name} ({username})
+"
+        f"<b>ID:</b> <code>{uid}</code>
+
+"
+        f"<b>Сообщение:</b>
+{text[:1000]}"
     )
 
     for admin_id in ADMIN_IDS:
@@ -114,7 +128,9 @@ async def _process_ticket(
             pass
 
     await message.answer(
-        "✅ <b>Обращение отправлено!</b>\n\n"
+        "✅ <b>Обращение отправлено!</b>
+
+"
         "Администратор рассмотрит его в ближайшее время. "
         "Ответ придёт в этот чат.",
         reply_markup=MAIN_MENU,
@@ -134,7 +150,8 @@ async def on_admin_reply(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(reply_to_user=tg_id, reply_ticket_id=ticket_id)
     await state.set_state(Support.admin_reply)
     await call.message.answer(
-        f"✏️ Напиши ответ пользователю <code>{tg_id}</code>:\n"
+        f"✏️ Напиши ответ пользователю <code>{tg_id}</code>:
+"
         "(или /cancel для отмены)"
     )
     await call.answer()
@@ -159,7 +176,9 @@ async def admin_reply_send(message: Message, state: FSMContext) -> None:
     try:
         await message.bot.send_message(
             tg_id,
-            f"💬 <b>Ответ от поддержки:</b>\n\n{reply_text}",
+            f"💬 <b>Ответ от поддержки:</b>
+
+{reply_text}",
         )
         # Обновляем статус тикета в БД → 'replied'
         if ticket_id:

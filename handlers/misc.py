@@ -16,10 +16,14 @@ async def cmd_stats(message: Message) -> None:
         return
     s = await db.stats()
     await message.answer(
-        "📊 <b>Статистика Искры</b>\n"
-        f"👥 Пользователей: {s['users']}\n"
-        f"🟢 Активных: {s['active']}\n"
-        f"❤️ Лайков: {s['likes']}\n"
+        "📊 <b>Статистика Искры</b>
+"
+        f"👥 Пользователей: {s['users']}
+"
+        f"🟢 Активных: {s['active']}
+"
+        f"❤️ Лайков: {s['likes']}
+"
         f"💞 Мэтчей: {s['matches']}"
     )
 

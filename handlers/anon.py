@@ -22,9 +22,13 @@ BTN = "🎭 Свидание вслепую"
 STOP_BTN = "⏹ Завершить свидание"
 
 INTRO = (
-    "🎭 <b>Свидание вслепую</b>\n\n"
+    "🎭 <b>Свидание вслепую</b>
+
+"
     "Я соединю тебя с другим человеком — <b>анонимно</b>. "
-    "Имя, фото и анкета скрыты: вы просто общаетесь вживую.\n\n"
+    "Имя, фото и анкета скрыты: вы просто общаетесь вживую.
+
+"
     "Понравится разговор — жмите «🎭 Открыться». Если согласятся оба, "
     "вы увидите анкеты друг друга и попадёте в мэтчи 💞"
 )
@@ -41,7 +45,8 @@ async def _notify_matched(bot: Bot, uid: int) -> None:
     try:
         await bot.send_message(
             uid,
-            "✨ <b>Собеседник найден!</b>\nОбщайтесь анонимно — просто пиши сюда, "
+            "✨ <b>Собеседник найден!</b>
+Общайтесь анонимно — просто пиши сюда, "
             "я всё передам. Можно отправлять и фото, и голосовые 🙂",
             reply_markup=ANON_CHAT_MENU,
         )
@@ -190,6 +195,10 @@ async def relay(message: Message, bot: Bot) -> None:
     partner = await db.anon_active_partner(message.from_user.id)
     if partner is None:
         return
+
+    # NEW: Увеличиваем счётчик сообщений в анонимном чате
+    await db.increment_anon_messages(message.from_user.id)
+
     try:
         await bot.copy_message(
             chat_id=partner,

@@ -7,14 +7,19 @@ from aiogram.types import CallbackQuery, Message
 import database as db
 from keyboards import MAIN_MENU, extra_photos_kb, gender_kb, interests_kb, seeking_kb
 from services.matching import profile_caption
+from services.badges import check_and_award, format_badge_card
 from states import Reg
 
 router = Router()
 
 WELCOME = (
-    "🔥 <b>Искра</b> — бот знакомств, где важнее не только фото.\n\n"
+    "🔥 <b>Искра</b> — бот знакомств, где важнее не только фото.
+
+"
     "Здесь мы считаем <b>совместимость по интересам</b>, подсказываем, "
-    "с чего начать разговор, и каждый день задаём новый вопрос для анкеты.\n\n"
+    "с чего начать разговор, и каждый день задаём новый вопрос для анкеты.
+
+"
     "Давай создадим твою анкету за минуту. Как тебя зовут?"
 )
 
@@ -89,7 +94,7 @@ async def reg_city(message: Message, state: FSMContext) -> None:
 async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
     payload = call.data.split(":")[1]
     data = await state.get_data()
-    sel: list[int] = data.get("sel_interests", [])
+    sel = data.get("sel_interests", [])
 
     if payload == "done":
         await call.message.edit_text(
@@ -145,7 +150,8 @@ async def reg_photo(message: Message, state: FSMContext) -> None:
     await state.update_data(extra_count=0)
     await state.set_state(Reg.extra_photos)
     await message.answer(
-        "📸 Хочешь добавить ещё фото? (до 4 дополнительных)\n"
+        "📸 Хочешь добавить ещё фото? (до 4 дополнительных)
+"
         "Просто отправь фото или нажми «Пропустить».",
         reply_markup=extra_photos_kb(),
     )
@@ -172,7 +178,8 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
     remaining = 4 - count
     if remaining > 0:
         await message.answer(
-            f"✅ Фото добавлено! ({count + 1}/5)\nМожно ещё {remaining} шт. или нажми «Пропустить».",
+            f"✅ Фото добавлено! ({count + 1}/5)
+Можно ещё {remaining} шт. или нажми «Пропустить».",
             reply_markup=extra_photos_kb(),
         )
     else:
@@ -184,11 +191,23 @@ async def _finish_registration(message: Message, user_id: int, state: FSMContext
     await state.clear()
     user = await db.get_user(user_id)
     n_photos = await db.photo_count(user_id)
-    photo_note = f"\n📸 Фото в анкете: {n_photos}" if n_photos > 1 else ""
+    photo_note = f"
+📸 Фото в анкете: {n_photos}" if n_photos > 1 else ""
+
+    # Проверяем значки при завершении регистрации
+    new_badges = await check_and_award(user_id)
+
     await message.answer_photo(
         photo=user["photo_id"],
-        caption=f"✨ Готово! Вот твоя анкета:\n\n{profile_caption(user)}{photo_note}",
+        caption=f"✨ Готово! Вот твоя анкета:
+
+{profile_caption(user)}{photo_note}",
     )
+
+    # Показываем новые значки
+    for badge in new_badges:
+        await message.answer(format_badge_card(badge, is_new=True))
+
     await message.answer(
         "Поехали искать! Жми «🔍 Смотреть анкеты».", reply_markup=MAIN_MENU
     )
@@ -207,13 +226,24 @@ async def reg_photo_invalid(message: Message) -> None:
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     await message.answer(
-        "🔥 <b>Искра</b> — знакомства с умом.\n\n"
-        "• 🔍 Смотреть анкеты — лента с расчётом совместимости\n"
-        "• 🎭 Свидание вслепую — анонимный чат вживую; откроетесь оба — будет мэтч\n"
-        "• 💌 Кто меня лайкнул — входящие симпатии\n"
-        "• 💞 Мэтчи — взаимные лайки и контакты\n"
-        "• 🎯 Вопрос дня — добавь изюминку в анкету\n"
-        "• ⚙️ Настройки — фильтры и видимость\n\n"
-        "Команды: /start /myprofile /help /stop (выйти со свидания)",
+        "🔥 <b>Искра</b> — знакомства с умом.
+
+"
+        "• 🔍 Смотреть анкеты — лента с расчётом совместимости
+"
+        "• 🎭 Свидание вслепую — анонимный чат вживую; откроетесь оба — будет мэтч
+"
+        "• 💌 Кто меня лайкнул — входящие симпатии
+"
+        "• 💞 Мэтчи — взаимные лайки и контакты
+"
+        "• 🎯 Вопрос дня — добавь изюминку в анкету
+"
+        "• 🏆 Артефакты — коллекционные значки за активность
+"
+        "• ⚙️ Настройки — фильтры и видимость
+
+"
+        "Команды: /start /myprofile /badges /help /stop (выйти со свидания)",
         reply_markup=MAIN_MENU,
     )
