@@ -1,7 +1,4 @@
-"""HTTP-сервер: healthcheck + Admin API для веб-панели.
-
-Поднимается в том же event loop, что и поллинг бота.
-"""
+"""HTTP-сервер: healthcheck + Admin API для веб-панели.\n\nПоднимается в том же event loop, что и поллинг бота.\n"""
 import asyncio
 import json
 import logging
@@ -98,14 +95,11 @@ async def api_users(request: web.Request) -> web.Response:
     conn = await db.get_db()
     if search:
         cur = await conn.execute(
-            """SELECT * FROM users WHERE name IS NOT NULL
-               AND (name LIKE ? OR username LIKE ? OR CAST(tg_id AS TEXT) LIKE ?)
-               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            """SELECT * FROM users WHERE name IS NOT NULL\n               AND (name LIKE ? OR username LIKE ? OR CAST(tg_id AS TEXT) LIKE ?)\n               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
             (f"%{search}%", f"%{search}%", f"%{search}%", limit, offset),
         )
         count_cur = await conn.execute(
-            """SELECT COUNT(*) c FROM users WHERE name IS NOT NULL
-               AND (name LIKE ? OR username LIKE ? OR CAST(tg_id AS TEXT) LIKE ?)""",
+            """SELECT COUNT(*) c FROM users WHERE name IS NOT NULL\n               AND (name LIKE ? OR username LIKE ? OR CAST(tg_id AS TEXT) LIKE ?)""",
             (f"%{search}%", f"%{search}%", f"%{search}%"),
         )
     else:
@@ -154,13 +148,7 @@ async def api_reports(request: web.Request) -> web.Response:
         return _api_error("unauthorized")
     conn = await db.get_db()
     cur = await conn.execute(
-        """SELECT r.to_id, COUNT(*) AS report_count, MAX(r.created_at) AS last_report,
-                  u.name, u.username, u.is_banned
-           FROM reports r
-           LEFT JOIN users u ON u.tg_id = r.to_id
-           GROUP BY r.to_id
-           ORDER BY last_report DESC
-           LIMIT 50"""
+        """SELECT r.to_id, COUNT(*) AS report_count, MAX(r.created_at) AS last_report,\n                  u.name, u.username, u.is_banned\n           FROM reports r\n           LEFT JOIN users u ON u.tg_id = r.to_id\n           GROUP BY r.to_id\n           ORDER BY last_report DESC\n           LIMIT 50"""
     )
     rows = await cur.fetchall()
     reports = []
