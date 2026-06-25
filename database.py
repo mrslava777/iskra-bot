@@ -27,118 +27,7 @@ async def get_db() -> aiosqlite.Connection:
 async def init_db() -> None:
     db = await get_db()
     await db.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            tg_id       INTEGER PRIMARY KEY,
-            username    TEXT,
-            name        TEXT,
-            age         INTEGER,
-            gender      TEXT,            -- 'm' / 'f'
-            seeking     TEXT,            -- 'm' / 'f' / 'any'
-            city        TEXT,
-            bio         TEXT,
-            photo_id    TEXT,
-            interests   TEXT DEFAULT '', -- индексы интересов через запятую
-            daily_q     INTEGER,         -- индекс дня, на который отвечали
-            daily_a     TEXT,            -- ответ на вопрос дня
-            active      INTEGER DEFAULT 1,
-            is_banned   INTEGER DEFAULT 0,
-            streak      INTEGER DEFAULT 0,
-            last_active INTEGER DEFAULT 0,
-            rating      INTEGER DEFAULT 0, -- сколько лайков получил всего
-            shown       INTEGER DEFAULT 0,
-            min_age     INTEGER DEFAULT 18,
-            max_age     INTEGER DEFAULT 99,
-            created_at  INTEGER,
-            verified    INTEGER DEFAULT 0,
-            anon_messages_count INTEGER DEFAULT 0  -- счётчик сообщений в анонимном чате
-        );
-
-        CREATE TABLE IF NOT EXISTS likes (
-            from_id  INTEGER,
-            to_id    INTEGER,
-            is_like  INTEGER,   -- 1 лайк, 0 дизлайк
-            seen     INTEGER DEFAULT 0,
-            created_at INTEGER,
-            PRIMARY KEY (from_id, to_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_likes_to ON likes(to_id, is_like);
-
-        CREATE TABLE IF NOT EXISTS matches (
-            a_id INTEGER,
-            b_id INTEGER,
-            created_at INTEGER,
-            PRIMARY KEY (a_id, b_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS reports (
-            from_id INTEGER,
-            to_id   INTEGER,
-            created_at INTEGER
-        );
-
-        -- Свидание вслепую: очередь ожидания и активные анонимные сессии
-        CREATE TABLE IF NOT EXISTS anon_queue (
-            tg_id      INTEGER PRIMARY KEY,
-            created_at INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS anon_sessions (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            a_id       INTEGER,
-            b_id       INTEGER,
-            a_reveal   INTEGER DEFAULT 0,
-            b_reveal   INTEGER DEFAULT 0,
-            ended      INTEGER DEFAULT 0,
-            created_at INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_anon_active ON anon_sessions(ended);
-
-        -- Тикеты поддержки
-        CREATE TABLE IF NOT EXISTS support_tickets (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            tg_id      INTEGER NOT NULL,
-            category   TEXT    NOT NULL,
-            message    TEXT    NOT NULL,
-            photo_id   TEXT,
-            status     TEXT    DEFAULT 'open',  -- open / replied / closed
-            admin_reply TEXT,
-            created_at INTEGER,
-            replied_at INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status);
-
-        -- Дополнительные фото пользователя (до 5 шт.)
-        CREATE TABLE IF NOT EXISTS user_photos (
-            tg_id      INTEGER NOT NULL,
-            photo_id   TEXT    NOT NULL,
-            position   INTEGER NOT NULL DEFAULT 0,  -- 0..4
-            created_at INTEGER,
-            PRIMARY KEY (tg_id, position)
-        );
-
-        -- Верификация: запросы на проверку
-        CREATE TABLE IF NOT EXISTS verify_requests (
-            tg_id      INTEGER PRIMARY KEY,
-            photo_id   TEXT    NOT NULL,
-            gesture    TEXT    NOT NULL,
-            status     TEXT    DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'
-            created_at INTEGER
-        );
-
-        -- ===== СИСТЕМА АРТЕФАКТОВ (ЗНАЧКИ) =====
-        CREATE TABLE IF NOT EXISTS user_badges (
-            tg_id       INTEGER NOT NULL,
-            badge_id    TEXT    NOT NULL,
-            awarded_at  INTEGER NOT NULL,
-            PRIMARY KEY (tg_id, badge_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_badges_user ON user_badges(tg_id);
-        """
+        """\n        CREATE TABLE IF NOT EXISTS users (\n            tg_id       INTEGER PRIMARY KEY,\n            username    TEXT,\n            name        TEXT,\n            age         INTEGER,\n            gender      TEXT,            -- 'm' / 'f'\n            seeking     TEXT,            -- 'm' / 'f' / 'any'\n            city        TEXT,\n            bio         TEXT,\n            photo_id    TEXT,\n            interests   TEXT DEFAULT '', -- индексы интересов через запятую\n            daily_q     INTEGER,         -- индекс дня, на который отвечали\n            daily_a     TEXT,            -- ответ на вопрос дня\n            active      INTEGER DEFAULT 1,\n            is_banned   INTEGER DEFAULT 0,\n            streak      INTEGER DEFAULT 0,\n            last_active INTEGER DEFAULT 0,\n            rating      INTEGER DEFAULT 0, -- сколько лайков получил всего\n            shown       INTEGER DEFAULT 0,\n            min_age     INTEGER DEFAULT 18,\n            max_age     INTEGER DEFAULT 99,\n            created_at  INTEGER,\n            verified    INTEGER DEFAULT 0,\n            anon_messages_count INTEGER DEFAULT 0  -- счётчик сообщений в анонимном чате\n        );\n\n        CREATE TABLE IF NOT EXISTS likes (\n            from_id  INTEGER,\n            to_id    INTEGER,\n            is_like  INTEGER,   -- 1 лайк, 0 дизлайк\n            seen     INTEGER DEFAULT 0,\n            created_at INTEGER,\n            PRIMARY KEY (from_id, to_id)\n        );\n\n        CREATE INDEX IF NOT EXISTS idx_likes_to ON likes(to_id, is_like);\n\n        CREATE TABLE IF NOT EXISTS matches (\n            a_id INTEGER,\n            b_id INTEGER,\n            created_at INTEGER,\n            PRIMARY KEY (a_id, b_id)\n        );\n\n        CREATE TABLE IF NOT EXISTS reports (\n            from_id INTEGER,\n            to_id   INTEGER,\n            created_at INTEGER\n        );\n\n        -- Свидание вслепую: очередь ожидания и активные анонимные сессии\n        CREATE TABLE IF NOT EXISTS anon_queue (\n            tg_id      INTEGER PRIMARY KEY,\n            created_at INTEGER\n        );\n\n        CREATE TABLE IF NOT EXISTS anon_sessions (\n            id         INTEGER PRIMARY KEY AUTOINCREMENT,\n            a_id       INTEGER,\n            b_id       INTEGER,\n            a_reveal   INTEGER DEFAULT 0,\n            b_reveal   INTEGER DEFAULT 0,\n            ended      INTEGER DEFAULT 0,\n            created_at INTEGER\n        );\n\n        CREATE INDEX IF NOT EXISTS idx_anon_active ON anon_sessions(ended);\n\n        -- Тикеты поддержки\n        CREATE TABLE IF NOT EXISTS support_tickets (\n            id         INTEGER PRIMARY KEY AUTOINCREMENT,\n            tg_id      INTEGER NOT NULL,\n            category   TEXT    NOT NULL,\n            message    TEXT    NOT NULL,\n            photo_id   TEXT,\n            status     TEXT    DEFAULT 'open',  -- open / replied / closed\n            admin_reply TEXT,\n            created_at INTEGER,\n            replied_at INTEGER\n        );\n\n        CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status);\n\n        -- Дополнительные фото пользователя (до 5 шт.)\n        CREATE TABLE IF NOT EXISTS user_photos (\n            tg_id      INTEGER NOT NULL,\n            photo_id   TEXT    NOT NULL,\n            position   INTEGER NOT NULL DEFAULT 0,  -- 0..4\n            created_at INTEGER,\n            PRIMARY KEY (tg_id, position)\n        );\n\n        -- Верификация: запросы на проверку\n        CREATE TABLE IF NOT EXISTS verify_requests (\n            tg_id      INTEGER PRIMARY KEY,\n            photo_id   TEXT    NOT NULL,\n            gesture    TEXT    NOT NULL,\n            status     TEXT    DEFAULT 'pending',  -- 'pending' / 'approved' / 'rejected'\n            created_at INTEGER\n        );\n\n        -- ===== СИСТЕМА АРТЕФАКТОВ (ЗНАЧКИ) =====\n        CREATE TABLE IF NOT EXISTS user_badges (\n            tg_id       INTEGER NOT NULL,\n            badge_id    TEXT    NOT NULL,\n            awarded_at  INTEGER NOT NULL,\n            PRIMARY KEY (tg_id, badge_id)\n        );\n\n        CREATE INDEX IF NOT EXISTS idx_badges_user ON user_badges(tg_id);\n        """
     )
     # Миграции: добавляем поля, которых может не быть в старых базах
     migrations = [
@@ -251,18 +140,7 @@ async def next_candidate(tg_id: int) -> Optional[aiosqlite.Row]:
     gender_clause = "" if seeking == "any" else "AND u.gender = :seeking"
     # Кого хотят видеть встречные анкеты — пусть тоже совпадает по возможности
     cur = await db.execute(
-        f"""
-        SELECT u.* FROM users u
-        WHERE u.tg_id != :me
-          AND u.active = 1
-          AND u.is_banned = 0
-          AND u.age BETWEEN :min_age AND :max_age
-          {gender_clause}
-          AND (u.seeking = 'any' OR u.seeking = :my_gender)
-          AND u.tg_id NOT IN (SELECT to_id FROM likes WHERE from_id = :me)
-        ORDER BY u.last_active DESC, u.shown ASC, RANDOM()
-        LIMIT 1
-        """,
+        f"""\n        SELECT u.* FROM users u\n        WHERE u.tg_id != :me\n          AND u.active = 1\n          AND u.is_banned = 0\n          AND u.age BETWEEN :min_age AND :max_age\n          {gender_clause}\n          AND (u.seeking = 'any' OR u.seeking = :my_gender)\n          AND u.tg_id NOT IN (SELECT to_id FROM likes WHERE from_id = :me)\n        ORDER BY u.last_active DESC, u.shown ASC, RANDOM()\n        LIMIT 1\n        """,
         {
             "me": tg_id,
             "seeking": seeking,
@@ -319,16 +197,7 @@ async def incoming_likes(tg_id: int) -> list[aiosqlite.Row]:
     """Кто лайкнул меня, но я ещё не ответил взаимно."""
     db = await get_db()
     cur = await db.execute(
-        """
-        SELECT u.* FROM likes l
-        JOIN users u ON u.tg_id = l.from_id
-        WHERE l.to_id = ? AND l.is_like = 1
-          AND u.active = 1 AND u.is_banned = 0
-          AND l.from_id NOT IN (
-                SELECT to_id FROM likes WHERE from_id = ? AND is_like = 1
-          )
-        ORDER BY l.created_at DESC
-        """,
+        """\n        SELECT u.* FROM likes l\n        JOIN users u ON u.tg_id = l.from_id\n        WHERE l.to_id = ? AND l.is_like = 1\n          AND u.active = 1 AND u.is_banned = 0\n          AND l.from_id NOT IN (\n                SELECT to_id FROM likes WHERE from_id = ? AND is_like = 1\n          )\n        ORDER BY l.created_at DESC\n        """,
         (tg_id, tg_id),
     )
     return await cur.fetchall()
@@ -342,13 +211,7 @@ async def count_incoming_likes(tg_id: int) -> int:
 async def get_matches(tg_id: int) -> list[aiosqlite.Row]:
     db = await get_db()
     cur = await db.execute(
-        """
-        SELECT u.* FROM matches m
-        JOIN users u ON u.tg_id = (CASE WHEN m.a_id = ? THEN m.b_id ELSE m.a_id END)
-        WHERE (m.a_id = ? OR m.b_id = ?)
-          AND u.is_banned = 0
-        ORDER BY m.created_at DESC
-        """,
+        """\n        SELECT u.* FROM matches m\n        JOIN users u ON u.tg_id = (CASE WHEN m.a_id = ? THEN m.b_id ELSE m.a_id END)\n        WHERE (m.a_id = ? OR m.b_id = ?)\n          AND u.is_banned = 0\n        ORDER BY m.created_at DESC\n        """,
         (tg_id, tg_id, tg_id),
     )
     return await cur.fetchall()
@@ -414,14 +277,7 @@ async def anon_leave_queue(tg_id: int) -> None:
 
 
 async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
-    """Подбор собеседника для «Свидания вслепую».
-
-    Возвращает (status, partner_id):
-      'in_session' — уже в активном чате (partner_id — собеседник)
-      'matched'    — нашли собеседника, создана сессия (partner_id)
-      'queued'     — добавлены в очередь ожидания (None)
-      'waiting'    — уже стояли в очереди (None)
-    """
+    """Подбор собеседника для «Свидания вслепую».\n\n    Возвращает (status, partner_id):\n      'in_session' — уже в активном чате (partner_id — собеседник)\n      'matched'    — нашли собеседника, создана сессия (partner_id)\n      'queued'     — добавлены в очередь ожидания (None)\n      'waiting'    — уже стояли в очереди (None)\n    """
     db = await get_db()
     partner = await anon_active_partner(tg_id)
     if partner is not None:
@@ -429,12 +285,7 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
 
     # Ищем ожидающего собеседника (не себя, активного, не забаненного)
     cur = await db.execute(
-        """
-        SELECT q.tg_id FROM anon_queue q
-        JOIN users u ON u.tg_id = q.tg_id
-        WHERE q.tg_id != ? AND u.is_banned = 0 AND u.name IS NOT NULL
-        ORDER BY q.created_at ASC LIMIT 1
-        """,
+        """\n        SELECT q.tg_id FROM anon_queue q\n        JOIN users u ON u.tg_id = q.tg_id\n        WHERE q.tg_id != ? AND u.is_banned = 0 AND u.name IS NOT NULL\n        ORDER BY q.created_at ASC LIMIT 1\n        """,
         (tg_id,),
     )
     row = await cur.fetchone()
@@ -663,13 +514,7 @@ async def admin_recent_reports(limit: int = 10) -> list[aiosqlite.Row]:
     """Самые свежие жалобы (с подсчётом)."""
     db = await get_db()
     cur = await db.execute(
-        """
-        SELECT to_id, COUNT(*) AS report_count, MAX(created_at) AS last_report
-        FROM reports
-        GROUP BY to_id
-        ORDER BY last_report DESC
-        LIMIT ?
-        """,
+        """\n        SELECT to_id, COUNT(*) AS report_count, MAX(created_at) AS last_report\n        FROM reports\n        GROUP BY to_id\n        ORDER BY last_report DESC\n        LIMIT ?\n        """,
         (limit,),
     )
     return await cur.fetchall()
@@ -716,17 +561,12 @@ async def get_tickets(status: str | None = None, limit: int = 50, offset: int = 
     db = await get_db()
     if status:
         cur = await db.execute(
-            """SELECT t.*, u.name, u.username FROM support_tickets t
-               LEFT JOIN users u ON u.tg_id = t.tg_id
-               WHERE t.status = ?
-               ORDER BY t.created_at DESC LIMIT ? OFFSET ?""",
+            """SELECT t.*, u.name, u.username FROM support_tickets t\n               LEFT JOIN users u ON u.tg_id = t.tg_id\n               WHERE t.status = ?\n               ORDER BY t.created_at DESC LIMIT ? OFFSET ?""",
             (status, limit, offset),
         )
     else:
         cur = await db.execute(
-            """SELECT t.*, u.name, u.username FROM support_tickets t
-               LEFT JOIN users u ON u.tg_id = t.tg_id
-               ORDER BY t.created_at DESC LIMIT ? OFFSET ?""",
+            """SELECT t.*, u.name, u.username FROM support_tickets t\n               LEFT JOIN users u ON u.tg_id = t.tg_id\n               ORDER BY t.created_at DESC LIMIT ? OFFSET ?""",
             (limit, offset),
         )
     return await cur.fetchall()
@@ -735,9 +575,7 @@ async def get_tickets(status: str | None = None, limit: int = 50, offset: int = 
 async def get_ticket(ticket_id: int) -> aiosqlite.Row | None:
     db = await get_db()
     cur = await db.execute(
-        """SELECT t.*, u.name, u.username FROM support_tickets t
-           LEFT JOIN users u ON u.tg_id = t.tg_id
-           WHERE t.id = ?""",
+        """SELECT t.*, u.name, u.username FROM support_tickets t\n           LEFT JOIN users u ON u.tg_id = t.tg_id\n           WHERE t.id = ?""",
         (ticket_id,),
     )
     return await cur.fetchone()
