@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 import repositories.user_repo as user_repo
 from data.constants import Age, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SettingsAction
-from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU
+from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU, HIDE_MENU
 from services.profile_formatter import format_profile_async
 from states import Edit
 
@@ -15,13 +15,15 @@ router = Router()
 
 @router.message(F.text == MenuText.SETTINGS)
 async def show_settings(message: Message) -> None:
-    """Показывает меню настроек."""
+    """Показывает меню настроек. Скрывает полное меню."""
     user = await user_repo.get_user(message.from_user.id)
     if not user:
         await message.answer(Message.CREATE_PROFILE_FIRST)
         return
     active = bool(user.get("active"))
     await message.answer(f"{EMOJI.SETTINGS} Настройки", reply_markup=settings_kb(active))
+    # Скрываем полное меню
+    await message.answer("👆 Настройки", reply_markup=HIDE_MENU)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:back")
@@ -50,8 +52,8 @@ async def on_toggle_active(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.AGE_FILTER.value}")
 async def on_set_age_filter(call: CallbackQuery, state: FSMContext) -> None:
-    """Запрашивает фильтр по возрасту."""
-    await call.message.edit_text(f"🎚 Введи диапазон возраста: мин макс (например: {Age.MIN} {Age.MAX})")
+    """Запрашивает фильтр по возрасту — отправляем новое сообщение для клавиатуры."""
+    await call.message.answer(f"🎚 Введи диапазон возраста: мин макс (например: {Age.MIN} {Age.MAX})")
     await state.set_state(Edit.filters_age)
     await call.answer()
 

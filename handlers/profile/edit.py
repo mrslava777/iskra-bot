@@ -8,7 +8,6 @@ from data.constants import Length, Age, Interest, EMOJI, Message
 from data.enums import CallbackPrefix, EditField
 from keyboards import interests_kb, profile_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
-from services.message_utils import edit_or_caption
 from states import Edit
 
 router = Router()
@@ -39,8 +38,8 @@ async def on_edit_field(call: CallbackQuery, state: FSMContext) -> None:
     if field == EditField.INTERESTS.value:
         user = await user_repo.get_user(call.from_user.id)
         sel = [int(x) for x in (user["interests"] or "").split(",") if x.strip().isdigit()]
-        await edit_or_caption(
-            call,
+        # Отправляем новое сообщение с inline-клавиатурой
+        await call.message.answer(
             f"{EMOJI.INTERESTS} Выбери интересы:",
             reply_markup=interests_kb(sel, CallbackPrefix.EDIT_INTEREST.value),
         )
@@ -49,7 +48,8 @@ async def on_edit_field(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     if field in prompts:
-        await edit_or_caption(call, prompts[field])
+        # Отправляем новое сообщение — чтобы появилась клавиатура с буквами
+        await call.message.answer(prompts[field])
         await state.set_state(Edit.value)
     await call.answer()
 

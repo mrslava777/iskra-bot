@@ -10,7 +10,6 @@ from data.constants import EMOJI, Format, Message, Verification as Vrf
 from data.enums import CallbackPrefix, VerifyAction
 from keyboards import profile_kb, verify_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
-from services.message_utils import edit_or_caption
 from states import Verify
 
 router = Router()
@@ -28,12 +27,8 @@ async def on_request_verify(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(required_gesture=gesture)
 
     text = Format.VERIFICATION_REQUEST.format(gesture)
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=f"{CallbackPrefix.EDIT.value}:back")],
-        ]
-    )
-    await edit_or_caption(call, text, reply_markup=kb)
+    # Отправляем новое сообщение — чтобы появилась клавиатура
+    await call.message.answer(text)
     await state.set_state(Verify.video_note)
     await call.answer()
 

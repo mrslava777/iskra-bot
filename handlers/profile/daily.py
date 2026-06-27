@@ -9,7 +9,7 @@ import repositories.user_repo as user_repo
 from data.constants import Length, DailyQuestion, EMOJI, MenuText, Message
 from data.enums import CallbackPrefix, EditField
 from data.content import daily_question
-from keyboards import MAIN_MENU
+from keyboards import MAIN_MENU, HIDE_MENU
 from services.message_utils import edit_or_caption
 from states import Edit
 
@@ -41,6 +41,7 @@ async def cmd_daily_question(message: Message, state: FSMContext) -> None:
             ]
         )
         await message.answer(text, reply_markup=kb)
+        await message.answer("👆 Вопрос дня", reply_markup=HIDE_MENU)
         return
 
     # Новый вопрос — запрашиваем ответ с кнопкой назад
@@ -55,6 +56,7 @@ async def cmd_daily_question(message: Message, state: FSMContext) -> None:
         ]
     )
     await message.answer(text, reply_markup=kb)
+    await message.answer("👆 Вопрос дня", reply_markup=HIDE_MENU)
     await state.update_data(daily_q=day_index)
     await state.set_state(Edit.daily)
 
