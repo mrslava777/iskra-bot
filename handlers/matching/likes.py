@@ -6,7 +6,7 @@ import repositories.like_repo as like_repo
 import repositories.user_repo as user_repo
 from data.constants import MenuText, Message, Format
 from data.enums import CallbackPrefix, LikeResponse
-from keyboards import MAIN_MENU, like_response_kb
+from keyboards import MAIN_MENU, HIDE_MENU, like_response_kb
 from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award
 from services.notification import announce_match
@@ -28,6 +28,8 @@ async def show_incoming(message: Message) -> None:
         return
     await message.answer(Format.INCOMING_LIKES.format(len(rows)))
     await _show_incoming(message, rows[0], user)
+    # Скрываем меню
+    await message.answer("👆 Входящие лайки", reply_markup=HIDE_MENU)
 
 
 async def _show_incoming(message: Message, candidate: dict, viewer: dict) -> None:

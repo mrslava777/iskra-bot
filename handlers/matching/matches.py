@@ -6,7 +6,7 @@ import repositories.match_repo as match_repo
 import repositories.user_repo as user_repo
 from data.constants import EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix
-from keyboards import MAIN_MENU
+from keyboards import MAIN_MENU, HIDE_MENU
 from services.profile_formatter import format_profile_async
 
 router = Router()
@@ -23,7 +23,7 @@ async def show_matches(message: Message) -> None:
     await message.answer(Format.MATCH_COUNT.format(len(rows)))
     for r in rows:
         await _show_match(message, r, viewer)
-    await message.answer("Это все твои мэтчи ✨", reply_markup=MAIN_MENU)
+    await message.answer("Это все твои мэтчи ✨", reply_markup=HIDE_MENU)
 
 
 async def _show_match(message: Message, match: dict, viewer: dict) -> None:

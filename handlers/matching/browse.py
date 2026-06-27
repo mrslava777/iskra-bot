@@ -10,7 +10,7 @@ import repositories.settings_repo as settings_repo
 import repositories.user_repo as user_repo
 from data.constants import EMOJI, MenuText, Message
 from data.enums import CallbackPrefix, SwipeAction
-from keyboards import MAIN_MENU, browse_kb
+from keyboards import MAIN_MENU, HIDE_MENU, browse_kb
 from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award
 from services.compatibility import compatibility
@@ -53,6 +53,8 @@ async def _show_next(message: Message, viewer_id: int) -> None:
         await message.answer_photo(photo=cand["photo_id"], caption=caption, reply_markup=kb)
     except Exception:
         await message.answer(caption, reply_markup=kb)
+    # Скрываем меню в ленте
+    await message.answer("👆 Лента анкет", reply_markup=HIDE_MENU)
 
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.SWIPE.value}:"))
