@@ -17,7 +17,7 @@ async def show_matches(message: Message) -> None:
     """Показывает список мэтчей."""
     rows = await match_repo.get_matches(message.from_user.id)
     if not rows:
-        await message.answer(Message.NO_MATCHES, reply_markup=MAIN_MENU)
+        await message.answer(Message.NO_MATCHES, reply_markup=HIDE_MENU)
         return
     viewer = await user_repo.get_user(message.from_user.id)
     await message.answer(Format.MATCH_COUNT.format(len(rows)))

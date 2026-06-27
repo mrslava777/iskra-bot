@@ -37,7 +37,7 @@ async def _show_next(message: Message, viewer_id: int) -> None:
     viewer = await user_repo.get_user(viewer_id)
     cand = await profile_repo.next_candidate(viewer_id, viewer)
     if cand is None:
-        await message.answer(Message.NO_MORE_PROFILES, reply_markup=MAIN_MENU)
+        await message.answer(Message.NO_MORE_PROFILES, reply_markup=HIDE_MENU)
         return
     await profile_repo.mark_shown(viewer_id, cand["tg_id"])
 
@@ -66,7 +66,7 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
 
     if action == SwipeAction.STOP.value:
         await call.message.edit_reply_markup(reply_markup=None)
-        await call.message.answer(Message.SEARCH_STOPPED, reply_markup=MAIN_MENU)
+        await call.message.answer(Message.SEARCH_STOPPED, reply_markup=HIDE_MENU)
         await call.answer()
         return
 

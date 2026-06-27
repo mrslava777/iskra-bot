@@ -24,7 +24,7 @@ async def show_incoming(message: Message) -> None:
         return
     rows = await like_repo.incoming_likes(message.from_user.id)
     if not rows:
-        await message.answer(Message.NO_LIKES, reply_markup=MAIN_MENU)
+        await message.answer(Message.NO_LIKES, reply_markup=HIDE_MENU)
         return
     await message.answer(Format.INCOMING_LIKES.format(len(rows)))
     await _show_incoming(message, rows[0], user)
@@ -73,7 +73,7 @@ async def _show_next_incoming(message: Message, viewer_id: int) -> None:
     user = await user_repo.get_user(viewer_id)
     rows = await like_repo.incoming_likes(viewer_id)
     if not rows:
-        await message.answer("Это были все входящие симпатии ✨", reply_markup=MAIN_MENU)
+        await message.answer("Это были все входящие симпатии ✨", reply_markup=HIDE_MENU)
         return
     await _show_incoming(message, rows[0], user)
 
