@@ -9,7 +9,7 @@ import repositories.user_repo as user_repo
 from config import ADMIN_IDS
 from data.constants import Length, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SupportCategory, Command as Cmd
-from keyboards import MAIN_MENU
+from keyboards import MAIN_MENU, HIDE_MENU
 from states import Support
 
 router = Router()
@@ -29,6 +29,7 @@ async def cmd_support(message: Message, state: FSMContext) -> None:
         ]
     )
     await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>\nС чем у вас возникла проблема?", reply_markup=kb)
+    await message.answer("👆 Поддержка", reply_markup=HIDE_MENU)
 
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.SUPPORT.value}:"))
