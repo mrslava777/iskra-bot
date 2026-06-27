@@ -23,7 +23,7 @@ from data.enums import (
     EditField,
 )
 
-# Главное меню (reply-клавиатура)
+# Главное меню (reply-клавиатура) — Артефакты оставляем
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=MenuText.SEARCH)],
@@ -250,12 +250,11 @@ def support_reply_kb(tg_id: int, ticket_id: int | None = None) -> InlineKeyboard
 # ===== КЛАВИАТУРЫ ДЛЯ АРТЕФАКТОВ =====
 
 def badges_kb(total: int) -> InlineKeyboardMarkup:
-    """Клавиатура раздела Артефакты."""
+    """Клавиатура раздела Артефакты — БЕЗ кнопки "В меню"."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📈 Прогресс", callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.PROGRESS.value))],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.COLLECTION.value))],
-            [InlineKeyboardButton(text=f"{EMOJI.BACK} В меню", callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.BACK.value))],
         ]
     )
 
