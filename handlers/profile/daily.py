@@ -6,7 +6,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import repositories.user_repo as user_repo
-from data.constants import Length, DailyQuestion, EMOJI, MenuText, Message
+import repositories.photo_repo as photo_repo
+from data.constants import Length, DailyQuestion, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, EditField
 from data.content import daily_question
 from keyboards import MAIN_MENU, profile_kb
@@ -15,6 +16,42 @@ from services.profile_formatter import format_profile_async
 from states import Edit
 
 router = Router()
+
+
+async def _send_profile_update(message_or_call, user: dict, prefix: str = "✅ Обновлено!") -> None:
+    """Отправляет обновленный профиль с фото и клавиатурой."""
+    caption = await format_profile_async(user, show_compat=False, show_badges=True)
+    n_photos = await photo_repo.photo_count(user["tg_id"])
+    photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
+    caption += photo_note
+
+    has_daily = bool(user.get("daily_a"))
+    kb = profile_kb(has_daily=has_daily)
+    text = prefix + "\n\n" + caption
+
+    if isinstance(message_or_call, CallbackQuery):
+        msg = message_or_call.message
+        if msg.photo:
+            try:
+                await msg.edit_caption(caption=text, reply_markup=kb)
+                return
+            except Exception:
+                pass
+        try:
+            await msg.edit_text(text, reply_markup=kb)
+            return
+        except Exception:
+            pass
+        try:
+            await message_or_call.message.answer_photo(photo=user["photo_id"], caption=text, reply_markup=kb)
+        except Exception:
+            await message_or_call.message.answer(text, reply_markup=kb)
+    else:
+        msg = message_or_call
+        try:
+            await msg.answer_photo(photo=user["photo_id"], caption=text, reply_markup=kb)
+        except Exception:
+            await msg.answer(text, reply_markup=kb)
 
 
 @router.message(F.text == MenuText.DAILY_QUESTION)
@@ -52,27 +89,19 @@ async def cmd_daily_question(message: Message, state: FSMContext) -> None:
 
 @router.message(Edit.daily, F.text)
 async def save_daily_answer(message: Message, state: FSMContext) -> None:
-    """Сохраняет ответ на вопрос дня."""
+    """Сохраняет ответ на вопрос дня и показывает профиль с фото."""
     text = message.text.strip()[:Length.DAILY_ANSWER]
     day_index = int(time.time() // DailyQuestion.SECONDS_PER_DAY)
     await user_repo.upsert_user(message.from_user.id, daily_q=day_index, daily_a=text)
     await state.clear()
     user = await user_repo.get_user(message.from_user.id)
-    caption = await format_profile_async(user, show_compat=False, show_badges=True)
-    await message.answer(
-        Message.DAILY_SAVED + "\n\n" + caption,
-        reply_markup=profile_kb(has_daily=True),
-    )
+    await _send_profile_update(message, user, Message.DAILY_SAVED)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:{EditField.DELETE_DAILY.value}")
 async def on_delete_daily(call: CallbackQuery) -> None:
-    """Удаляет ответ на вопрос дня из профиля."""
+    """Удаляет ответ на вопрос дня из профиля и показывает профиль с фото."""
     await user_repo.upsert_user(call.from_user.id, daily_q=0, daily_a="")
     await call.answer(Message.DAILY_DELETED)
     user = await user_repo.get_user(call.from_user.id)
-    await edit_or_caption(
-        call,
-        Message.DAILY_DELETED,
-        reply_markup=profile_kb(has_daily=False),
-    )
+    await _send_profile_update(call, user, Message.DAILY_DELETED)
