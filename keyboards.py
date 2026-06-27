@@ -23,7 +23,7 @@ from data.enums import (
     EditField,
 )
 
-# Главное меню (reply-клавиатура) — Артефакты оставляем
+# Главное меню (reply-клавиатура)
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=MenuText.SEARCH)],
@@ -33,6 +33,12 @@ MAIN_MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text=MenuText.BADGES)],
         [KeyboardButton(text=MenuText.SETTINGS)],
     ],
+    resize_keyboard=True,
+)
+
+# СВЁРНУТОЕ МЕНЮ — одна кнопка "Меню"
+HIDE_MENU = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=MenuText.MENU)]],
     resize_keyboard=True,
 )
 
