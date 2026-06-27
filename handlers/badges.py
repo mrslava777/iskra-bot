@@ -32,25 +32,20 @@ def _format_collection(badges: list[dict]) -> str:
     lines = [Msg.BADGE_COLLECTION_TITLE.format(len(badges)), ""]
     for b in ordered:
         emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
-        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji}
-<i>{b['description']}</i>")
+        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji}\n<i>{b['description']}</i>")
 
     # Прогресс-бар в коллекции
     pct = int(len(badges) / TOTAL_BADGES * 100)
     bar = _mini_bar(pct)
-    lines.append(f"
-📊 Собрано: <b>{len(badges)}</b> / {TOTAL_BADGES} ({pct}%)")
+    lines.append(f"\n📊 Собрано: <b>{len(badges)}</b> / {TOTAL_BADGES} ({pct}%)")
     lines.append(f"{bar}")
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 
 def _format_progress(locked: list[dict], user: dict, stats: dict, page: int = 0) -> str:
     """Форматирует страницу прогресса (недостающих артефактов) с прогрессом под каждым."""
     if not locked:
-        return "🎉 <b>Все артефакты собраны!</b>
-
-Ты настоящий легенда Искры!"
+        return "🎉 <b>Все артефакты собраны!</b>\n\nТы настоящий легенда Искры!"
 
     start = page * _BADGE_PAGE_SIZE
     end = start + _BADGE_PAGE_SIZE
@@ -81,8 +76,7 @@ def _format_progress(locked: list[dict], user: dict, stats: dict, page: int = 0)
     if total_pages > 1:
         lines.append(f"📄 Страница {page + 1} / {total_pages}")
 
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 
 @router.message(Command(Cmd.BADGES.value[1:]))
