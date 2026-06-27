@@ -11,7 +11,7 @@ from services.admin_service import is_admin
 
 router = Router()
 
-ADMIN_TITLE = f"{EMOJI.ADMIN} <b>Админ-панель Искра</b>\n\nВыбери раздел:"
+ADMIN_TITLE = f"{EMOJI.ADMIN} <b>Админ-панель Момент</b>\n\nВыбери раздел:"
 
 
 @router.message(Command(Cmd.ADMIN.value[1:]))
