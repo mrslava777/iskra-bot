@@ -1,7 +1,7 @@
 """Вопрос дня — добавление/удаление ответа в анкету."""
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import repositories.user_repo as user_repo
 from data.constants import Length, DailyQuestion, EMOJI, Message
@@ -25,7 +25,8 @@ async def on_daily_question(call: CallbackQuery, state: FSMContext) -> None:
         + "<i>" + q + "</i>\n\n"
         + "Напиши свой ответ (до " + str(Length.DAILY_ANSWER) + " символов):"
     )
-    await edit_or_caption(call, text)
+    # Убираем inline-клавиатуру, чтобы пользователь не мог нажать повторно
+    await edit_or_caption(call, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[]))
     await state.update_data(daily_q=day_index)
     await state.set_state(Edit.daily)
     await call.answer()
