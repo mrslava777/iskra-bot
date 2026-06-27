@@ -18,7 +18,7 @@ router = Router()
 
 @router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:verify")
 async def on_request_verify(call: CallbackQuery, state: FSMContext) -> None:
-    """Запрашивает кружочек для верификации со случайным жестом."""
+    """Запрашивает кружочек для верификации."""
     user = await user_repo.get_user(call.from_user.id)
     if user.get("verified"):
         await call.answer(f"{EMOJI.VERIFIED} Ты уже верифицирован!")
@@ -54,7 +54,7 @@ async def on_verify_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Verify.video_note, F.video_note)
 async def on_verify_video_note(message: Message, state: FSMContext) -> None:
-    """Принимает кружочек и отправляет админам на проверку — push + меню."""
+    """Принимает кружочек — push + меню."""
     video_note_id = message.video_note.file_id
     data = await state.get_data()
     gesture = data.get("required_gesture", "?")

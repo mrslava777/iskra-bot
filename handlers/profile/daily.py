@@ -9,7 +9,7 @@ import repositories.user_repo as user_repo
 from data.constants import Length, DailyQuestion, EMOJI, MenuText, Message
 from data.enums import CallbackPrefix, EditField
 from data.content import daily_question
-from keyboards import MAIN_MENU, profile_kb
+from keyboards import MAIN_MENU
 from services.message_utils import edit_or_caption
 from states import Edit
 
