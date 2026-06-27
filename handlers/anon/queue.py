@@ -8,7 +8,7 @@ import repositories.anon_repo as anon_repo
 import repositories.user_repo as user_repo
 from data.constants import EMOJI, MenuText, Message
 from data.enums import CallbackPrefix, AnonAction
-from keyboards import ANON_CHAT_MENU, MAIN_MENU, anon_queue_kb, anon_session_kb
+from keyboards import ANON_CHAT_MENU, MAIN_MENU, HIDE_MENU, anon_queue_kb, anon_session_kb
 
 router = Router()
 
@@ -43,6 +43,7 @@ async def blind_date(message: Message, state: FSMContext, bot: Bot) -> None:
             Message.BLIND_DATE_SEARCHING,
             reply_markup=anon_queue_kb(),
         )
+        await message.answer("👆 Поиск собеседника", reply_markup=HIDE_MENU)
     elif status == "matched":
         await _notify_matched(bot, message.from_user.id)
         await _notify_matched(bot, partner)
