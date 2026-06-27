@@ -14,7 +14,7 @@ router = Router()
 async def cmd_help(message: Message) -> None:
     """Показывает справку."""
     await message.answer(
-        f"{EMOJI.FIRE_MID} <b>Искра</b> — знакомства с умом.\n\n"
+        f"{EMOJI.FIRE_MID} <b>Момент</b> — знакомства с умом.\n\n"
         f"• {MenuText.SEARCH} — лента с расчётом совместимости\n"
         f"• {MenuText.BLIND_DATE} — анонимный чат вживую; откроетесь оба — будет мэтч\n"
         f"• {MenuText.LIKES_INBOX} — входящие симпатии\n"
