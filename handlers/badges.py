@@ -8,7 +8,7 @@ import repositories.user_repo as user_repo
 from badges import BADGES, RARITY_EMOJI, RARITY_ORDER, rarity_label
 from data.constants import EMOJI, MenuText, Message as Msg
 from data.enums import BadgeAction, CallbackPrefix, Command as Cmd
-from keyboards import MAIN_MENU, badges_kb
+from keyboards import badges_kb
 from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award, get_user_badges
 
@@ -79,15 +79,4 @@ async def cb_progress(call: CallbackQuery) -> None:
         await call.message.edit_text("\n".join(lines), reply_markup=badges_kb(0))
     except Exception:
         pass
-    await call.answer()
-
-
-@router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.BACK.value}")
-async def cb_back(call: CallbackQuery) -> None:
-    """Возврат в главное меню."""
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
     await call.answer()
