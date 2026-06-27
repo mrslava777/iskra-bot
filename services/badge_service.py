@@ -50,3 +50,16 @@ async def get_user_badges(tg_id: int) -> list[dict]:
     """Возвращает полные данные о значках пользователя."""
     badge_ids = await badge_repo.get_user_badge_ids(tg_id)
     return [BADGE_BY_ID[bid] for bid in badge_ids if bid in BADGE_BY_ID]
+
+
+async def get_user_stats(tg_id: int) -> tuple[dict, dict]:
+    """Возвращает (user_row, stats_dict) для отображения прогресса.
+
+    Оптимизация: единая точка сбора данных — используется и для check_and_award,
+    и для отображения прогресса в UI.
+    """
+    user = await user_repo.get_user(tg_id)
+    if not user:
+        return {}, {}
+    stats = await _collect_stats(tg_id, user)
+    return user, stats
