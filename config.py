@@ -1,48 +1,27 @@
 """Конфигурация бота Искра."""
 import os
+from dotenv import load_dotenv
 
-try:
-    from dotenv import load_dotenv
+from data.constants import Broadcast, AnonChat
 
-    load_dotenv()
-except Exception:  # python-dotenv может быть не установлен в проде
-    pass
+load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+# Telegram
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# Путь к базе.
-# Логика автоопределения, чтобы анкеты сохранялись без ручной настройки:
-#   1) если задан DB_PATH в переменных окружения — используем его;
-#   2) иначе, если примонтирован Railway Volume в /data (папка существует
-#      и доступна на запись) — кладём базу туда -> /data/iskra.db (постоянно);
-#   3) иначе локально ./iskra.db (на Railway без Volume это временно).
-def _resolve_db_path() -> str:
-    explicit = os.getenv("DB_PATH", "").strip()
-    if explicit:
-        return explicit
-    data_dir = "/data"
-    try:
-        os.makedirs(data_dir, exist_ok=True)
-        if os.access(data_dir, os.W_OK):
-            return os.path.join(data_dir, "iskra.db")
-    except Exception:
-        pass
-    return "iskra.db"
+# Администраторы (список tg_id через запятую)
+ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip().isdigit()]
 
+# База данных
+DB_PATH = os.getenv("DB_PATH", "/data/iskra.db")
 
-DB_PATH = _resolve_db_path()
+# --- Оптимизации под нагрузку ---
 
-# Постоянное ли хранилище (для понятного лога при старте)
-DB_PERSISTENT = os.path.dirname(os.path.abspath(DB_PATH)) == "/data"
+# Broadcast: batch + concurrency + rate limit
+BROADCAST_BATCH_SIZE = int(os.getenv("BROADCAST_BATCH_SIZE", str(Broadcast.BATCH_SIZE)))
+BROADCAST_DELAY = float(os.getenv("BROADCAST_DELAY", str(Broadcast.DELAY)))
+BROADCAST_CONCURRENT = int(os.getenv("BROADCAST_CONCURRENT", str(Broadcast.CONCURRENT)))
 
-# ID администраторов через запятую (для модерации жалоб), напр. "12345,67890"
-ADMIN_IDS = {
-    int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()
-}
-
-# Сколько входящих лайков показывать бесплатно в списке
-LIKES_PREVIEW = int(os.getenv("LIKES_PREVIEW", "10"))
-
-if not BOT_TOKEN:
-    # Не падаем на импорте — bot.py выдаст понятную ошибку
-    pass
+# Rate limits
+ANON_RATE_LIMIT_MSG_PER_MIN = int(os.getenv("ANON_RATE_LIMIT_MSG_PER_MIN", str(AnonChat.RATE_LIMIT_MSG_PER_MIN)))
