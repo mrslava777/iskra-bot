@@ -26,13 +26,10 @@ async def _connect() -> asyncpg.Connection:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
 
-    # Добавляем параметры для стабильности соединения
+    # Используем DSN как есть — Neon/Railway уже содержат все нужные параметры.
+    # Принудительное добавление sslmode и keepalives ломает строку подключения
+    # (дублирование параметров + конфликт с уже имеющимся sslmode=require от Neon).
     dsn = DATABASE_URL
-    if "?" not in dsn:
-        dsn += "?"
-    else:
-        dsn += "&"
-    dsn += "sslmode=require&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
 
     log.info("Подключаюсь к PostgreSQL...")
     conn = await asyncpg.connect(dsn=dsn)
