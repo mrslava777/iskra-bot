@@ -58,10 +58,7 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
         except Exception:
             pass
 
-    await message.answer(
-        Message.VERIFICATION_SENT,
-        reply_markup=profile_kb(has_daily=bool(user.get("daily_a"))),
-    )
+    await message.answer(Message.VERIFICATION_SENT)
 
 
 @router.message(Verify.video_note)
@@ -72,7 +69,7 @@ async def on_verify_invalid(message: Message) -> None:
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.VERIFY.value}:{VerifyAction.APPROVE.value}:"))
 async def on_approve_verify(call: CallbackQuery) -> None:
-    """Админ одобряет верификацию."""
+    """Админ одобряет верификацию — шлёт пуш пользователю."""
     if call.from_user.id not in ADMIN_IDS:
         await call.answer(Message.ADMIN_ONLY, show_alert=True)
         return
@@ -95,7 +92,7 @@ async def on_approve_verify(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.VERIFY.value}:{VerifyAction.REJECT.value}:"))
 async def on_reject_verify(call: CallbackQuery) -> None:
-    """Админ отклоняет верификацию."""
+    """Админ отклоняет верификацию — шлёт пуш пользователю."""
     if call.from_user.id not in ADMIN_IDS:
         await call.answer(Message.ADMIN_ONLY, show_alert=True)
         return

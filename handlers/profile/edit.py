@@ -4,8 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import repositories.user_repo as user_repo
-import repositories.photo_repo as photo_repo
-from data.constants import Length, Age, Interest, EMOJI, Message, Format
+from data.constants import Length, Age, Interest, EMOJI, Message
 from data.enums import CallbackPrefix, EditField
 from keyboards import interests_kb, profile_kb
 from services.profile_formatter import format_profile_async
@@ -22,27 +21,6 @@ _EDIT_FIELDS = {
     EditField.BIO.value,
     EditField.INTERESTS.value,
 }
-
-
-async def _send_profile_with_photo(target: Message | CallbackQuery, user: dict) -> None:
-    """Отправляет профиль с фото и клавиатурой отдельным сообщением."""
-    caption = await format_profile_async(user, show_compat=False, show_badges=True)
-    n_photos = await photo_repo.photo_count(user["tg_id"])
-    photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
-    caption += photo_note
-
-    has_daily = bool(user.get("daily_a"))
-    kb = profile_kb(has_daily=has_daily)
-
-    if isinstance(target, CallbackQuery):
-        msg = target.message
-    else:
-        msg = target
-
-    try:
-        await msg.answer_photo(photo=user["photo_id"], caption=caption, reply_markup=kb)
-    except Exception:
-        await msg.answer(caption, reply_markup=kb)
 
 
 @router.callback_query(F.data.in_({f"{CallbackPrefix.EDIT.value}:{f}" for f in _EDIT_FIELDS}))
@@ -78,7 +56,7 @@ async def on_edit_field(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Edit.value, F.text)
 async def edit_value(message: Message, state: FSMContext) -> None:
-    """Сохраняет новое значение поля, шлёт пуш и показывает профиль отдельным сообщением."""
+    """Сохраняет новое значение поля и шлёт пуш-уведомление."""
     data = await state.get_data()
     field = data.get("edit_field")
     text = message.text.strip()
@@ -107,12 +85,7 @@ async def edit_value(message: Message, state: FSMContext) -> None:
         return
 
     await state.clear()
-    user = await user_repo.get_user(message.from_user.id)
-
-    # Пуш-уведомление отдельным сообщением
     await message.answer("✅ Обновлено!")
-    # Профиль с фото — отдельным сообщением
-    await _send_profile_with_photo(message, user)
 
 
 @router.callback_query(Edit.interests, F.data.startswith(f"{CallbackPrefix.EDIT_INTEREST.value}:"))
@@ -126,12 +99,7 @@ async def edit_interests(call: CallbackQuery, state: FSMContext) -> None:
         interests = ",".join(str(i) for i in sel)
         await user_repo.upsert_user(call.from_user.id, interests=interests)
         await state.clear()
-        user = await user_repo.get_user(call.from_user.id)
-
-        # Пуш-уведомление отдельным сообщением
         await call.message.answer("✅ Интересы обновлены!")
-        # Профиль с фото — отдельным сообщением
-        await _send_profile_with_photo(call, user)
         return
 
     idx = int(payload)

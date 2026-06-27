@@ -6,37 +6,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import repositories.user_repo as user_repo
-import repositories.photo_repo as photo_repo
-from data.constants import Length, DailyQuestion, EMOJI, MenuText, Message, Format
+from data.constants import Length, DailyQuestion, EMOJI, MenuText, Message
 from data.enums import CallbackPrefix, EditField
 from data.content import daily_question
 from keyboards import MAIN_MENU, profile_kb
 from services.message_utils import edit_or_caption
-from services.profile_formatter import format_profile_async
 from states import Edit
 
 router = Router()
-
-
-async def _send_profile_with_photo(target: Message | CallbackQuery, user: dict) -> None:
-    """Отправляет профиль с фото и клавиатурой отдельным сообщением."""
-    caption = await format_profile_async(user, show_compat=False, show_badges=True)
-    n_photos = await photo_repo.photo_count(user["tg_id"])
-    photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
-    caption += photo_note
-
-    has_daily = bool(user.get("daily_a"))
-    kb = profile_kb(has_daily=has_daily)
-
-    if isinstance(target, CallbackQuery):
-        msg = target.message
-    else:
-        msg = target
-
-    try:
-        await msg.answer_photo(photo=user["photo_id"], caption=caption, reply_markup=kb)
-    except Exception:
-        await msg.answer(caption, reply_markup=kb)
 
 
 @router.message(F.text == MenuText.DAILY_QUESTION)
@@ -74,27 +51,17 @@ async def cmd_daily_question(message: Message, state: FSMContext) -> None:
 
 @router.message(Edit.daily, F.text)
 async def save_daily_answer(message: Message, state: FSMContext) -> None:
-    """Сохраняет ответ на вопрос дня, шлёт пуш и показывает профиль отдельным сообщением."""
+    """Сохраняет ответ на вопрос дня и шлёт пуш-уведомление."""
     text = message.text.strip()[:Length.DAILY_ANSWER]
     day_index = int(time.time() // DailyQuestion.SECONDS_PER_DAY)
     await user_repo.upsert_user(message.from_user.id, daily_q=day_index, daily_a=text)
     await state.clear()
-    user = await user_repo.get_user(message.from_user.id)
-
-    # Пуш-уведомление отдельным сообщением
     await message.answer(Message.DAILY_SAVED)
-    # Профиль с фото — отдельным сообщением
-    await _send_profile_with_photo(message, user)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:{EditField.DELETE_DAILY.value}")
 async def on_delete_daily(call: CallbackQuery) -> None:
-    """Удаляет ответ на вопрос дня, шлёт пуш и показывает профиль отдельным сообщением."""
+    """Удаляет ответ на вопрос дня и шлёт пуш-уведомление."""
     await user_repo.upsert_user(call.from_user.id, daily_q=0, daily_a="")
     await call.answer(Message.DAILY_DELETED)
-    user = await user_repo.get_user(call.from_user.id)
-
-    # Пуш-уведомление отдельным сообщением
     await call.message.answer(Message.DAILY_DELETED)
-    # Профиль с фото — отдельным сообщением
-    await _send_profile_with_photo(call, user)
