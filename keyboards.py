@@ -144,7 +144,6 @@ def profile_kb(has_daily: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"{EMOJI.INTERESTS} Интересы", callback_data=CallbackPrefix.EDIT.with_param(EditField.INTERESTS.value)),
             InlineKeyboardButton(text="🖼 Фото", callback_data=CallbackPrefix.EDIT.with_param(EditField.PHOTOS.value)),
         ],
-        [InlineKeyboardButton(text=f"{EMOJI.DAILY_QUESTION} Ответить на вопрос дня", callback_data=CallbackPrefix.EDIT.with_param(EditField.DAILY.value))],
     ]
     if has_daily:
         rows.append([InlineKeyboardButton(text=f"{EMOJI.DELETE} Удалить ответ дня", callback_data=CallbackPrefix.EDIT.with_param(EditField.DELETE_DAILY.value))])
