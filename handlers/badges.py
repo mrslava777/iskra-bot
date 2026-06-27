@@ -1,83 +1,93 @@
-"""Хендлеры системы Артефактов (значков)."""
+"""Раздел «Артефакты» — коллекция значков и прогресс."""
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
-import database as db
-from keyboards import MAIN_MENU, badges_kb, badge_detail_kb
-from services.badges import (
-    check_and_award,
-    format_badge_card,
-    format_badges_list,
-    get_badge_progress,
-    get_user_badges,
-)
+import repositories.badge_repo as badge_repo
+import repositories.user_repo as user_repo
+from badges import BADGES, RARITY_EMOJI, RARITY_ORDER, rarity_label
+from data.constants import EMOJI, MenuText, Message as Msg
+from data.enums import BadgeAction, CallbackPrefix, Command as Cmd
+from keyboards import MAIN_MENU, badges_kb
+from services.badge_formatter import format_badge_card
+from services.badge_service import check_and_award, get_user_badges
 
 router = Router()
 
+TOTAL_BADGES = len(BADGES)
 
-@router.message(Command("badges"))
-@router.message(F.text == "🏆 Артефакты")
+
+def _format_collection(badges: list[dict]) -> str:
+    """Текст коллекции значков пользователя."""
+    if not badges:
+        return Msg.NO_BADGES
+    ordered = sorted(badges, key=lambda b: RARITY_ORDER.get(b["rarity"], 0), reverse=True)
+    lines = [Msg.BADGE_COLLECTION_TITLE.format(len(badges)), ""]
+    for b in ordered:
+        emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
+        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji}\n<i>{b['description']}</i>")
+    lines.append(f"\n📊 Всего: <b>{len(badges)}</b> / {TOTAL_BADGES}")
+    return "\n".join(lines)
+
+
+@router.message(Command(Cmd.BADGES.value[1:]))
+@router.message(F.text == MenuText.BADGES)
 async def cmd_badges(message: Message) -> None:
-    user = await db.get_user(message.from_user.id)
+    """Показывает коллекцию артефактов."""
+    user = await user_repo.get_user(message.from_user.id)
     if not user or not user["name"]:
-        await message.answer("Сначала создай анкету — /start.")
+        await message.answer(Msg.CREATE_PROFILE_FIRST)
         return
 
-    # Проверяем новые значки
     new_badges = await check_and_award(message.from_user.id)
+    for badge in new_badges:
+        await message.answer(format_badge_card(badge, is_new=True))
 
     badges = await get_user_badges(message.from_user.id)
-    text = format_badges_list(badges)
-
-    if new_badges:
-        # Показываем новые значки отдельными сообщениями
-        for badge in new_badges:
-            card = format_badge_card(badge, is_new=True)
-            await message.answer(card)
-
-    # Показываем общую коллекцию
-    total = len(badges)
-    text += f"\n\n📊 Всего: <b>{total}</b> / 15"
-    await message.answer(text, reply_markup=badges_kb(total))
+    await message.answer(_format_collection(badges), reply_markup=badges_kb(len(badges)))
 
 
-@router.callback_query(F.data == "bdg:collection")
-async def show_collection(call: CallbackQuery) -> None:
+@router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.COLLECTION.value}")
+async def cb_collection(call: CallbackQuery) -> None:
+    """Обновляет коллекцию."""
+    await check_and_award(call.from_user.id)
     badges = await get_user_badges(call.from_user.id)
-    text = format_badges_list(badges)
-    total = len(badges)
-    text += f"\n\n📊 Всего: <b>{total}</b> / 15"
-    await call.message.edit_text(text, reply_markup=badges_kb(total))
+    try:
+        await call.message.edit_text(_format_collection(badges), reply_markup=badges_kb(len(badges)))
+    except Exception:
+        pass
     await call.answer()
 
 
-@router.callback_query(F.data == "bdg:progress")
-async def show_progress(call: CallbackQuery) -> None:
-    progress = await get_badge_progress(call.from_user.id)
-    if not progress:
-        await call.answer("Все значки получены! 🎉", show_alert=True)
+@router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.PROGRESS.value}")
+async def cb_progress(call: CallbackQuery) -> None:
+    """Показывает ещё не полученные значки."""
+    earned = await badge_repo.get_user_badge_ids(call.from_user.id)
+    locked = [b for b in BADGES if b["id"] not in earned]
+    if not locked:
+        await call.answer("Все артефакты собраны! 🎉", show_alert=True)
         return
 
-    lines = ["📈 <b>Прогресс Артефактов</b>\n"]
-    # Сортируем по редкости
-    from data.badges import RARITY_ORDER
-    items = sorted(progress.items(), key=lambda x: RARITY_ORDER[x[1]["badge"]["rarity"]])
-
-    for badge_id, info in items[:8]:  # Показываем первые 8
-        b = info["badge"]
-        prog = info["progress"]
-        lines.append(f"{b['icon']} <b>{b['name']}</b> — {prog}")
-
-    if len(items) > 8:
-        lines.append(f"\n...и ещё {len(items) - 8}")
-
-    await call.message.edit_text("\n".join(lines), reply_markup=badges_kb(0))
+    locked.sort(key=lambda b: RARITY_ORDER.get(b["rarity"], 0))
+    lines = ["📈 <b>Прогресс Артефактов</b>", ""]
+    for b in locked[:10]:
+        emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
+        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji} ({rarity_label(b['rarity'])})\n<i>{b['description']}</i>")
+    if len(locked) > 10:
+        lines.append(f"\n…и ещё {len(locked) - 10}")
+    try:
+        await call.message.edit_text("\n".join(lines), reply_markup=badges_kb(0))
+    except Exception:
+        pass
     await call.answer()
 
 
-@router.callback_query(F.data == "bdg:back")
-async def badges_back(call: CallbackQuery) -> None:
-    await call.message.delete()
+@router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.BACK.value}")
+async def cb_back(call: CallbackQuery) -> None:
+    """Возврат в главное меню."""
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
     await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
     await call.answer()
