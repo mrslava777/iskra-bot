@@ -5,12 +5,12 @@ from aiogram.types import CallbackQuery, Message
 
 import repositories.badge_repo as badge_repo
 import repositories.user_repo as user_repo
-from badges import BADGES, RARITY_EMOJI, RARITY_ORDER, rarity_label
+from badges import BADGES, RARITY_EMOJI, RARITY_ORDER, get_badge_progress, rarity_label
 from data.constants import EMOJI, MenuText, Message as Msg, ProgressBar
 from data.enums import BadgeAction, CallbackPrefix, Command as Cmd
 from keyboards import HIDE_MENU, MAIN_MENU, badges_kb, badge_progress_kb
 from services.badge_formatter import format_badge_card
-from services.badge_service import check_and_award, get_user_badges
+from services.badge_service import check_and_award, get_user_badges, get_user_stats
 
 router = Router()
 
@@ -18,10 +18,10 @@ TOTAL_BADGES = len(BADGES)
 _BADGE_PAGE_SIZE = 10
 
 
-def _compat_bar(pct: int) -> str:
-    """Прогресс-бар для процентов."""
-    filled = round(pct / 100 * ProgressBar.SIZE)
-    return ProgressBar.FILLED * filled + ProgressBar.EMPTY * (ProgressBar.SIZE - filled)
+def _mini_bar(pct: int) -> str:
+    """Компактный прогресс-бар."""
+    filled = min(10, pct // 10)
+    return ProgressBar.FILLED * filled + ProgressBar.EMPTY * (10 - filled)
 
 
 def _format_collection(badges: list[dict]) -> str:
@@ -32,20 +32,25 @@ def _format_collection(badges: list[dict]) -> str:
     lines = [Msg.BADGE_COLLECTION_TITLE.format(len(badges)), ""]
     for b in ordered:
         emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
-        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji}\n<i>{b['description']}</i>")
+        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji}
+<i>{b['description']}</i>")
 
     # Прогресс-бар в коллекции
     pct = int(len(badges) / TOTAL_BADGES * 100)
-    bar = _compat_bar(pct)
-    lines.append(f"\n📊 Собрано: <b>{len(badges)}</b> / {TOTAL_BADGES} ({pct}%)")
+    bar = _mini_bar(pct)
+    lines.append(f"
+📊 Собрано: <b>{len(badges)}</b> / {TOTAL_BADGES} ({pct}%)")
     lines.append(f"{bar}")
-    return "\n".join(lines)
+    return "
+".join(lines)
 
 
-def _format_progress(locked: list[dict], page: int = 0) -> str:
-    """Форматирует страницу прогресса (недостающих артефактов)."""
+def _format_progress(locked: list[dict], user: dict, stats: dict, page: int = 0) -> str:
+    """Форматирует страницу прогресса (недостающих артефактов) с прогрессом под каждым."""
     if not locked:
-        return "🎉 <b>Все артефакты собраны!</b>\n\nТы настоящий легенда Искры!"
+        return "🎉 <b>Все артефакты собраны!</b>
+
+Ты настоящий легенда Искры!"
 
     start = page * _BADGE_PAGE_SIZE
     end = start + _BADGE_PAGE_SIZE
@@ -58,15 +63,26 @@ def _format_progress(locked: list[dict], page: int = 0) -> str:
 
     for b in page_badges:
         emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
-        lines.append(
-            f"{b['icon']} <b>{b['name']}</b> {emoji} ({rarity_label(b['rarity'])})",
-        )
+        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji} ({rarity_label(b['rarity'])})")
         lines.append(f"<i>└ {b['description']}</i>")
 
-    if total_pages > 1:
-        lines.append(f"\n📄 Страница {page + 1} / {total_pages}")
+        # ⬇️ ПРОГРЕСС ПОД КАЖДЫМ АРТЕФАКТОМ
+        progress_line = get_badge_progress(b, user, stats)
+        if progress_line:
+            lines.append(f"<code>  {progress_line}</code>")
+        else:
+            # Бинарные (да/нет) — показываем статус
+            if b["condition"](user, stats):
+                lines.append(f"<code>  ✅ Условие выполнено!</code>")
+            else:
+                lines.append(f"<code>  ⏳ Ещё не выполнено</code>")
+        lines.append("")  # отступ между артефактами
 
-    return "\n".join(lines)
+    if total_pages > 1:
+        lines.append(f"📄 Страница {page + 1} / {total_pages}")
+
+    return "
+".join(lines)
 
 
 @router.message(Command(Cmd.BADGES.value[1:]))
@@ -100,9 +116,12 @@ async def cb_collection(call: CallbackQuery) -> None:
     await call.answer()
 
 
-@router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.PROGRESS.value}")
+@router.callback_query(F.data.startswith(f"{CallbackPrefix.BADGE.value}:{BadgeAction.PROGRESS.value}"))
 async def cb_progress(call: CallbackQuery) -> None:
-    """Показывает прогресс (недостающие значки) с пагинацией."""
+    """Показывает прогресс (недостающие значки) с пагинацией.
+
+    Фикс: используем startswith вместо == чтобы ловить bdg:progress:0, bdg:progress:1 и т.д.
+    """
     earned = await badge_repo.get_user_badge_ids(call.from_user.id)
     locked = [b for b in BADGES if b["id"] not in earned]
 
@@ -113,7 +132,10 @@ async def cb_progress(call: CallbackQuery) -> None:
     total_pages = max(1, (len(locked) + _BADGE_PAGE_SIZE - 1) // _BADGE_PAGE_SIZE) if locked else 1
     page = max(0, min(page, total_pages - 1))
 
-    text = _format_progress(locked, page)
+    # ⬇️ ОПТИМИЗАЦИЯ: собираем статистику один раз
+    user, stats = await get_user_stats(call.from_user.id)
+
+    text = _format_progress(locked, user, stats, page)
     kb = badge_progress_kb(page=page, total_pages=total_pages)
 
     try:
