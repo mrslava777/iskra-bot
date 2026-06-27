@@ -255,14 +255,50 @@ def support_reply_kb(tg_id: int, ticket_id: int | None = None) -> InlineKeyboard
 
 # ===== КЛАВИАТУРЫ ДЛЯ АРТЕФАКТОВ =====
 
+_BADGE_PAGE_SIZE = 10
+
+
 def badges_kb(total: int) -> InlineKeyboardMarkup:
-    """Клавиатура раздела Артефакты — БЕЗ кнопки "В меню"."""
+    """Клавиатура раздела Артефакты — коллекция полученных значков."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📈 Прогресс", callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.PROGRESS.value))],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.COLLECTION.value))],
         ]
     )
+
+
+def badge_progress_kb(page: int = 0, total_pages: int = 1) -> InlineKeyboardMarkup:
+    """Клавиатура прогресса артефактов с пагинацией и кнопкой 'Мои артефакты'."""
+    rows = []
+
+    # Кнопка "Мои артефакты" сверху
+    rows.append([InlineKeyboardButton(
+        text=f"{EMOJI.BADGE_TROPHY} Мои артефакты",
+        callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.COLLECTION.value)
+    )])
+
+    # Пагинация
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.PROGRESS.value, page - 1)
+        ))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(
+            text="Вперёд ▶️",
+            callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.PROGRESS.value, page + 1)
+        ))
+    if nav_buttons:
+        rows.append(nav_buttons)
+
+    rows.append([InlineKeyboardButton(
+        text=f"{EMOJI.BACK} В меню",
+        callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.BACK.value)
+    )])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def badge_detail_kb() -> InlineKeyboardMarkup:
