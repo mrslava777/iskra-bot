@@ -8,7 +8,7 @@ import repositories.user_repo as user_repo
 from badges import BADGES, RARITY_EMOJI, RARITY_ORDER, rarity_label
 from data.constants import EMOJI, MenuText, Message as Msg
 from data.enums import BadgeAction, CallbackPrefix, Command as Cmd
-from keyboards import badges_kb
+from keyboards import HIDE_MENU, badges_kb
 from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award, get_user_badges
 
@@ -33,7 +33,7 @@ def _format_collection(badges: list[dict]) -> str:
 @router.message(Command(Cmd.BADGES.value[1:]))
 @router.message(F.text == MenuText.BADGES)
 async def cmd_badges(message: Message) -> None:
-    """Показывает коллекцию артефактов."""
+    """Показывает коллекцию артефактов. Скрывает меню."""
     user = await user_repo.get_user(message.from_user.id)
     if not user or not user["name"]:
         await message.answer(Msg.CREATE_PROFILE_FIRST)
@@ -45,6 +45,8 @@ async def cmd_badges(message: Message) -> None:
 
     badges = await get_user_badges(message.from_user.id)
     await message.answer(_format_collection(badges), reply_markup=badges_kb(len(badges)))
+    # Скрываем полное меню
+    await message.answer("👆 Артефакты", reply_markup=HIDE_MENU)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.COLLECTION.value}")
