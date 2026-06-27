@@ -1,4 +1,6 @@
 """Свидание вслепую 🎭 — анонимный чат с подбором собеседника.\n\nПоток:\n  • кнопка «🎭 Свидание вслепую» → ищем собеседника или встаём в очередь;\n  • как только нашёлся второй желающий — соединяем две стороны;\n  • сообщения (текст, фото, голосовые и т.п.) пересылаются анонимно через бота;\n  • «🎭 Открыться» — если оба нажали, показываем анкеты и создаём мэтч;\n  • «⏹ Завершить» / /stop — выходим из свидания.\n"""
+import logging
+
 from aiogram import Bot, F, Router
 from aiogram.filters import BaseFilter, Command
 from aiogram.fsm.context import FSMContext
@@ -9,6 +11,7 @@ from handlers.browse import _announce_match
 from keyboards import ANON_CHAT_MENU, MAIN_MENU, anon_queue_kb, anon_session_kb
 
 router = Router()
+log = logging.getLogger(__name__)
 
 BTN = "🎭 Свидание вслепую"
 STOP_BTN = "⏹ Завершить свидание"
@@ -154,9 +157,13 @@ async def reveal(call: CallbackQuery, bot: Bot) -> None:
         await db.anon_end(call.from_user.id)
         await _announce_match(bot, s["a_id"], s["b_id"])
 
-        # Создаём запись отношений
-        from services.relationships import RelationshipService
-        await RelationshipService.ensure_exists(s["a_id"], s["b_id"])
+        # Создаём запись отношений (раньше тут вызывался несуществующий
+        # RelationshipService.ensure_exists → падал весь reveal-флоу).
+        from services.relationships import create_relationship_if_not_exists
+        try:
+            await create_relationship_if_not_exists(s["a_id"], s["b_id"])
+        except Exception:
+            log.exception("create_relationship failed for %s/%s", s["a_id"], s["b_id"])
         for who in (s["a_id"], s["b_id"]):
             try:
                 await bot.send_message(
@@ -195,7 +202,7 @@ async def relay(message: Message, bot: Bot) -> None:
     try:
         await add_message_event(message.from_user.id, partner)
     except Exception:
-        pass
+        log.exception("add_message_event failed for %s/%s", message.from_user.id, partner)
 
     try:
         await bot.copy_message(

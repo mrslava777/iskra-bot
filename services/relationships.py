@@ -20,8 +20,7 @@ MIN_MESSAGE_INTERVAL = 120  # 2 минуты
 STREAK_BONUS_24H = 5
 STREAK_BONUS_2DAYS = 10
 STREAK_BONUS_5DAYS = 20
-SILENCE_PENALTY_2DAYS = -10
-SILENCE_PENALTY_5DAYS = -25
+# Штрафы за тишину отключены по просьбе владельца (наказывали за возвращение).
 
 
 def _normalize_pair(a: int, b: int) -> tuple[int, int]:
@@ -162,26 +161,9 @@ async def add_message_event(user_from: int, user_to: int) -> dict:
     if row and row["cnt"] >= 5:
         points_to_add += STREAK_BONUS_5DAYS
 
-    # Проверяем тишину (штрафы)
-    two_days_ago = now - 2 * 86400
-    cur = await conn.execute(
-        """SELECT 1 FROM relationship_events
-           WHERE pair_u1 = ? AND pair_u2 = ? AND event_at > ? LIMIT 1""",
-        (u1, u2, two_days_ago),
-    )
-    no_msg_2d = not await cur.fetchone()
-    if no_msg_2d:
-        points_to_add += SILENCE_PENALTY_2DAYS
-
-    five_days_ago_ts = now - 5 * 86400
-    cur = await conn.execute(
-        """SELECT 1 FROM relationship_events
-           WHERE pair_u1 = ? AND pair_u2 = ? AND event_at > ? LIMIT 1""",
-        (u1, u2, five_days_ago_ts),
-    )
-    no_msg_5d = not await cur.fetchone()
-    if no_msg_5d:
-        points_to_add += SILENCE_PENALTY_5DAYS
+    # Штрафы за тишину отключены: прежняя логика наказывала пару именно в момент
+    # возвращения к общению (и обнуляла самое первое сообщение). Оставляем только
+    # положительное начисление — очки растут, но не уходят в минус.
 
     # Записываем событие
     await conn.execute(

@@ -19,9 +19,27 @@ async def get_db() -> aiosqlite.Connection:
             os.makedirs(parent, exist_ok=True)
         _db = await aiosqlite.connect(DB_PATH)
         _db.row_factory = aiosqlite.Row
+        # WAL: параллельные читатели не блокируют писателя.
         await _db.execute("PRAGMA journal_mode=WAL;")
         await _db.execute("PRAGMA foreign_keys=ON;")
+        # synchronous=NORMAL безопасен в WAL и заметно ускоряет запись.
+        await _db.execute("PRAGMA synchronous=NORMAL;")
+        # Ждём до 5с при блокировке вместо мгновенной ошибки "database is locked".
+        await _db.execute("PRAGMA busy_timeout=5000;")
+        # Кэш страниц (~8 МБ) — меньше обращений к диску под нагрузкой.
+        await _db.execute("PRAGMA cache_size=-8000;")
     return _db
+
+
+async def close_db() -> None:
+    """Корректно закрывает соединение (для graceful shutdown)."""
+    global _db
+    if _db is not None:
+        try:
+            await _db.commit()
+        finally:
+            await _db.close()
+            _db = None
 
 
 async def init_db() -> None:
@@ -73,11 +91,18 @@ async def init_db() -> None:
             PRIMARY KEY (a_id, b_id)
         );
 
+        -- get_matches фильтрует по (a_id OR b_id); PK покрывает a_id, индекс — b_id.
+        CREATE INDEX IF NOT EXISTS idx_matches_b ON matches(b_id);
+
         CREATE TABLE IF NOT EXISTS reports (
             from_id INTEGER,
             to_id   INTEGER,
             created_at INTEGER
         );
+
+        -- агрегации по жалобам в админке и авто-бане.
+        CREATE INDEX IF NOT EXISTS idx_reports_to ON reports(to_id);
+        CREATE INDEX IF NOT EXISTS idx_reports_from ON reports(from_id);
 
         CREATE TABLE IF NOT EXISTS anon_queue (
             tg_id      INTEGER PRIMARY KEY,
@@ -148,17 +173,28 @@ async def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_relationships_users ON relationships(user1_id, user2_id);
 
-        CREATE TABLE IF NOT EXISTS relationship_points_log (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user1_id    INTEGER NOT NULL,
-            user2_id    INTEGER NOT NULL,
-            points      INTEGER NOT NULL,
-            reason      TEXT,
-            created_at  INTEGER,
-            UNIQUE (user1_id, user2_id, created_at)
+        -- Журнал событий отношений (используется services/relationships.py:
+        -- дневные лимиты, стрики, штрафы за тишину). Пара всегда нормализована
+        -- (pair_u1 < pair_u2). Ранее эта таблица не создавалась => фича молча
+        -- падала и откатывалась try/except в anon-чате.
+        CREATE TABLE IF NOT EXISTS relationship_events (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair_u1   INTEGER NOT NULL,
+            pair_u2   INTEGER NOT NULL,
+            user_from INTEGER NOT NULL,
+            event_at  INTEGER NOT NULL,
+            day_start INTEGER NOT NULL,
+            delta     INTEGER NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_rel_points ON relationship_points_log(user1_id, user2_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_rel_events_pair_day
+            ON relationship_events(pair_u1, pair_u2, day_start);
+        CREATE INDEX IF NOT EXISTS idx_rel_events_pair_at
+            ON relationship_events(pair_u1, pair_u2, event_at);
+
+        -- Индекс под ленту: фильтр active/is_banned/age в next_candidate.
+        CREATE INDEX IF NOT EXISTS idx_users_feed
+            ON users(active, is_banned, age);
         """
     )
 
@@ -186,7 +222,21 @@ async def get_user(tg_id: int) -> Optional[aiosqlite.Row]:
     return await cur.fetchone()
 
 
+# Разрешённые к записи колонки users. Имена колонок подставляются в SQL
+# через f-string (параметризовать имена нельзя), поэтому фиксируем allowlist —
+# защита от случайной/злонамеренной инъекции имени поля.
+_USER_COLUMNS = frozenset({
+    "username", "name", "age", "gender", "seeking", "city", "bio", "photo_id",
+    "interests", "daily_q", "daily_a", "active", "is_banned", "streak",
+    "last_active", "rating", "shown", "min_age", "max_age", "created_at",
+    "verified", "anon_messages_count",
+})
+
+
 async def upsert_user(tg_id: int, **fields: Any) -> None:
+    bad = set(fields) - _USER_COLUMNS
+    if bad:
+        raise ValueError(f"upsert_user: недопустимые колонки: {sorted(bad)}")
     db = await get_db()
     existing = await get_user(tg_id)
     if existing is None:
@@ -355,11 +405,6 @@ async def incoming_likes(tg_id: int) -> list[aiosqlite.Row]:
         (tg_id, tg_id),
     )
     return await cur.fetchall()
-
-
-async def count_incoming_likes(tg_id: int) -> int:
-    rows = await incoming_likes(tg_id)
-    return len(rows)
 
 
 async def get_matches(tg_id: int) -> list[aiosqlite.Row]:
@@ -798,134 +843,3 @@ async def tickets_count(status: str | None = None) -> int:
     row = await cur.fetchone()
     return row["c"] if row else 0
 
-
-# ---------- Уровни отношений (relationships) ----------
-
-async def get_relationship(user1_id: int, user2_id: int) -> Optional[aiosqlite.Row]:
-    """Возвращает запись отношений между двумя пользователями."""
-    db = await get_db()
-    a, b = sorted((user1_id, user2_id))
-    cur = await db.execute(
-        "SELECT * FROM relationships WHERE user1_id = ? AND user2_id = ?",
-        (a, b),
-    )
-    return await cur.fetchone()
-
-
-async def create_relationship(user1_id: int, user2_id: int) -> None:
-    """Создаёт запись отношений, если её ещё нет."""
-    db = await get_db()
-    a, b = sorted((user1_id, user2_id))
-    now = int(time.time())
-    await db.execute(
-        """INSERT OR IGNORE INTO relationships (user1_id, user2_id, level, points, last_message_at, created_at)
-           VALUES (?, ?, 0, 0, ?, ?)""",
-        (a, b, now, now),
-    )
-    await db.commit()
-
-
-async def update_relationship_points(user1_id: int, user2_id: int, points_delta: int, reason: str = "") -> None:
-    """Обновляет points и last_message_at."""
-    db = await get_db()
-    a, b = sorted((user1_id, user2_id))
-    now = int(time.time())
-
-    # Проверяем лимит 20 points в сутки
-    day_start = now - (now % 86400)
-    cur = await db.execute(
-        """SELECT COALESCE(SUM(points), 0) AS daily FROM relationship_points_log
-           WHERE user1_id = ? AND user2_id = ? AND created_at >= ?""",
-        (a, b, day_start),
-    )
-    row = await cur.fetchone()
-    daily = row["daily"] if row else 0
-
-    if daily + points_delta > 20:
-        points_delta = max(0, 20 - daily)
-
-    if points_delta <= 0:
-        # Всё равно обновляем last_message_at
-        await db.execute(
-            "UPDATE relationships SET last_message_at = ? WHERE user1_id = ? AND user2_id = ?",
-            (now, a, b),
-        )
-        await db.commit()
-        return
-
-    # Обновляем points
-    await db.execute(
-        """UPDATE relationships
-           SET points = points + ?, last_message_at = ?
-           WHERE user1_id = ? AND user2_id = ?""",
-        (points_delta, now, a, b),
-    )
-
-    # Логируем
-    await db.execute(
-        """INSERT OR IGNORE INTO relationship_points_log (user1_id, user2_id, points, reason, created_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        (a, b, points_delta, reason, now),
-    )
-
-    await db.commit()
-
-
-async def update_relationship_level(user1_id: int, user2_id: int) -> int:
-    """Пересчитывает и обновляет level на основе points. Возвращает новый level."""
-    db = await get_db()
-    a, b = sorted((user1_id, user2_id))
-
-    cur = await db.execute(
-        "SELECT points FROM relationships WHERE user1_id = ? AND user2_id = ?",
-        (a, b),
-    )
-    row = await cur.fetchone()
-    if not row:
-        return 0
-
-    pts = row["points"]
-    new_level = 0
-    if pts >= 100:
-        new_level = 4
-    elif pts >= 60:
-        new_level = 3
-    elif pts >= 30:
-        new_level = 2
-    elif pts >= 10:
-        new_level = 1
-
-    await db.execute(
-        "UPDATE relationships SET level = ? WHERE user1_id = ? AND user2_id = ?",
-        (new_level, a, b),
-    )
-    await db.commit()
-    return new_level
-
-
-async def get_relationship_stats(user1_id: int, user2_id: int) -> dict:
-    """Возвращает полную статистику отношений."""
-    db = await get_db()
-    a, b = sorted((user1_id, user2_id))
-    cur = await db.execute(
-        "SELECT * FROM relationships WHERE user1_id = ? AND user2_id = ?",
-        (a, b),
-    )
-    row = await cur.fetchone()
-
-    if not row:
-        return {"exists": False, "level": 0, "points": 0, "next": 10}
-
-    level = row["level"]
-    points = row["points"]
-    thresholds = {0: 10, 1: 30, 2: 60, 3: 100, 4: 100}
-    next_threshold = thresholds.get(level, 100)
-
-    return {
-        "exists": True,
-        "level": level,
-        "points": points,
-        "next": next_threshold,
-        "last_message_at": row["last_message_at"],
-        "created_at": row["created_at"],
-    }

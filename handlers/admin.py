@@ -1,7 +1,10 @@
 """Админ-панель в Telegram — статистика, жалобы, бан/разбан."""
+import asyncio
+import logging
 import time
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
@@ -9,6 +12,11 @@ import database as db
 from config import ADMIN_IDS
 
 router = Router()
+log = logging.getLogger(__name__)
+
+# Telegram ограничивает рассылку ~30 сообщений/сек. Держим запас.
+BROADCAST_RATE = 25  # сообщений в секунду
+BROADCAST_PAUSE = 1.0 / BROADCAST_RATE
 
 
 def is_admin(tg_id: int) -> bool:
@@ -346,12 +354,34 @@ async def cmd_broadcast(message: Message) -> None:
     sent = 0
     failed = 0
     status = await message.answer(f"📣 Отправляю {len(users)} пользователям...")
-    for uid in users:
+    for i, uid in enumerate(users, 1):
         try:
             await message.bot.send_message(uid, f"📢 {text}")
             sent += 1
-        except Exception:
+        except TelegramRetryAfter as e:
+            # Превысили флуд-лимит — ждём столько, сколько просит Telegram, и повторяем.
+            log.warning("Broadcast flood-limit, ждём %s c", e.retry_after)
+            await asyncio.sleep(e.retry_after)
+            try:
+                await message.bot.send_message(uid, f"📢 {text}")
+                sent += 1
+            except Exception:
+                failed += 1
+        except TelegramForbiddenError:
+            # Пользователь заблокировал бота — это нормально, просто считаем.
             failed += 1
+        except Exception:
+            log.exception("Broadcast: не удалось отправить %s", uid)
+            failed += 1
+
+        # Троттлинг + периодическое обновление прогресса.
+        await asyncio.sleep(BROADCAST_PAUSE)
+        if i % 100 == 0:
+            try:
+                await status.edit_text(f"📣 Отправлено {i}/{len(users)}…")
+            except Exception:
+                pass
+
     await status.edit_text(
         f"📣 <b>Рассылка завершена</b>\n\n"
         f"✅ Доставлено: {sent}\n❌ Ошибок: {failed}"

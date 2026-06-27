@@ -13,6 +13,13 @@ async def _get_stats(user_id: int) -> dict:
     conn = await db.get_db()
     stats: dict = {}
 
+    # streak/rating берём из профиля — нужны для корректного показа прогресса
+    # значков (раньше _calc_progress читал их из stats и всегда показывал 0).
+    me_row = await db.get_user(user_id)
+    if me_row:
+        stats["streak"] = me_row["streak"] or 0
+        stats["rating"] = me_row["rating"] or 0
+
     # Количество мэтчей
     cur = await conn.execute(
         "SELECT COUNT(*) c FROM matches WHERE a_id = ? OR b_id = ?",

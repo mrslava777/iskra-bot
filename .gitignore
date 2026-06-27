@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Локальная БД и WAL/SHM (никогда не коммитим данные пользователей!)
+*.db
+*.db-wal
+*.db-shm
+iskra.db*
+data/*.db
+
+# Секреты
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Временное
+smoke_test.py
+*.log
