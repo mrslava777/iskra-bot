@@ -5,11 +5,10 @@ from database.connection import get_db
 async def get_badge_count(badge_id: str) -> int:
     """Возвращает количество обладателей значка."""
     conn = await get_db()
-    cur = await conn.execute(
-        "SELECT COUNT(*) c FROM user_badges WHERE badge_id = ?",
-        (badge_id,)
+    row = await conn.fetchrow(
+        "SELECT COUNT(*) c FROM user_badges WHERE badge_id = $1",
+        badge_id,
     )
-    row = await cur.fetchone()
     return row["c"] if row else 0
 
 
@@ -19,19 +18,17 @@ async def get_all_badge_counts() -> dict[str, int]:
     Оптимизация: вместо N запросов get_badge_count() — один GROUP BY.
     """
     conn = await get_db()
-    cur = await conn.execute(
+    rows = await conn.fetch(
         "SELECT badge_id, COUNT(*) as c FROM user_badges GROUP BY badge_id"
     )
-    rows = await cur.fetchall()
     return {r["badge_id"]: r["c"] for r in rows}
 
 
 async def get_top_collectors(limit: int = 10) -> list:
     """Возвращает топ коллекционеров."""
     conn = await get_db()
-    cur = await conn.execute(
-        """SELECT tg_id, COUNT(*) as cnt FROM user_badges GROUP BY tg_id ORDER BY cnt DESC LIMIT ?""",
-        (limit,)
+    rows = await conn.fetch(
+        """SELECT tg_id, COUNT(*) as cnt FROM user_badges GROUP BY tg_id ORDER BY cnt DESC LIMIT $1""",
+        limit,
     )
-    rows = await cur.fetchall()
     return [dict(r) for r in rows]

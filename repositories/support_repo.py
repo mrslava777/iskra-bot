@@ -13,16 +13,14 @@ async def create_ticket(
     """Создаёт тикет и возвращает его id."""
     conn = await get_single_db()
     try:
-        cur = await conn.execute(
+        row = await conn.fetchrow(
             """
             INSERT INTO tickets (tg_id, category, text, photo_id, status, created_at)
-            VALUES (?, ?, ?, ?, 'open', strftime('%s','now'))
+            VALUES ($1, $2, $3, $4, 'open', EXTRACT(EPOCH FROM NOW())::INTEGER)
             RETURNING id
             """,
-            (tg_id, category, text, photo_id),
+            tg_id, category, text, photo_id,
         )
-        row = await cur.fetchone()
-        await conn.commit()
         return row["id"] if row else 0
     finally:
         await conn.close()
@@ -33,9 +31,8 @@ async def reply_ticket(ticket_id: int, reply_text: str) -> None:
     conn = await get_single_db()
     try:
         await conn.execute(
-            "UPDATE tickets SET reply = ?, status = 'replied' WHERE id = ?",
-            (reply_text, ticket_id),
+            "UPDATE tickets SET reply = $1, status = 'replied' WHERE id = $2",
+            reply_text, ticket_id,
         )
-        await conn.commit()
     finally:
         await conn.close()
