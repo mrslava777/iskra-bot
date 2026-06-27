@@ -1,7 +1,7 @@
 """Расчёт совместимости и оформление анкет."""
 from typing import Iterable
 
-from data.content import INTERESTS
+from data.content import INTERESTS, daily_question
 
 
 def parse_interests(raw: str | None) -> list[int]:
@@ -89,8 +89,6 @@ async def profile_caption_async(user, *, viewer=None, show_compat: bool = False,
         lines.append(f"\n🏷 {interests}")
 
     if user["daily_a"]:
-        from data.content import daily_question
-
         q = daily_question(user["daily_q"] or 0)
         lines.append(f"\n💭 <i>{q}</i>\n— {user['daily_a']}")
 
