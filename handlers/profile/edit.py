@@ -4,7 +4,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 import repositories.user_repo as user_repo
-from data.constants import Length, Age, Interest, EMOJI, Message
+import repositories.photo_repo as photo_repo
+from data.constants import Length, Age, Interest, EMOJI, Message, Format
 from data.enums import CallbackPrefix, EditField
 from keyboards import interests_kb, profile_kb
 from services.profile_formatter import format_profile_async
@@ -23,15 +24,8 @@ _EDIT_FIELDS = {
 }
 
 
-async def _send_profile_update(message_or_call, user: dict, prefix: str = "✅ Обновлено!") -> None:
-    """Отправляет обновленный профиль с фото и клавиатурой.
-
-    Оптимизация: вместо edit_text/edit_caption (которые теряют фото или не работают
-    на текстовых сообщениях) — отправляем новое сообщение с фото.
-    """
-    import repositories.photo_repo as photo_repo
-    from data.constants import Format
-
+async def _send_profile_with_photo(target: Message | CallbackQuery, user: dict) -> None:
+    """Отправляет профиль с фото и клавиатурой отдельным сообщением."""
     caption = await format_profile_async(user, show_compat=False, show_badges=True)
     n_photos = await photo_repo.photo_count(user["tg_id"])
     photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
@@ -39,34 +33,16 @@ async def _send_profile_update(message_or_call, user: dict, prefix: str = "✅ �
 
     has_daily = bool(user.get("daily_a"))
     kb = profile_kb(has_daily=has_daily)
-    text = prefix + "\n\n" + caption
 
-    if isinstance(message_or_call, CallbackQuery):
-        # Для callback — редактируем если возможно, иначе новое сообщение
-        msg = message_or_call.message
-        if msg.photo:
-            try:
-                await msg.edit_caption(caption=text, reply_markup=kb)
-                return
-            except Exception:
-                pass
-        try:
-            await msg.edit_text(text, reply_markup=kb)
-            return
-        except Exception:
-            pass
-        # Fallback — новое сообщение
-        try:
-            await message_or_call.message.answer_photo(photo=user["photo_id"], caption=text, reply_markup=kb)
-        except Exception:
-            await message_or_call.message.answer(text, reply_markup=kb)
+    if isinstance(target, CallbackQuery):
+        msg = target.message
     else:
-        # Для message — всегда отправляем фото с подписью
-        msg = message_or_call
-        try:
-            await msg.answer_photo(photo=user["photo_id"], caption=text, reply_markup=kb)
-        except Exception:
-            await msg.answer(text, reply_markup=kb)
+        msg = target
+
+    try:
+        await msg.answer_photo(photo=user["photo_id"], caption=caption, reply_markup=kb)
+    except Exception:
+        await msg.answer(caption, reply_markup=kb)
 
 
 @router.callback_query(F.data.in_({f"{CallbackPrefix.EDIT.value}:{f}" for f in _EDIT_FIELDS}))
@@ -102,7 +78,7 @@ async def on_edit_field(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Edit.value, F.text)
 async def edit_value(message: Message, state: FSMContext) -> None:
-    """Сохраняет новое значение поля и показывает обновленный профиль с фото."""
+    """Сохраняет новое значение поля, шлёт пуш и показывает профиль отдельным сообщением."""
     data = await state.get_data()
     field = data.get("edit_field")
     text = message.text.strip()
@@ -132,7 +108,11 @@ async def edit_value(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     user = await user_repo.get_user(message.from_user.id)
-    await _send_profile_update(message, user)
+
+    # Пуш-уведомление отдельным сообщением
+    await message.answer("✅ Обновлено!")
+    # Профиль с фото — отдельным сообщением
+    await _send_profile_with_photo(message, user)
 
 
 @router.callback_query(Edit.interests, F.data.startswith(f"{CallbackPrefix.EDIT_INTEREST.value}:"))
@@ -147,7 +127,11 @@ async def edit_interests(call: CallbackQuery, state: FSMContext) -> None:
         await user_repo.upsert_user(call.from_user.id, interests=interests)
         await state.clear()
         user = await user_repo.get_user(call.from_user.id)
-        await _send_profile_update(call, user, "✅ Интересы обновлены!")
+
+        # Пуш-уведомление отдельным сообщением
+        await call.message.answer("✅ Интересы обновлены!")
+        # Профиль с фото — отдельным сообщением
+        await _send_profile_with_photo(call, user)
         return
 
     idx = int(payload)
