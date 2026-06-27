@@ -13,6 +13,7 @@ from data.enums import CallbackPrefix, SwipeAction
 from keyboards import MAIN_MENU, browse_kb
 from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award
+from services.compatibility import compatibility
 from services.notification import announce_match, notify_liked
 from services.profile_formatter import format_profile_async
 
@@ -39,6 +40,10 @@ async def _show_next(message: Message, viewer_id: int) -> None:
         await message.answer(Message.NO_MORE_PROFILES, reply_markup=MAIN_MENU)
         return
     await profile_repo.mark_shown(viewer_id, cand["tg_id"])
+
+    # Запоминаем максимальную совместимость (для значка high_compat).
+    pct = compatibility(viewer.get("interests"), cand.get("interests"))
+    await user_repo.update_max_compat(viewer_id, pct)
 
     caption = await format_profile_async(cand, viewer=viewer, show_compat=True, show_badges=True)
     extra = await photo_repo.photo_count(cand["tg_id"]) > 1

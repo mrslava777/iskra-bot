@@ -10,6 +10,8 @@ from data.constants import Message
 from data.enums import CallbackPrefix, AnonAction
 from keyboards import MAIN_MENU, anon_session_kb
 from services.anon_rate_limiter import check_rate_limit
+from services.badge_formatter import format_badge_card
+from services.badge_service import check_and_award
 from services.notification import announce_match
 from services.relationship_service import RelationshipService, add_message_event
 
@@ -32,7 +34,11 @@ async def reveal(call: CallbackQuery, bot: Bot) -> None:
         await call.message.answer("Свидание уже завершено.", reply_markup=MAIN_MENU)
         return
 
-    partner = s["b_id"] if s["a_id"] == call.from_user.id else s["b_id"]
+    # Значок revealer (раскрылся в ≥10 свиданиях).
+    for badge in await check_and_award(call.from_user.id):
+        await call.message.answer(format_badge_card(badge, is_new=True))
+
+    partner = s["b_id"] if s["a_id"] == call.from_user.id else s["a_id"]
     both_revealed = s["a_reveal"] and s["b_reveal"]
 
     if both_revealed:

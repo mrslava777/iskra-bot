@@ -40,12 +40,20 @@ async def on_photo_delete(call: CallbackQuery, state: FSMContext) -> None:
     idx = int(call.data.split(":")[2])
     photos = await photo_repo.get_photos(call.from_user.id)
     if 0 <= idx < len(photos):
-        # TODO: реализовать удаление через репозиторий
+        await photo_repo.remove_photo(call.from_user.id, idx)
+        # Если удалили главное фото (поз. 0) — синхронизируем users.photo_id
+        # с новым первым фото галереи (или очищаем, если фото не осталось).
+        remaining = await photo_repo.get_photos(call.from_user.id)
+        new_main = remaining[0]["photo_id"] if remaining else None
+        await user_repo.upsert_user(call.from_user.id, photo_id=new_main)
         await call.answer("Фото удалено")
     else:
         await call.answer("Неверный индекс")
     count = await photo_repo.photo_count(call.from_user.id)
-    await call.message.edit_reply_markup(reply_markup=photos_manage_kb(count))
+    await call.message.edit_text(
+        f"🖼 Управление фото\n\nЗагружено: {count}/{Photo.MAX_TOTAL}",
+        reply_markup=photos_manage_kb(count),
+    )
 
 
 @router.callback_query(Edit.photos, F.data == f"{CallbackPrefix.PHOTO.value}:{PhotoAction.BACK.value}")

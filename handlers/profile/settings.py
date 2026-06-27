@@ -53,9 +53,13 @@ async def save_age_filter(message: Message, state: FSMContext) -> None:
     if not (Age.MIN <= min_age < max_age <= Age.MAX):
         await message.answer(Message.AGE_RANGE_INVALID)
         return
-    # TODO: сохранить фильтр через репозиторий настроек
+    await user_repo.upsert_user(message.from_user.id, min_age=min_age, max_age=max_age)
     await state.clear()
-    await message.answer(Format.AGE_FILTER_SAVED.format(min_age, max_age), reply_markup=settings_kb(True))
+    user = await user_repo.get_user(message.from_user.id)
+    await message.answer(
+        Format.AGE_FILTER_SAVED.format(min_age, max_age),
+        reply_markup=settings_kb(bool(user.get("active"))),
+    )
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.SEEKING.value}")
@@ -89,7 +93,7 @@ async def on_delete_account(call: CallbackQuery) -> None:
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.DELETE_CONFIRM.value}")
 async def on_confirm_delete(call: CallbackQuery) -> None:
     """Удаляет аккаунт."""
-    # TODO: реализовать полное удаление через сервис
+    await user_repo.delete_user(call.from_user.id)
     await call.message.edit_text(Message.ACCOUNT_DELETED)
     await call.answer("Аккаунт удалён")
 

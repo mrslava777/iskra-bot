@@ -47,6 +47,12 @@ async def next_candidate(viewer_id: int, viewer: dict | None = None) -> Optional
         query += " AND (u.seeking = ? OR u.seeking = 'any')"
         params.append(gender)
 
+    # Фильтр по возрасту (предпочтения смотрящего).
+    min_age = viewer.get("min_age") or 18
+    max_age = viewer.get("max_age") or 99
+    query += " AND u.age BETWEEN ? AND ?"
+    params.extend([min_age, max_age])
+
     query += " ORDER BY u.last_active DESC LIMIT 1"
 
     cur = await conn.execute(query, params)

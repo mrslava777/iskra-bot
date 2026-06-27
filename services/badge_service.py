@@ -2,6 +2,7 @@
 import time
 
 from badges import BADGES, BADGE_BY_ID
+import repositories.anon_repo as anon_repo
 import repositories.badge_repo as badge_repo
 import repositories.photo_repo as photo_repo
 import repositories.user_repo as user_repo
@@ -40,8 +41,8 @@ async def _collect_stats(tg_id: int, user: dict) -> dict:
         "photo_count": await photo_repo.photo_count(tg_id),
         "reports_sent": batch["reports_sent"],
         "msglikes": batch["msglikes"],
-        "anon_reveals": 0,
-        "max_compat": 0,
+        "anon_reveals": await anon_repo.anon_reveal_count(tg_id),
+        "max_compat": user.get("max_compat", 0) or 0,
     }
 
 

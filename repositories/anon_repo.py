@@ -147,3 +147,17 @@ async def anon_end(tg_id: int) -> Optional[int]:
         return None
     finally:
         await conn.close()
+
+
+async def anon_reveal_count(tg_id: int) -> int:
+    """Сколько раз пользователь раскрывался в анонимных свиданиях (для значка revealer)."""
+    conn = await get_db()
+    cur = await conn.execute(
+        """
+        SELECT COUNT(*) AS c FROM anon_sessions
+        WHERE (a_id = ? AND a_reveal = 1) OR (b_id = ? AND b_reveal = 1)
+        """,
+        (tg_id, tg_id),
+    )
+    row = await cur.fetchone()
+    return row["c"] if row else 0
