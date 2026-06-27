@@ -108,7 +108,7 @@ async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
     elif len(sel) < Interest.MAX_SELECTED:
         sel.append(idx)
     else:
-        await call.answer(Message.MAX_INTERESTS, show_alert=False)
+        await call.answer(Message.MAX_INTERESTS, show_alert=True)
         return
     await state.update_data(sel_interests=sel)
     await call.message.edit_reply_markup(reply_markup=interests_kb(sel, CallbackPrefix.REG_INTEREST.value))
@@ -156,7 +156,7 @@ async def reg_photo(message: Message, state: FSMContext) -> None:
 @router.callback_query(Reg.extra_photos, F.data == f"{CallbackPrefix.REG_PHOTO.value}:skip")
 async def reg_skip_extra(call: CallbackQuery, state: FSMContext) -> None:
     await _finish_registration(call.message, call.from_user.id, state)
-    await call.answer()
+    await call.answer("✅ Анкета готова!", show_alert=True)
 
 
 @router.message(Reg.extra_photos, F.photo)
