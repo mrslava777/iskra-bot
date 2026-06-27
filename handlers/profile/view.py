@@ -7,7 +7,7 @@ import repositories.user_repo as user_repo
 import repositories.photo_repo as photo_repo
 from data.constants import MenuText, Message, Format
 from data.enums import Command as Cmd
-from keyboards import profile_kb
+from keyboards import profile_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
 from services.badge_service import check_and_award
 from services.badge_formatter import format_badge_card
@@ -18,7 +18,7 @@ router = Router()
 @router.message(Command(Cmd.MYPROFILE.value[1:]))
 @router.message(F.text == MenuText.MY_PROFILE)
 async def show_my_profile(message: Message) -> None:
-    """Показывает анкету текущего пользователя."""
+    """Показывает анкету текущего пользователя + главное меню."""
     user = await user_repo.get_user(message.from_user.id)
     if not user or not user["name"]:
         await message.answer(Message.CREATE_PROFILE_FIRST)
@@ -41,3 +41,6 @@ async def show_my_profile(message: Message) -> None:
     new_badges = await check_and_award(message.from_user.id)
     for badge in new_badges:
         await message.answer(format_badge_card(badge, is_new=True))
+
+    # Показываем главное меню для удобства навигации
+    await message.answer("Главное меню:", reply_markup=MAIN_MENU)
