@@ -205,7 +205,9 @@ CREATE TABLE IF NOT EXISTS user_badges (
     awarded_at INTEGER NOT NULL,
     PRIMARY KEY (tg_id, badge_id)
 );
+"""
 
+INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_users_active_banned ON users(active, is_banned);
 CREATE INDEX IF NOT EXISTS idx_users_last_active   ON users(last_active DESC);
 CREATE INDEX IF NOT EXISTS idx_photos_tg           ON photos(tg_id);
@@ -222,11 +224,50 @@ CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
 CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, age);
 """
 
+# Колонки, которые могут отсутствовать в старых версиях таблицы
+# (ключ: таблица, значение: список (имя_колонки, тип, default))
+MISSING_COLUMNS = {
+    "users": [
+        ("is_banned", "INTEGER", "0"),
+        ("streak", "INTEGER", "0"),
+        ("rating", "INTEGER", "0"),
+        ("daily_q", "INTEGER", "0"),
+        ("daily_a", "TEXT", "''"),
+        ("anon_messages_count", "INTEGER", "0"),
+        ("min_age", "INTEGER", "18"),
+        ("max_age", "INTEGER", "99"),
+        ("max_compat", "INTEGER", "0"),
+    ]
+}
+
+
+async def _ensure_columns(conn: asyncpg.Connection) -> None:
+    """Добавляет недостающие колонки в существующие таблицы."""
+    for table, columns in MISSING_COLUMNS.items():
+        for col_name, col_type, default in columns:
+            try:
+                await conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type} DEFAULT {default}"
+                )
+                log.info("Колонка %s.%s проверена/добавлена", table, col_name)
+            except Exception as e:
+                log.warning("Не удалось добавить колонку %s.%s: %s", table, col_name, e)
+
 
 async def init_schema(conn: asyncpg.Connection) -> None:
-    """Создаёт все таблицы и индексы (идемпотентно)."""
+    """Создаёт все таблицы и индексы (идемпотентно).
+
+    Работает даже если таблицы уже существуют без некоторых колонок.
+    """
     log.info("Создаю таблицы...")
-    
+
+    # Шаг 1: Создаём таблицы (если не существуют)
     await conn.execute(SCHEMA_SQL)
+
+    # Шаг 2: Добавляем недостающие колонки (для миграции старых таблиц)
+    await _ensure_columns(conn)
+
+    # Шаг 3: Создаём индексы (теперь все колонки гарантированно существуют)
+    await conn.execute(INDEX_SQL)
 
     log.info("Таблицы созданы")
