@@ -286,6 +286,7 @@ class MenuText:
     SETTINGS = f"{EMOJI.SETTINGS} Настройки"
     SUPPORT = f"{EMOJI.SUPPORT} Поддержка"
     STOP_BLIND_DATE = f"{EMOJI.STOP} Завершить свидание"
+    MENU = "📋 Меню"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
