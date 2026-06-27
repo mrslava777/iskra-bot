@@ -26,10 +26,13 @@ async def _connect() -> asyncpg.Connection:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
 
-    # Используем DSN как есть — Neon/Railway уже содержат все нужные параметры.
-    # Принудительное добавление sslmode и keepalives ломает строку подключения
-    # (дублирование параметров + конфликт с уже имеющимся sslmode=require от Neon).
+    # Добавляем параметры для стабильности соединения
     dsn = DATABASE_URL
+    if "?" not in dsn:
+        dsn += "?"
+    else:
+        dsn += "&"
+    dsn += "sslmode=require&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
 
     log.info("Подключаюсь к PostgreSQL...")
     conn = await asyncpg.connect(dsn=dsn)
@@ -223,5 +226,10 @@ CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, a
 async def init_schema(conn: asyncpg.Connection) -> None:
     """Создаёт все таблицы и индексы (идемпотентно)."""
     log.info("Создаю таблицы...")
+    
     await conn.execute(SCHEMA_SQL)
+    await conn.execute('''
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;
+''')
+
     log.info("Таблицы созданы")
