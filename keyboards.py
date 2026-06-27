@@ -262,7 +262,7 @@ def badges_kb(total: int) -> InlineKeyboardMarkup:
     """Клавиатура раздела Артефакты — коллекция полученных значков."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📈 Прогресс", callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.PROGRESS.value))],
+            [InlineKeyboardButton(text="📈 Прогресс", callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.PROGRESS.value, 0))],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=CallbackPrefix.BADGE.with_param(BadgeAction.COLLECTION.value))],
         ]
     )

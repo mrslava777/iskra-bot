@@ -1,4 +1,15 @@
-"""Система достижений (Артефакты) Искры.\n\nКаждый значок имеет:\n  - id: уникальный ключ\n  - name: название для пользователя\n  - description: описание как получить\n  - icon: emoji или текстовая иконка\n  - rarity: common / rare / epic / legendary\n  - condition: функция-проверка (user_row, stats) -> bool\n  - color: hex-цвет для оформления\n"""
+"""Система достижений (Артефакты) Искры.
+
+Каждый значок имеет:
+  - id: уникальный ключ
+  - name: название для пользователя
+  - description: описание как получить
+  - icon: emoji или текстовая иконка
+  - rarity: common / rare / epic / legendary
+  - condition: функция-проверка (user_row, stats) -> bool
+  - color: hex-цвет для оформления
+  - progress_info: (label, current_key, target) для отображения прогресса
+"""
 from typing import Callable
 
 BadgeDef = dict
@@ -86,6 +97,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "common",
         "condition": _check_first_like,
         "color": "#95a5a6",
+        "progress": ("лайков", "likes_sent", 1),
     },
     {
         "id": "profile_complete",
@@ -95,6 +107,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "common",
         "condition": _check_profile_complete,
         "color": "#95a5a6",
+        "progress": None,  # бинарный (да/нет)
     },
     {
         "id": "first_match",
@@ -104,6 +117,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "common",
         "condition": _check_first_match,
         "color": "#e67e22",
+        "progress": ("мэтчей", "matches", 1),
     },
     {
         "id": "reporter",
@@ -113,6 +127,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "common",
         "condition": _check_reporter,
         "color": "#95a5a6",
+        "progress": ("жалоб", "reports_sent", 1),
     },
     # --- Редкие (rare) ---
     {
@@ -123,6 +138,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "rare",
         "condition": _check_streak_7,
         "color": "#3498db",
+        "progress": ("дней подряд", "streak", 7),
     },
     {
         "id": "ten_matches",
@@ -132,6 +148,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "rare",
         "condition": _check_ten_matches,
         "color": "#e74c3c",
+        "progress": ("мэтчей", "matches", 10),
     },
     {
         "id": "icebreaker",
@@ -141,6 +158,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "rare",
         "condition": _check_icebreaker,
         "color": "#3498db",
+        "progress": ("лайков с сообщением", "msglikes", 5),
     },
     {
         "id": "photographer",
@@ -150,6 +168,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "rare",
         "condition": _check_photographer,
         "color": "#3498db",
+        "progress": ("фото", "photo_count", 5),
     },
     {
         "id": "verified",
@@ -159,6 +178,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "rare",
         "condition": _check_verified,
         "color": "#2ecc71",
+        "progress": None,  # бинарный
     },
     # --- Эпические (epic) ---
     {
@@ -169,6 +189,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "epic",
         "condition": _check_popular,
         "color": "#9b59b6",
+        "progress": ("лайков получено", "rating", 50),
     },
     {
         "id": "high_compat",
@@ -178,6 +199,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "epic",
         "condition": _check_high_compat,
         "color": "#9b59b6",
+        "progress": ("% совместимости", "max_compat", 95),
     },
     {
         "id": "revealer",
@@ -187,6 +209,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "epic",
         "condition": _check_revealer,
         "color": "#9b59b6",
+        "progress": ("открытий", "anon_reveals", 10),
     },
     {
         "id": "chatter",
@@ -196,6 +219,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "epic",
         "condition": _check_chatter,
         "color": "#9b59b6",
+        "progress": ("сообщений", "anon_messages", 100),
     },
     # --- Легендарные (legendary) ---
     {
@@ -206,6 +230,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "legendary",
         "condition": _check_streak_30,
         "color": "#f1c40f",
+        "progress": ("дней подряд", "streak", 30),
     },
     {
         "id": "fifty_matches",
@@ -215,6 +240,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "legendary",
         "condition": _check_fifty_matches,
         "color": "#f1c40f",
+        "progress": ("мэтчей", "matches", 50),
     },
     {
         "id": "hundred_likes",
@@ -224,6 +250,7 @@ BADGES: list[BadgeDef] = [
         "rarity": "legendary",
         "condition": _check_hundred_likes,
         "color": "#f1c40f",
+        "progress": ("лайков", "likes_sent", 100),
     },
 ]
 
@@ -247,3 +274,20 @@ def rarity_label(rarity: str) -> str:
         "legendary": "Легендарный",
     }
     return labels.get(rarity, rarity)
+
+
+def get_badge_progress(badge: dict, user: dict, stats: dict) -> str | None:
+    """Возвращает строку прогресса для значка или None если бинарный."""
+    progress = badge.get("progress")
+    if not progress:
+        return None
+    label, key, target = progress
+    # user поля берутся из user, stats — из stats
+    current = user.get(key) if key in user else stats.get(key, 0)
+    if current is None:
+        current = 0
+    current = int(current)
+    remaining = max(0, target - current)
+    pct = min(100, int(current / target * 100))
+    bar = "▰" * (pct // 10) + "▱" * (10 - pct // 10)
+    return f"{bar} {current}/{target} ({remaining} {label} осталось)"
