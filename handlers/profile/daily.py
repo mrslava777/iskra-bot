@@ -31,34 +31,20 @@ async def cmd_daily_question(message: Message, state: FSMContext) -> None:
 
     # Если уже отвечал сегодня — показываем текущий ответ с возможностью удалить
     if user.get("daily_a") and user.get("daily_q") == day_index:
-        text = (
-            f"{EMOJI.DAILY_QUESTION} <b>Вопрос дня #{day_index % DailyQuestion.COUNT + 1}</b>
-
-"
-            f"<i>{current_q}</i>
-
-"
-            f"💭 <b>Твой ответ:</b>
-"
-            f"{user['daily_a']}
-
-"
-            f"Хочешь изменить ответ? Пришли новый текст (до {Length.DAILY_ANSWER} символов) или нажми «Удалить» в профиле."
-        )
+        header = f"{EMOJI.DAILY_QUESTION} <b>Вопрос дня #{day_index % DailyQuestion.COUNT + 1}</b>"
+        q_line = f"<i>{current_q}</i>"
+        answer_line = f"💭 <b>Твой ответ:</b>" + "\n" + f"{user['daily_a']}"
+        footer = f"Хочешь изменить ответ? Пришли новый текст (до {Length.DAILY_ANSWER} символов) или нажми «Удалить» в профиле."
+        text = "\n\n".join([header, q_line, answer_line, footer])
         await message.answer(text, reply_markup=MAIN_MENU)
         return
 
     # Новый вопрос — запрашиваем ответ
     q = daily_question(day_index)
-    text = (
-        f"{EMOJI.DAILY_QUESTION} <b>Вопрос дня #{day_index % DailyQuestion.COUNT + 1}</b>
-
-"
-        f"<i>{q}</i>
-
-"
-        f"Напиши свой ответ (до {Length.DAILY_ANSWER} символов):"
-    )
+    header = f"{EMOJI.DAILY_QUESTION} <b>Вопрос дня #{day_index % DailyQuestion.COUNT + 1}</b>"
+    q_line = f"<i>{q}</i>"
+    footer = f"Напиши свой ответ (до {Length.DAILY_ANSWER} символов):"
+    text = "\n\n".join([header, q_line, footer])
     await message.answer(text, reply_markup=MAIN_MENU)
     await state.update_data(daily_q=day_index)
     await state.set_state(Edit.daily)
@@ -74,9 +60,7 @@ async def save_daily_answer(message: Message, state: FSMContext) -> None:
     user = await user_repo.get_user(message.from_user.id)
     caption = await format_profile_async(user, show_compat=False, show_badges=True)
     await message.answer(
-        Message.DAILY_SAVED + "
-
-" + caption,
+        Message.DAILY_SAVED + "\n\n" + caption,
         reply_markup=profile_kb(has_daily=True),
     )
 
