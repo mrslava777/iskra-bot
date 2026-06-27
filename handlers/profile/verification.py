@@ -2,13 +2,14 @@
 import random
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.user_repo as user_repo
 from config import ADMIN_IDS
 from data.constants import EMOJI, Format, Message, Verification as Vrf
 from data.enums import CallbackPrefix, VerifyAction
 from keyboards import profile_kb, verify_kb
+from services.profile_formatter import format_profile_async
 from services.message_utils import edit_or_caption
 from states import Verify
 
@@ -27,8 +28,27 @@ async def on_request_verify(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(required_gesture=gesture)
 
     text = Format.VERIFICATION_REQUEST.format(gesture)
-    await edit_or_caption(call, text)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=f"{CallbackPrefix.EDIT.value}:back")],
+        ]
+    )
+    await edit_or_caption(call, text, reply_markup=kb)
     await state.set_state(Verify.video_note)
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:back")
+async def on_verify_back(call: CallbackQuery, state: FSMContext) -> None:
+    """Шаг назад — возврат в профиль из верификации."""
+    await state.clear()
+    user = await user_repo.get_user(call.from_user.id)
+    caption = await format_profile_async(user, show_compat=False, show_badges=True)
+    has_daily = bool(user.get("daily_a"))
+    try:
+        await call.message.edit_text(caption, reply_markup=profile_kb(has_daily=has_daily))
+    except Exception:
+        await call.message.answer(caption, reply_markup=profile_kb(has_daily=has_daily))
     await call.answer()
 
 

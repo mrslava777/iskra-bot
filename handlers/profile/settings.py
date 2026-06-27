@@ -1,12 +1,13 @@
 """Настройки анкеты — активность, фильтры, удаление."""
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.user_repo as user_repo
 from data.constants import Age, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SettingsAction
 from keyboards import confirm_delete_kb, settings_kb
+from services.profile_formatter import format_profile_async
 from states import Edit
 
 router = Router()
@@ -21,6 +22,19 @@ async def show_settings(message: Message) -> None:
         return
     active = bool(user.get("active"))
     await message.answer(f"{EMOJI.SETTINGS} Настройки", reply_markup=settings_kb(active))
+
+
+@router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:back")
+async def on_settings_back(call: CallbackQuery) -> None:
+    """Шаг назад — возврат в профиль из настроек."""
+    user = await user_repo.get_user(call.from_user.id)
+    caption = await format_profile_async(user, show_compat=False, show_badges=True)
+    has_daily = bool(user.get("daily_a"))
+    try:
+        await call.message.edit_text(caption, reply_markup=profile_kb(has_daily=has_daily))
+    except Exception:
+        await call.message.answer(caption, reply_markup=profile_kb(has_daily=has_daily))
+    await call.answer()
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.TOGGLE.value}")

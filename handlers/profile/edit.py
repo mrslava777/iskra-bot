@@ -1,7 +1,7 @@
 """Редактирование полей анкеты — имя, возраст, город, био, интересы."""
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.user_repo as user_repo
 from data.constants import Length, Age, Interest, EMOJI, Message
@@ -51,6 +51,20 @@ async def on_edit_field(call: CallbackQuery, state: FSMContext) -> None:
     if field in prompts:
         await edit_or_caption(call, prompts[field])
         await state.set_state(Edit.value)
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:back")
+async def on_edit_back(call: CallbackQuery, state: FSMContext) -> None:
+    """Шаг назад — возврат в профиль из любого редактирования."""
+    await state.clear()
+    user = await user_repo.get_user(call.from_user.id)
+    caption = await format_profile_async(user, show_compat=False, show_badges=True)
+    has_daily = bool(user.get("daily_a"))
+    try:
+        await call.message.edit_text(caption, reply_markup=profile_kb(has_daily=has_daily))
+    except Exception:
+        await call.message.answer(caption, reply_markup=profile_kb(has_daily=has_daily))
     await call.answer()
 
 

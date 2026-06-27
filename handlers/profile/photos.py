@@ -5,9 +5,10 @@ from aiogram.types import CallbackQuery, Message
 
 import repositories.photo_repo as photo_repo
 import repositories.user_repo as user_repo
-from data.constants import Photo, Message, Format
+from data.constants import Photo, Message, Format, EMOJI
 from data.enums import CallbackPrefix, PhotoAction
 from keyboards import photos_manage_kb, profile_kb
+from services.profile_formatter import format_profile_async
 from services.message_utils import edit_or_caption
 from states import Edit
 
@@ -53,8 +54,15 @@ async def on_photo_delete(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(Edit.photos, F.data == f"{CallbackPrefix.PHOTO.value}:{PhotoAction.BACK.value}")
 async def on_photos_back(call: CallbackQuery, state: FSMContext) -> None:
-    """Возвращает к профилю."""
+    """Шаг назад — возврат в профиль из управления фото."""
     await state.clear()
+    user = await user_repo.get_user(call.from_user.id)
+    caption = await format_profile_async(user, show_compat=False, show_badges=True)
+    has_daily = bool(user.get("daily_a"))
+    try:
+        await call.message.edit_text(caption, reply_markup=profile_kb(has_daily=has_daily))
+    except Exception:
+        await call.message.answer(caption, reply_markup=profile_kb(has_daily=has_daily))
     await call.answer()
 
 

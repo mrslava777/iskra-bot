@@ -3,7 +3,7 @@ import time
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.user_repo as user_repo
 from data.constants import Length, DailyQuestion, EMOJI, MenuText, Message
@@ -33,20 +33,42 @@ async def cmd_daily_question(message: Message, state: FSMContext) -> None:
         header = f"{EMOJI.DAILY_QUESTION} <b>Вопрос дня #{day_index % DailyQuestion.COUNT + 1}</b>"
         q_line = f"<i>{current_q}</i>"
         answer_line = f"💭 <b>Твой ответ:</b>" + "\n" + f"{user['daily_a']}"
-        footer = f"Хочешь изменить ответ? Пришли новый текст (до {Length.DAILY_ANSWER} символов) или нажми «Удалить» в профиле."
+        footer = f"Хочешь изменить ответ? Пришли новый текст (до {Length.DAILY_ANSWER} символов) или нажми «Назад»."
         text = "\n\n".join([header, q_line, answer_line, footer])
-        await message.answer(text, reply_markup=MAIN_MENU)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=f"{CallbackPrefix.BADGE.value}:back")],
+            ]
+        )
+        await message.answer(text, reply_markup=kb)
         return
 
-    # Новый вопрос — запрашиваем ответ
+    # Новый вопрос — запрашиваем ответ с кнопкой назад
     q = daily_question(day_index)
     header = f"{EMOJI.DAILY_QUESTION} <b>Вопрос дня #{day_index % DailyQuestion.COUNT + 1}</b>"
     q_line = f"<i>{q}</i>"
-    footer = f"Напиши свой ответ (до {Length.DAILY_ANSWER} символов):"
+    footer = f"Напиши свой ответ (до {Length.DAILY_ANSWER} символов) или нажми «Назад»."
     text = "\n\n".join([header, q_line, footer])
-    await message.answer(text, reply_markup=MAIN_MENU)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=f"{CallbackPrefix.BADGE.value}:back")],
+        ]
+    )
+    await message.answer(text, reply_markup=kb)
     await state.update_data(daily_q=day_index)
     await state.set_state(Edit.daily)
+
+
+@router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:back")
+async def on_daily_back(call: CallbackQuery, state: FSMContext) -> None:
+    """Возврат в главное меню из вопроса дня."""
+    await state.clear()
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+    await call.answer()
 
 
 @router.message(Edit.daily, F.text)
