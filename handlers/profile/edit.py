@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 import repositories.user_repo as user_repo
 from data.constants import Length, Age, Interest, EMOJI, Message
 from data.enums import CallbackPrefix, EditField
-from keyboards import interests_kb, profile_kb
+from keyboards import interests_kb, profile_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
 from services.message_utils import edit_or_caption
 from states import Edit
@@ -70,7 +70,7 @@ async def on_edit_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Edit.value, F.text)
 async def edit_value(message: Message, state: FSMContext) -> None:
-    """Сохраняет новое значение поля и шлёт пуш-уведомление."""
+    """Сохраняет новое значение поля и показывает push + главное меню."""
     data = await state.get_data()
     field = data.get("edit_field")
     text = message.text.strip()
@@ -95,11 +95,12 @@ async def edit_value(message: Message, state: FSMContext) -> None:
         await user_repo.upsert_user(message.from_user.id, bio=bio)
 
     else:
-        await message.answer("Неизвестное поле.")
+        await message.answer("Неизвестное поле.", reply_markup=MAIN_MENU)
         return
 
     await state.clear()
-    await message.answer("✅ Обновлено!")
+    # Push-уведомление + главное меню
+    await message.answer("✅ Обновлено!", reply_markup=MAIN_MENU)
 
 
 @router.callback_query(Edit.interests, F.data.startswith(f"{CallbackPrefix.EDIT_INTEREST.value}:"))
@@ -113,7 +114,9 @@ async def edit_interests(call: CallbackQuery, state: FSMContext) -> None:
         interests = ",".join(str(i) for i in sel)
         await user_repo.upsert_user(call.from_user.id, interests=interests)
         await state.clear()
-        await call.message.answer("✅ Интересы обновлены!")
+        # Push-уведомление + главное меню
+        await call.answer("✅ Интересы обновлены!", show_alert=True)
+        await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
         return
 
     idx = int(payload)

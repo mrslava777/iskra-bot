@@ -8,7 +8,7 @@ import repositories.user_repo as user_repo
 from config import ADMIN_IDS
 from data.constants import EMOJI, Format, Message, Verification as Vrf
 from data.enums import CallbackPrefix, VerifyAction
-from keyboards import profile_kb, verify_kb
+from keyboards import profile_kb, verify_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
 from services.message_utils import edit_or_caption
 from states import Verify
@@ -54,7 +54,7 @@ async def on_verify_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Verify.video_note, F.video_note)
 async def on_verify_video_note(message: Message, state: FSMContext) -> None:
-    """Принимает кружочек и отправляет админам на проверку."""
+    """Принимает кружочек и отправляет админам на проверку — push + меню."""
     video_note_id = message.video_note.file_id
     data = await state.get_data()
     gesture = data.get("required_gesture", "?")
@@ -78,7 +78,7 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
         except Exception:
             pass
 
-    await message.answer(Message.VERIFICATION_SENT)
+    await message.answer(Message.VERIFICATION_SENT, reply_markup=MAIN_MENU)
 
 
 @router.message(Verify.video_note)
@@ -95,7 +95,7 @@ async def on_approve_verify(call: CallbackQuery) -> None:
         return
     tg_id = int(call.data.split(":")[2])
     await user_repo.upsert_user(tg_id, verified=1)
-    await call.answer(f"{EMOJI.VERIFIED} Верифицирован")
+    await call.answer(f"{EMOJI.VERIFIED} Верифицирован", show_alert=True)
     if call.message.photo:
         await call.message.edit_caption(
             caption=call.message.caption + "\n\n" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
@@ -117,7 +117,7 @@ async def on_reject_verify(call: CallbackQuery) -> None:
         await call.answer(Message.ADMIN_ONLY, show_alert=True)
         return
     tg_id = int(call.data.split(":")[2])
-    await call.answer(f"{EMOJI.DISLIKE} Отклонено")
+    await call.answer(f"{EMOJI.DISLIKE} Отклонено", show_alert=True)
     if call.message.photo:
         await call.message.edit_caption(
             caption=call.message.caption + "\n\n" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"

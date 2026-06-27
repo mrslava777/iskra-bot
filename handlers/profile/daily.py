@@ -73,17 +73,17 @@ async def on_daily_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Edit.daily, F.text)
 async def save_daily_answer(message: Message, state: FSMContext) -> None:
-    """Сохраняет ответ на вопрос дня и шлёт пуш-уведомление."""
+    """Сохраняет ответ на вопрос дня — push + меню."""
     text = message.text.strip()[:Length.DAILY_ANSWER]
     day_index = int(time.time() // DailyQuestion.SECONDS_PER_DAY)
     await user_repo.upsert_user(message.from_user.id, daily_q=day_index, daily_a=text)
     await state.clear()
-    await message.answer(Message.DAILY_SAVED)
+    await message.answer(Message.DAILY_SAVED, reply_markup=MAIN_MENU)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:{EditField.DELETE_DAILY.value}")
 async def on_delete_daily(call: CallbackQuery) -> None:
-    """Удаляет ответ на вопрос дня и шлёт пуш-уведомление."""
+    """Удаляет ответ на вопрос дня — push + меню."""
     await user_repo.upsert_user(call.from_user.id, daily_q=0, daily_a="")
-    await call.answer(Message.DAILY_DELETED)
-    await call.message.answer(Message.DAILY_DELETED)
+    await call.answer(Message.DAILY_DELETED, show_alert=True)
+    await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
