@@ -13,8 +13,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip().isdigit()]
 
-# База данных
-DB_PATH = os.getenv("DB_PATH", "/data/iskra.db")
+# База данных PostgreSQL
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 # --- Оптимизации под нагрузку ---
 

@@ -32,8 +32,8 @@ async def _ready_handler(request: web.Request) -> web.Response:
     # Проверяем, что БД доступна
     try:
         from database.connection import get_db
-        db = await get_db()
-        await db.execute("SELECT 1")
+        conn = await get_db()
+        await conn.execute("SELECT 1")
         return web.json_response({"status": "ready"})
     except Exception as e:
         return web.json_response({"status": "not_ready", "error": str(e)}, status=Health.HTTP_NOT_READY)
