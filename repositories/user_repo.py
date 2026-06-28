@@ -98,7 +98,7 @@ async def update_max_compat(tg_id: int, pct: int) -> None:
 async def delete_user(tg_id: int) -> None:
     """Полностью удаляет пользователя и все связанные данные.
 
-    Все DELETE-операции выполняются в одной транзакции — 
+    Все DELETE-операции выполняются в одной транзакции —
     либо пользователь удалён полностью, либо не удалён вообще.
     """
     async with db() as conn:

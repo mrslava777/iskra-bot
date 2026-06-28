@@ -50,7 +50,7 @@ async def get_user_stats(tg_id: int) -> dict:
     """Возвращает все статистики пользователя одним запросом."""
     async with db() as conn:
         row = await conn.fetchrow("""
-            SELECT 
+            SELECT
                 (SELECT COUNT(*) FROM matches WHERE a_id = $1 OR b_id = $1) as matches,
                 (SELECT COUNT(*) FROM likes WHERE from_id = $2 AND is_like = 1) as likes_sent,
                 (SELECT COUNT(*) FROM reports WHERE from_id = $3) as reports_sent,
