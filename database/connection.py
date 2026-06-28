@@ -1,15 +1,21 @@
 """Подключение к БД (PostgreSQL через asyncpg) и инициализация схемы.
 
 Модель доступа:
-    get_db()         — соединение для ЧТЕНИЯ (переиспользуется, автопереподключается).
-    get_single_db()  — НОВОЕ соединение для ЗАПИСИ; вызывающий закрывает сам.
-    close_db_pool()  — закрывает соединение (graceful shutdown).
+    db()             — асинхронный контекстный менеджер для работы с БД.
+                       Автоматически берёт соединение из пула и возвращает.
+    get_single_db()  — НОВОЕ соединение из пула для транзакций.
+                       Вызывающий обязан закрыть через await conn.close().
+    close_db_pool()  — закрывает пул (graceful shutdown).
 
-Схема создаётся один раз при первом get_db().
+Схема создаётся один раз при первом вызове db().
+
+Пример использования:
+    async with db() as conn:
+        row = await conn.fetchrow("SELECT ...", params)
 """
 import logging
-import os
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Optional
 
 import asyncpg
 
@@ -17,79 +23,89 @@ from config import DATABASE_URL
 
 log = logging.getLogger("iskra.db")
 
-_db: Optional[asyncpg.Connection] = None
+_pool: Optional[asyncpg.Pool] = None
 _schema_ready = False
 
 
-async def _connect() -> asyncpg.Connection:
-    """Создаёт новое соединение с PostgreSQL."""
+def _build_dsn() -> str:
+    """Добавляет параметры стабильности к DSN."""
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
-
-    # Добавляем параметры для стабильности соединения
     dsn = DATABASE_URL
-    if "?" not in dsn:
-        dsn += "?"
-    else:
-        dsn += "&"
-    dsn += "sslmode=require&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
-
-    log.info("Подключаюсь к PostgreSQL...")
-    conn = await asyncpg.connect(dsn=dsn)
-    log.info("Подключено к PostgreSQL")
-    return conn
+    sep = "&" if "?" in dsn else "?"
+    return f"{dsn}{sep}sslmode=require&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
 
 
-async def get_db() -> asyncpg.Connection:
-    """Общее соединение для чтения. Создаёт схему при первом вызове."""
-    global _db, _schema_ready
+async def _init_pool() -> asyncpg.Pool:
+    """Создаёт пул соединений с PostgreSQL."""
+    dsn = _build_dsn()
+    log.info("Создаю пул соединений с PostgreSQL...")
+    pool = await asyncpg.create_pool(
+        dsn=dsn,
+        min_size=2,
+        max_size=10,
+        command_timeout=30,
+        server_settings={"jit": "off"},
+    )
+    log.info("Пул создан (min=2, max=10)")
+    return pool
 
-    # Проверяем, живо ли соединение
-    if _db is not None:
-        try:
-            await _db.execute("SELECT 1")
-        except Exception:
-            log.warning("Соединение с БД разорвано, переподключаюсь...")
-            try:
-                await _db.close()
-            except Exception:
-                pass
-            _db = None
-            _schema_ready = False
 
-    if _db is None:
-        _db = await _connect()
+async def _get_pool() -> asyncpg.Pool:
+    """Возвращает существующий пул или создаёт новый."""
+    global _pool
+    if _pool is None:
+        _pool = await _init_pool()
+    return _pool
+
+
+@asynccontextmanager
+async def db() -> AsyncGenerator[asyncpg.Connection, None]:
+    """Контекстный менеджер для работы с БД.
+
+    Берёт соединение из пула, выполняет запросы, автоматически возвращает.
+    При первом использовании инициализирует схему.
+    """
+    global _schema_ready
+
+    pool = await _get_pool()
 
     if not _schema_ready:
-        try:
-            await init_schema(_db)
-            _schema_ready = True
-            log.info("Схема БД инициализирована")
-        except Exception as e:
-            log.error("Ошибка инициализации схемы: %s", e)
-            raise
+        async with pool.acquire() as init_conn:
+            try:
+                await init_schema(init_conn)
+                _schema_ready = True
+                log.info("Схема БД инициализирована")
+            except Exception as e:
+                log.error("Ошибка инициализации схемы: %s", e)
+                raise
 
-    return _db
+    async with pool.acquire() as conn:
+        yield conn
 
 
 async def get_single_db() -> asyncpg.Connection:
-    """Свежее соединение для записи. Вызывающий обязан закрыть его сам."""
+    """Свежее соединение из пула для транзакций.
+
+    Используй, когда нужно несколько запросов в одной транзакции
+    или COMMIT/ROLLBACK. Обязательно закрой: await conn.close().
+    """
     global _schema_ready
+    pool = await _get_pool()
     if not _schema_ready:
-        await get_db()
-    return await _connect()
+        async with pool.acquire() as init_conn:
+            await init_schema(init_conn)
+            _schema_ready = True
+    return await pool.acquire()
 
 
 async def close_db_pool() -> None:
-    """Закрывает соединение (graceful shutdown)."""
-    global _db
-    if _db is not None:
-        try:
-            await _db.close()
-        except Exception:
-            pass
-        _db = None
-        log.info("Соединение с PostgreSQL закрыто")
+    """Закрывает пул соединений (graceful shutdown)."""
+    global _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+        log.info("Пул соединений с PostgreSQL закрыт")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -224,8 +240,6 @@ CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
 CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, age);
 """
 
-# ВСЕ колонки всех таблиц, которые могут отсутствовать в старых/частичных таблицах
-# (ключ: таблица, значение: список (имя_колонки, тип, default))
 MISSING_COLUMNS = {
     "users": [
         ("tg_id", "BIGINT", "0"),
@@ -328,7 +342,6 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         for col_name, col_type, default in columns:
             try:
                 if default is None:
-                    # Для SERIAL и других auto-generated — без DEFAULT
                     await conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
                     )
@@ -343,7 +356,6 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
 
 async def _migrate_types(conn: asyncpg.Connection) -> None:
     """Мигрирует типы колонок с timestamp на INTEGER (unix timestamp)."""
-    # Список колонок, которые должны быть INTEGER, но могут быть timestamp в старой БД
     type_migrations = [
         ("users", "created_at", "INTEGER", "0"),
         ("users", "last_active", "INTEGER", "0"),
@@ -360,23 +372,19 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
 
     for table, col_name, new_type, default_val in type_migrations:
         try:
-            # Проверяем текущий тип колонки
             row = await conn.fetchrow(
                 """SELECT data_type FROM information_schema.columns 
                 WHERE table_name = $1 AND column_name = $2""",
                 table, col_name
             )
             if row and row["data_type"] in ("timestamp without time zone", "timestamp with time zone", "timestamp"):
-                # Шаг 1: Удаляем DEFAULT constraint (иначе ALTER TYPE не сработает)
                 await conn.execute(
                     f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
                 )
-                # Шаг 2: Мигрируем тип
                 await conn.execute(
                     f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} \
                     USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
                 )
-                # Шаг 3: Добавляем новый DEFAULT
                 if default_val != "NULL":
                     await conn.execute(
                         f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT {default_val}"
@@ -391,20 +399,12 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
 
 
 async def _clear_statement_cache(conn: asyncpg.Connection) -> None:
-    """Сбрасывает кэш prepared statements после изменения схемы.
-
-    Критически важно: после ALTER TYPE/ALTER COLUMN asyncpg может хранить
-    устаревшие prepared statements, что приводит к:
-    InvalidCachedStatementError: cached statement plan is invalid due to 
-    a database schema or configuration change
-    """
+    """Сбрасывает кэш prepared statements после изменения схемы."""
     try:
-        # Сбрасываем ВСЕ prepared statements в текущей сессии
         await conn.execute("DEALLOCATE ALL")
         log.info("Кэш prepared statements сброшен")
     except Exception as e:
         log.warning("Не удалось сбросить кэш prepared statements: %s", e)
-        # Fallback: более радикальный сброс
         try:
             await conn.execute("DISCARD ALL")
             log.info("Выполнен DISCARD ALL")
@@ -413,26 +413,13 @@ async def _clear_statement_cache(conn: asyncpg.Connection) -> None:
 
 
 async def init_schema(conn: asyncpg.Connection) -> None:
-    """Создаёт все таблицы и индексы (идемпотентно).
-
-    Работает даже если таблицы уже существуют без некоторых колонок.
-    """
+    """Создаёт все таблицы и индексы (идемпотентно)."""
     log.info("Создаю таблицы...")
 
-    # Шаг 1: Создаём таблицы (если не существуют)
     await conn.execute(SCHEMA_SQL)
-
-    # Шаг 2: Добавляем недостающие колонки (для миграции старых таблиц)
     await _ensure_columns(conn)
-
-    # Шаг 3: Мигрируем типы колонок (timestamp -> INTEGER)
     await _migrate_types(conn)
-
-    # ШАГ 4 (КРИТИЧЕСКИ ВАЖНЫЙ): Сбрасываем кэш prepared statements,
-    # т.к. ALTER TYPE делает все ранее подготовленные запросы невалидными
     await _clear_statement_cache(conn)
-
-    # Шаг 5: Создаём индексы (теперь все колонки гарантированно существуют)
     await conn.execute(INDEX_SQL)
 
     log.info("Таблицы созданы")
