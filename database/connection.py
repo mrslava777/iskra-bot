@@ -1,19 +1,19 @@
 """Подключение к БД (PostgreSQL через asyncpg) и инициализация схемы.
 
-Оптимизации для Railway:
-- max_size=20 (больше соединений под нагрузку)
-- max_inactive_time=300 (не закрываем соединения 5 мин)
-- command_timeout=10 (быстрее отваливаемся при зависании)
-- sslmode=prefer (не require — Railway internal network доверенная)
-- statement_cache_size=5000 (кэшируем prepared statements)
-
 Модель доступа:
     db()             — асинхронный контекстный менеджер для работы с БД.
+                       Автоматически берёт соединение из пула и возвращает.
     get_single_db()  — НОВОЕ соединение из пула для транзакций.
+                       Вызывающий обязан закрыть через await conn.close().
     close_db_pool()  — закрывает пул (graceful shutdown).
+
+Схема создаётся один раз при первом вызове db().
+
+Пример использования:
+    async with db() as conn:
+        row = await conn.fetchrow("SELECT ...", params)
 """
 import logging
-import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
@@ -28,50 +28,27 @@ _schema_ready = False
 
 
 def _build_dsn() -> str:
-    """Формирует DSN с оптимальными параметрами для Railway."""
+    """Добавляет параметры стабильности к DSN."""
     if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL не задан!")
-
+        raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
     dsn = DATABASE_URL
-
-    # Для Railway internal connections используем prefer вместо require
-    # Это убирает SSL-handshake (~50-100ms на соединение)
-    if "sslmode=" not in dsn:
-        sep = "&" if "?" in dsn else "?"
-        # Railway internal network — доверенная, можно prefer
-        dsn += f"{sep}sslmode=prefer"
-
-    return dsn
+    sep = "&" if "?" in dsn else "?"
+    return f"{dsn}{sep}sslmode=require&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
 
 
 async def _init_pool() -> asyncpg.Pool:
-    """Создаёт оптимизированный пул соединений."""
+    """Создаёт пул соединений с PostgreSQL."""
     dsn = _build_dsn()
     log.info("Создаю пул соединений с PostgreSQL...")
-
     pool = await asyncpg.create_pool(
         dsn=dsn,
-        min_size=3,              # Всегда держим 3 соединения готовыми
-        max_size=20,             # До 20 под пиковой нагрузкой
-        max_inactive_time=300,   # Не закрываем соединения 5 минут
-        command_timeout=10,        # 10 сек на запрос — хватит с запасом
-        statement_cache_size=5000,  # Кэшируем prepared statements
-        max_queries=50000,       # Пересоздаём соединение после 50к запросов
-        server_settings={
-            "jit": "off",
-            "application_name": "iskra_bot",
-        },
-        # Кастомная инициализация каждого соединения
-        init=_init_connection,
+        min_size=2,
+        max_size=10,
+        command_timeout=30,
+        server_settings={"jit": "off"},
     )
-    log.info("Пул создан (min=3, max=20)")
+    log.info("Пул создан (min=2, max=10)")
     return pool
-
-
-async def _init_connection(conn: asyncpg.Connection) -> None:
-    """Инициализация каждого нового соединения в пуле."""
-    # Устанавливаем timezone для консистентности
-    await conn.execute("SET TIMEZONE TO 'UTC'")
 
 
 async def _get_pool() -> asyncpg.Pool:
@@ -84,7 +61,11 @@ async def _get_pool() -> asyncpg.Pool:
 
 @asynccontextmanager
 async def db() -> AsyncGenerator[asyncpg.Connection, None]:
-    """Контекстный менеджер для работы с БД из пула."""
+    """Контекстный менеджер для работы с БД.
+
+    Берёт соединение из пула, выполняет запросы, автоматически возвращает.
+    При первом использовании инициализирует схему.
+    """
     global _schema_ready
 
     pool = await _get_pool()
@@ -104,7 +85,11 @@ async def db() -> AsyncGenerator[asyncpg.Connection, None]:
 
 
 async def get_single_db() -> asyncpg.Connection:
-    """Свежее соединение из пула для транзакций."""
+    """Свежее соединение из пула для транзакций.
+
+    Используй, когда нужно несколько запросов в одной транзакции
+    или COMMIT/ROLLBACK. Обязательно закрой: await conn.close().
+    """
     global _schema_ready
     pool = await _get_pool()
     if not _schema_ready:
@@ -115,12 +100,12 @@ async def get_single_db() -> asyncpg.Connection:
 
 
 async def close_db_pool() -> None:
-    """Закрывает пул соединений."""
+    """Закрывает пул соединений (graceful shutdown)."""
     global _pool
     if _pool is not None:
         await _pool.close()
         _pool = None
-        log.info("Пул соединений закрыт")
+        log.info("Пул соединений с PostgreSQL закрыт")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -352,6 +337,7 @@ MISSING_COLUMNS = {
 
 
 async def _ensure_columns(conn: asyncpg.Connection) -> None:
+    """Добавляет недостающие колонки в существующие таблицы."""
     for table, columns in MISSING_COLUMNS.items():
         for col_name, col_type, default in columns:
             try:
@@ -363,11 +349,13 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
                     await conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type} DEFAULT {default}"
                     )
+                log.info("Колонка %s.%s проверена/добавлена", table, col_name)
             except Exception as e:
-                log.warning("Колонка %s.%s: %s", table, col_name, e)
+                log.warning("Не удалось добавить колонку %s.%s: %s", table, col_name, e)
 
 
 async def _migrate_types(conn: asyncpg.Connection) -> None:
+    """Мигрирует типы колонок с timestamp на INTEGER (unix timestamp)."""
     type_migrations = [
         ("users", "created_at", "INTEGER", "0"),
         ("users", "last_active", "INTEGER", "0"),
@@ -405,23 +393,33 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
                     await conn.execute(
                         f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT NULL"
                     )
-                log.info("Мигрирован %s.%s -> %s", table, col_name, new_type)
+                log.info("Тип колонки %s.%s мигрирован на %s", table, col_name, new_type)
         except Exception as e:
-            log.warning("Миграция %s.%s: %s", table, col_name, e)
+            log.warning("Не удалось мигрировать тип %s.%s: %s", table, col_name, e)
 
 
 async def _clear_statement_cache(conn: asyncpg.Connection) -> None:
+    """Сбрасывает кэш prepared statements после изменения схемы."""
     try:
         await conn.execute("DEALLOCATE ALL")
-    except Exception:
-        pass
+        log.info("Кэш prepared statements сброшен")
+    except Exception as e:
+        log.warning("Не удалось сбросить кэш prepared statements: %s", e)
+        try:
+            await conn.execute("DISCARD ALL")
+            log.info("Выполнен DISCARD ALL")
+        except Exception as e2:
+            log.warning("DISCARD ALL тоже не сработал: %s", e2)
 
 
 async def init_schema(conn: asyncpg.Connection) -> None:
+    """Создаёт все таблицы и индексы (идемпотентно)."""
     log.info("Создаю таблицы...")
+
     await conn.execute(SCHEMA_SQL)
     await _ensure_columns(conn)
     await _migrate_types(conn)
     await _clear_statement_cache(conn)
     await conn.execute(INDEX_SQL)
+
     log.info("Таблицы созданы")
