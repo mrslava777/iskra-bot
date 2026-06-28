@@ -1,4 +1,5 @@
 """Health-check сервер для Railway."""
+import asyncio
 import logging
 import os
 from aiohttp import web
@@ -8,22 +9,37 @@ from data.constants import Health
 
 log = logging.getLogger("iskra.health")
 
+_app: web.Application | None = None
+_runner: web.AppRunner | None = None
+
 
 async def start_health_server() -> None:
+    """Запускает health-сервер и держит его alive."""
+    global _app, _runner
+
     port = int(os.getenv("PORT", str(Health.PORT)))
-    app = web.Application()
-    app.router.add_get("/health", _health_handler)
-    app.router.add_get("/ready", _ready_handler)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    _app = web.Application()
+    _app.router.add_get("/health", _health_handler)
+    _app.router.add_get("/ready", _ready_handler)
+
+    _runner = web.AppRunner(_app)
+    await _runner.setup()
+    site = web.TCPSite(_runner, "0.0.0.0", port)
     await site.start()
     log.info("Health server started on port %s", port)
 
+    # Держим сервер alive — Railway не убьёт контейнер
+    while True:
+        await asyncio.sleep(60)
+
 
 async def stop_health_server() -> None:
-    """Graceful shutdown — пул закрывается в main.py, не здесь."""
-    pass
+    """Graceful shutdown."""
+    global _runner
+    if _runner is not None:
+        await _runner.cleanup()
+        _runner = None
+        log.info("Health server stopped")
 
 
 async def _health_handler(request: web.Request) -> web.Response:
