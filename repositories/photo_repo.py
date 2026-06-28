@@ -3,7 +3,7 @@
 position = 0 — главное фото (совпадает с users.photo_id),
 position > 0 — дополнительные фото.
 """
-from database.connection import get_db, get_single_db
+from database.connection import db, get_single_db
 from data.constants import Photo
 
 
@@ -32,30 +32,26 @@ async def add_photo(tg_id: int, photo_id: str) -> None:
 
 async def get_photos(tg_id: int) -> list[dict]:
     """Все фото пользователя по возрастанию позиции (0 — главное)."""
-    conn = await get_db()
-    rows = await conn.fetch(
-        "SELECT id, tg_id, photo_id, position FROM photos WHERE tg_id = $1 ORDER BY position ASC",
-        tg_id,
-    )
-    return [dict(r) for r in rows]
+    async with db() as conn:
+        rows = await conn.fetch(
+            "SELECT id, tg_id, photo_id, position FROM photos WHERE tg_id = $1 ORDER BY position ASC",
+            tg_id,
+        )
+        return [dict(r) for r in rows]
 
 
 async def photo_count(tg_id: int) -> int:
     """Количество фото в галерее."""
-    conn = await get_db()
-    row = await conn.fetchrow(
-        "SELECT COUNT(*) AS c FROM photos WHERE tg_id = $1",
-        tg_id,
-    )
-    return row["c"] if row else 0
+    async with db() as conn:
+        row = await conn.fetchrow(
+            "SELECT COUNT(*) AS c FROM photos WHERE tg_id = $1",
+            tg_id,
+        )
+        return row["c"] if row else 0
 
 
 async def remove_photo(tg_id: int, position: int) -> None:
-    """Удаляет фото по позиции и переиндексирует оставшиеся.
-
-    Если удалено главное фото (position 0) — новое главное синхронизируется
-    с users.photo_id вызывающим кодом через sync_photos_to_gallery/upsert_user.
-    """
+    """Удаляет фото по позиции и переиндексирует оставшиеся."""
     conn = await get_single_db()
     try:
         await conn.execute(

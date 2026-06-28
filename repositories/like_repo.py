@@ -1,5 +1,5 @@
 """Репозиторий лайков/симпатий."""
-from database.connection import get_db, get_single_db
+from database.connection import db, get_single_db
 
 
 async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
@@ -52,23 +52,23 @@ async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
 
 async def incoming_likes(tg_id: int) -> list[dict]:
     """Анкеты тех, кто лайкнул пользователя, но ещё без ответа от него."""
-    conn = await get_db()
-    rows = await conn.fetch(
-        """
-        SELECT u.*
-        FROM likes l
-        JOIN users u ON u.tg_id = l.from_id
-        WHERE l.to_id = $1
-          AND l.is_like = 1
-          AND u.active = 1
-          AND u.is_banned = 0
-          AND u.photo_id IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM likes l2
-              WHERE l2.from_id = $2 AND l2.to_id = l.from_id
-          )
-        ORDER BY l.created_at DESC
-        """,
-        tg_id, tg_id,
-    )
-    return [dict(r) for r in rows]
+    async with db() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT u.*
+            FROM likes l
+            JOIN users u ON u.tg_id = l.from_id
+            WHERE l.to_id = $1
+              AND l.is_like = 1
+              AND u.active = 1
+              AND u.is_banned = 0
+              AND u.photo_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM likes l2
+                  WHERE l2.from_id = $2 AND l2.to_id = l.from_id
+              )
+            ORDER BY l.created_at DESC
+            """,
+            tg_id, tg_id,
+        )
+        return [dict(r) for r in rows]

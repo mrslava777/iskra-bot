@@ -5,7 +5,7 @@ anon_queue — пользователи, ожидающие собеседник
 """
 from typing import Optional
 
-from database.connection import get_db, get_single_db
+from database.connection import db, get_single_db
 
 
 async def _active_session_row(conn, tg_id: int) -> Optional[dict]:
@@ -23,21 +23,21 @@ async def _active_session_row(conn, tg_id: int) -> Optional[dict]:
 
 async def anon_active_partner(tg_id: int) -> Optional[int]:
     """ID собеседника в активной сессии или None."""
-    conn = await get_db()
-    row = await _active_session_row(conn, tg_id)
-    if not row:
-        return None
-    return row["b_id"] if row["a_id"] == tg_id else row["a_id"]
+    async with db() as conn:
+        row = await _active_session_row(conn, tg_id)
+        if not row:
+            return None
+        return row["b_id"] if row["a_id"] == tg_id else row["a_id"]
 
 
 async def anon_in_queue(tg_id: int) -> bool:
     """Находится ли пользователь в очереди ожидания."""
-    conn = await get_db()
-    row = await conn.fetchrow(
-        "SELECT 1 FROM anon_queue WHERE tg_id = $1",
-        tg_id,
-    )
-    return row is not None
+    async with db() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM anon_queue WHERE tg_id = $1",
+            tg_id,
+        )
+        return row is not None
 
 
 async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
@@ -146,12 +146,12 @@ async def anon_end(tg_id: int) -> Optional[int]:
 
 async def anon_reveal_count(tg_id: int) -> int:
     """Сколько раз пользователь раскрывался в анонимных свиданиях (для значка revealer)."""
-    conn = await get_db()
-    row = await conn.fetchrow(
-        """
-        SELECT COUNT(*) AS c FROM anon_sessions
-        WHERE (a_id = $1 AND a_reveal = 1) OR (b_id = $1 AND b_reveal = 1)
-        """,
-        tg_id,
-    )
-    return row["c"] if row else 0
+    async with db() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) AS c FROM anon_sessions
+            WHERE (a_id = $1 AND a_reveal = 1) OR (b_id = $1 AND b_reveal = 1)
+            """,
+            tg_id,
+        )
+        return row["c"] if row else 0

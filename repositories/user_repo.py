@@ -1,30 +1,28 @@
 """Репозиторий пользователей."""
 from typing import Optional
-from database.connection import get_db, get_single_db
+
+from database.connection import db, get_single_db
 
 
 async def get_user(tg_id: int) -> Optional[dict]:
-    conn = await get_db()
-    row = await conn.fetchrow(
-        "SELECT * FROM users WHERE tg_id = $1", tg_id,
-    )
-    return dict(row) if row else None
+    async with db() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM users WHERE tg_id = $1", tg_id,
+        )
+        return dict(row) if row else None
 
 
 async def get_user_names_batch(tg_ids: list[int]) -> dict[int, str]:
-    """Возвращает имена пользователей batch-запросом.
-
-    Оптимизация: вместо N запросов get_user() — один запрос с IN.
-    """
+    """Возвращает имена пользователей batch-запросом."""
     if not tg_ids:
         return {}
-    conn = await get_db()
-    placeholders = ",".join(f"${i+1}" for i in range(len(tg_ids)))
-    rows = await conn.fetch(
-        f"SELECT tg_id, name FROM users WHERE tg_id IN ({placeholders})",
-        *tg_ids,
-    )
-    return {r["tg_id"]: r["name"] or f"ID:{r['tg_id']}" for r in rows}
+    async with db() as conn:
+        placeholders = ",".join(f"${i+1}" for i in range(len(tg_ids)))
+        rows = await conn.fetch(
+            f"SELECT tg_id, name FROM users WHERE tg_id IN ({placeholders})",
+            *tg_ids,
+        )
+        return {r["tg_id"]: r["name"] or f"ID:{r['tg_id']}" for r in rows}
 
 
 async def upsert_user(
@@ -98,10 +96,7 @@ async def increment_anon_messages(tg_id: int) -> None:
 
 
 async def update_max_compat(tg_id: int, pct: int) -> None:
-    """Запоминает максимальную совместимость, которую видел пользователь.
-
-    Нужно для значка high_compat (порог 95%). Обновляем только вверх.
-    """
+    """Запоминает максимальную совместимость, которую видел пользователь."""
     conn = await get_single_db()
     try:
         await conn.execute(

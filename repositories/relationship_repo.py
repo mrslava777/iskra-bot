@@ -1,6 +1,7 @@
 """Репозиторий для операций с отношениями."""
 from typing import Optional
-from database.connection import get_db, get_single_db
+
+from database.connection import db, get_single_db
 
 
 async def create_relationship(user1_id: int, user2_id: int) -> None:
@@ -21,12 +22,12 @@ async def create_relationship(user1_id: int, user2_id: int) -> None:
 
 async def get_relationship(user1_id: int, user2_id: int) -> Optional[dict]:
     a, b = sorted((user1_id, user2_id))
-    conn = await get_db()
-    row = await conn.fetchrow(
-        "SELECT * FROM relationships WHERE user1_id = $1 AND user2_id = $2",
-        a, b,
-    )
-    return dict(row) if row else None
+    async with db() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM relationships WHERE user1_id = $1 AND user2_id = $2",
+            a, b,
+        )
+        return dict(row) if row else None
 
 
 async def add_points(user1_id: int, user2_id: int, points: int) -> None:
@@ -42,14 +43,7 @@ async def add_points(user1_id: int, user2_id: int, points: int) -> None:
 
 
 async def add_points_with_level_update(user1_id: int, user2_id: int, points: int) -> None:
-    """Добавляет очки и обновляет уровень одной транзакцией.
-
-    Оптимизация: вместо 2-3 запросов (add_points + get_points_and_level + update_level)
-    используем 1-2 запроса с логикой уровня на стороне Python.
-
-    Требуемый индекс:
-        CREATE INDEX idx_relationships_pair ON relationships(user1_id, user2_id);
-    """
+    """Добавляет очки и обновляет уровень одной транзакцией."""
     a, b = sorted((user1_id, user2_id))
     conn = await get_single_db()
 
@@ -86,14 +80,14 @@ async def add_points_with_level_update(user1_id: int, user2_id: int, points: int
 
 async def get_points_and_level(user1_id: int, user2_id: int) -> Optional[tuple[int, int]]:
     a, b = sorted((user1_id, user2_id))
-    conn = await get_db()
-    row = await conn.fetchrow(
-        "SELECT points, level FROM relationships WHERE user1_id = $1 AND user2_id = $2",
-        a, b,
-    )
-    if not row:
-        return None
-    return row["points"], row["level"]
+    async with db() as conn:
+        row = await conn.fetchrow(
+            "SELECT points, level FROM relationships WHERE user1_id = $1 AND user2_id = $2",
+            a, b,
+        )
+        if not row:
+            return None
+        return row["points"], row["level"]
 
 
 async def update_level(user1_id: int, user2_id: int, new_level: int) -> None:
