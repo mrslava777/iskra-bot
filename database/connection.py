@@ -341,6 +341,42 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
                 log.warning("Не удалось добавить колонку %s.%s: %s", table, col_name, e)
 
 
+async def _migrate_types(conn: asyncpg.Connection) -> None:
+    """Мигрирует типы колонок с timestamp на INTEGER (unix timestamp)."""
+    # Список колонок, которые должны быть INTEGER, но могут быть timestamp в старой БД
+    type_migrations = [
+        ("users", "created_at", "INTEGER", "0"),
+        ("users", "last_active", "INTEGER", "0"),
+        ("likes", "created_at", "INTEGER", "0"),
+        ("matches", "created_at", "INTEGER", "0"),
+        ("shown_profiles", "shown_at", "INTEGER", "0"),
+        ("reports", "created_at", "INTEGER", "0"),
+        ("anon_queue", "queued_at", "INTEGER", "0"),
+        ("anon_sessions", "started_at", "INTEGER", "0"),
+        ("anon_sessions", "ended_at", "INTEGER", "NULL"),
+        ("relationships", "created_at", "INTEGER", "0"),
+        ("tickets", "created_at", "INTEGER", "0"),
+    ]
+
+    for table, col_name, new_type, default_val in type_migrations:
+        try:
+            # Проверяем текущий тип колонки
+            row = await conn.fetchrow(
+                """SELECT data_type FROM information_schema.columns 
+                WHERE table_name = $1 AND column_name = $2""",
+                table, col_name
+            )
+            if row and row["data_type"] in ("timestamp without time zone", "timestamp with time zone", "timestamp"):
+                # Мигрируем: создаём временную колонку, копируем данные, удаляем старую, переименовываем
+                await conn.execute(
+                    f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} \
+                    USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
+                )
+                log.info("Тип колонки %s.%s мигрирован на %s", table, col_name, new_type)
+        except Exception as e:
+            log.warning("Не удалось мигрировать тип %s.%s: %s", table, col_name, e)
+
+
 async def init_schema(conn: asyncpg.Connection) -> None:
     """Создаёт все таблицы и индексы (идемпотентно).
 
@@ -354,7 +390,10 @@ async def init_schema(conn: asyncpg.Connection) -> None:
     # Шаг 2: Добавляем недостающие колонки (для миграции старых таблиц)
     await _ensure_columns(conn)
 
-    # Шаг 3: Создаём индексы (теперь все колонки гарантированно существуют)
+    # Шаг 3: Мигрируем типы колонок (timestamp -> INTEGER)
+    await _migrate_types(conn)
+
+    # Шаг 4: Создаём индексы (теперь все колонки гарантированно существуют)
     await conn.execute(INDEX_SQL)
 
     log.info("Таблицы созданы")
