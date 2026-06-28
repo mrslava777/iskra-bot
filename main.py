@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import BOT_TOKEN
-from database.connection import close_db_pool
+from database.connection import close_db_pool, init_db_on_startup
 from handlers import setup_routers
 from health import _health_handler, _ready_handler
 
@@ -23,6 +23,9 @@ PORT = int(os.getenv("PORT", "8080"))
 
 async def on_startup(bot: Bot) -> None:
     """Устанавливаем webhook при старте."""
+    # Инициализируем БД ДО запуска сервера
+    await init_db_on_startup()
+    
     if WEBHOOK_HOST:
         webhook_url = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
         await bot.set_webhook(webhook_url)
@@ -52,7 +55,7 @@ async def main() -> None:
     # Создаём aiohttp приложение
     app = web.Application()
 
-    # Health endpoints для Railway
+    # Health endpoints для Railway — ДО webhook, чтобы были доступны сразу
     app.router.add_get("/health", _health_handler)
     app.router.add_get("/ready", _ready_handler)
 
