@@ -4,7 +4,7 @@
     db()             — асинхронный контекстный менеджер для работы с БД.
                        Автоматически берёт соединение из пула и возвращает.
     get_single_db()  — НОВОЕ соединение из пула для транзакций.
-                       Вызывающий обязан закрыть через await conn.close().
+                       Вызывающий обязан вернуть через await release_db(conn).
     close_db_pool()  — закрывает пул (graceful shutdown).
 
 Схема создаётся один раз при первом вызове db().
@@ -12,6 +12,15 @@
 Пример использования:
     async with db() as conn:
         row = await conn.fetchrow("SELECT ...", params)
+
+    # Для транзакций:
+    conn = await get_single_db()
+    try:
+        await conn.execute("BEGIN")
+        ...
+        await conn.execute("COMMIT")
+    finally:
+        await release_db(conn)  # ← ВАЖНО: возвращаем в пул!
 """
 import logging
 from contextlib import asynccontextmanager
@@ -87,7 +96,15 @@ async def get_single_db() -> asyncpg.Connection:
     """Свежее соединение из пула для транзакций.
 
     Используй, когда нужно несколько запросов в одной транзакции
-    или COMMIT/ROLLBACK. Обязательно закрой: await conn.close().
+    или COMMIT/ROLLBACK. Обязательно верни в пул через release_db()!
+
+    Example:
+        conn = await get_single_db()
+        try:
+            await conn.execute("INSERT INTO ...")
+            await conn.execute("UPDATE ...")
+        finally:
+            await release_db(conn)  # ← НЕ conn.close()!
     """
     global _schema_ready
     pool = await _get_pool()
@@ -96,6 +113,16 @@ async def get_single_db() -> asyncpg.Connection:
             await init_schema(init_conn)
             _schema_ready = True
     return await pool.acquire()
+
+
+async def release_db(conn: asyncpg.Connection) -> None:
+    """Возвращает соединение в пул. НЕ закрывает его!
+
+    ⚠️ ВАЖНО: Для pooled-соединений используй release_db(), а НЕ conn.close().
+    conn.close() навсегда уничтожит соединение и вызовет утечку пула!
+    """
+    pool = await _get_pool()
+    await pool.release(conn)
 
 
 async def close_db_pool() -> None:
