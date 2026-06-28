@@ -62,8 +62,7 @@ async def next_candidate(viewer_id: int, viewer: dict | None = None) -> Optional
 
 async def mark_shown(from_id: int, to_id: int) -> None:
     """Отмечает профиль как показанный."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             """
             INSERT INTO shown_profiles (from_id, to_id, shown_at)
@@ -72,5 +71,3 @@ async def mark_shown(from_id: int, to_id: int) -> None:
             """,
             from_id, to_id,
         )
-    finally:
-        await conn.close()

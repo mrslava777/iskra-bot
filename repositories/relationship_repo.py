@@ -6,8 +6,7 @@ from database.connection import db, get_single_db
 
 async def create_relationship(user1_id: int, user2_id: int) -> None:
     a, b = sorted((user1_id, user2_id))
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             """
             INSERT INTO relationships (user1_id, user2_id, points, level, created_at)
@@ -16,8 +15,6 @@ async def create_relationship(user1_id: int, user2_id: int) -> None:
             """,
             a, b,
         )
-    finally:
-        await conn.close()
 
 
 async def get_relationship(user1_id: int, user2_id: int) -> Optional[dict]:
@@ -32,22 +29,17 @@ async def get_relationship(user1_id: int, user2_id: int) -> Optional[dict]:
 
 async def add_points(user1_id: int, user2_id: int, points: int) -> None:
     a, b = sorted((user1_id, user2_id))
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             "UPDATE relationships SET points = points + $1 WHERE user1_id = $2 AND user2_id = $3",
             points, a, b,
         )
-    finally:
-        await conn.close()
 
 
 async def add_points_with_level_update(user1_id: int, user2_id: int, points: int) -> None:
     """Добавляет очки и обновляет уровень одной транзакцией."""
     a, b = sorted((user1_id, user2_id))
-    conn = await get_single_db()
-
-    try:
+    async with db() as conn:
         # Получаем текущие points, level и сразу обновляем points
         row = await conn.fetchrow(
             """
@@ -74,8 +66,6 @@ async def add_points_with_level_update(user1_id: int, user2_id: int, points: int
                     "UPDATE relationships SET level = $1 WHERE user1_id = $2 AND user2_id = $3",
                     new_level, a, b,
                 )
-    finally:
-        await conn.close()
 
 
 async def get_points_and_level(user1_id: int, user2_id: int) -> Optional[tuple[int, int]]:
@@ -92,11 +82,8 @@ async def get_points_and_level(user1_id: int, user2_id: int) -> Optional[tuple[i
 
 async def update_level(user1_id: int, user2_id: int, new_level: int) -> None:
     a, b = sorted((user1_id, user2_id))
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             "UPDATE relationships SET level = $1 WHERE user1_id = $2 AND user2_id = $3",
             new_level, a, b,
         )
-    finally:
-        await conn.close()

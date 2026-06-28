@@ -65,8 +65,7 @@ async def admin_all_active_ids() -> list:
 
 async def add_report(from_id: int, to_id: int) -> None:
     """Добавляет жалобу."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             """
             INSERT INTO reports (from_id, to_id, created_at)
@@ -74,8 +73,6 @@ async def add_report(from_id: int, to_id: int) -> None:
             """,
             from_id, to_id,
         )
-    finally:
-        await conn.close()
 
 
 async def admin_recent_reports(limit: int = 10) -> list:
@@ -98,23 +95,17 @@ async def admin_recent_reports(limit: int = 10) -> list:
 
 async def admin_ban_user(tg_id: int) -> None:
     """Банит пользователя."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             "UPDATE users SET is_banned = 1, active = 0 WHERE tg_id = $1",
             tg_id,
         )
-    finally:
-        await conn.close()
 
 
 async def admin_unban_user(tg_id: int) -> None:
     """Разбанивает пользователя."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             "UPDATE users SET is_banned = 0 WHERE tg_id = $1",
             tg_id,
         )
-    finally:
-        await conn.close()

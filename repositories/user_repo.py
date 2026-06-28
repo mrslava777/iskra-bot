@@ -43,8 +43,7 @@ async def upsert_user(
     min_age: Optional[int] = None,
     max_age: Optional[int] = None,
 ) -> None:
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             """
             INSERT INTO users (tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, daily_q, daily_a, min_age, max_age, created_at, last_active, streak, rating, anon_messages_count)
@@ -69,48 +68,36 @@ async def upsert_user(
             """,
             tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, daily_q, daily_a, min_age, max_age,
         )
-    finally:
-        await conn.close()
 
 
 async def touch_activity(tg_id: int) -> None:
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             "UPDATE users SET last_active = EXTRACT(EPOCH FROM NOW())::INTEGER WHERE tg_id = $1",
             tg_id,
         )
-    finally:
-        await conn.close()
 
 
 async def increment_anon_messages(tg_id: int) -> None:
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             "UPDATE users SET anon_messages_count = anon_messages_count + 1 WHERE tg_id = $1",
             tg_id,
         )
-    finally:
-        await conn.close()
 
 
 async def update_max_compat(tg_id: int, pct: int) -> None:
     """Запоминает максимальную совместимость, которую видел пользователь."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             "UPDATE users SET max_compat = GREATEST(COALESCE(max_compat, 0), $1) WHERE tg_id = $2",
             pct, tg_id,
         )
-    finally:
-        await conn.close()
 
 
 async def delete_user(tg_id: int) -> None:
     """Полностью удаляет пользователя и все связанные данные."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         statements = [
             ("DELETE FROM users WHERE tg_id = $1", (tg_id,)),
             ("DELETE FROM photos WHERE tg_id = $1", (tg_id,)),
@@ -126,5 +113,3 @@ async def delete_user(tg_id: int) -> None:
         ]
         for sql, params in statements:
             await conn.execute(sql, *params)
-    finally:
-        await conn.close()

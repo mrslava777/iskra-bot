@@ -9,8 +9,7 @@ from data.constants import Photo
 
 async def add_photo(tg_id: int, photo_id: str) -> None:
     """Добавляет дополнительное фото в следующую свободную позицию."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         row = await conn.fetchrow(
             "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM photos WHERE tg_id = $1",
             tg_id,
@@ -26,8 +25,6 @@ async def add_photo(tg_id: int, photo_id: str) -> None:
             """,
             tg_id, photo_id, pos,
         )
-    finally:
-        await conn.close()
 
 
 async def get_photos(tg_id: int) -> list[dict]:
@@ -52,8 +49,7 @@ async def photo_count(tg_id: int) -> int:
 
 async def remove_photo(tg_id: int, position: int) -> None:
     """Удаляет фото по позиции и переиндексирует оставшиеся."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             "DELETE FROM photos WHERE tg_id = $1 AND position = $2",
             tg_id, position,
@@ -70,14 +66,11 @@ async def remove_photo(tg_id: int, position: int) -> None:
                 "INSERT INTO photos (tg_id, photo_id, position) VALUES ($1, $2, $3)",
                 tg_id, pid, i,
             )
-    finally:
-        await conn.close()
 
 
 async def sync_photos_to_gallery(tg_id: int) -> None:
     """Гарантирует, что главное фото из users.photo_id лежит в galleries как position 0."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         row = await conn.fetchrow(
             "SELECT photo_id FROM users WHERE tg_id = $1",
             tg_id,
@@ -93,5 +86,3 @@ async def sync_photos_to_gallery(tg_id: int) -> None:
             """,
             tg_id, main_photo,
         )
-    finally:
-        await conn.close()

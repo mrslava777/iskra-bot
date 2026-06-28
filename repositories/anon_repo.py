@@ -49,8 +49,7 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
         matched    — найден собеседник, создана сессия (partner = ID)
         queued     — поставлен в очередь, ждём (partner = None)
     """
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         # Уже в сессии?
         existing = await _active_session_row(conn, tg_id)
         if existing:
@@ -89,23 +88,17 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
             tg_id,
         )
         return "queued", None
-    finally:
-        await conn.close()
 
 
 async def anon_leave_queue(tg_id: int) -> None:
     """Убирает пользователя из очереди."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute("DELETE FROM anon_queue WHERE tg_id = $1", tg_id)
-    finally:
-        await conn.close()
 
 
 async def anon_set_reveal(tg_id: int) -> Optional[dict]:
     """Отмечает, что пользователь раскрылся. Возвращает обновлённую сессию или None."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         row = await _active_session_row(conn, tg_id)
         if not row:
             return None
@@ -119,8 +112,6 @@ async def anon_set_reveal(tg_id: int) -> Optional[dict]:
             row["id"],
         )
         return dict(updated) if updated else None
-    finally:
-        await conn.close()
 
 
 async def anon_end(tg_id: int) -> Optional[int]:
@@ -128,8 +119,7 @@ async def anon_end(tg_id: int) -> Optional[int]:
 
     Возвращает ID собеседника, если завершилась сессия, иначе None.
     """
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         row = await _active_session_row(conn, tg_id)
         if row:
             await conn.execute(
@@ -140,8 +130,6 @@ async def anon_end(tg_id: int) -> Optional[int]:
         # Сессии нет — на всякий случай выходим из очереди.
         await conn.execute("DELETE FROM anon_queue WHERE tg_id = $1", tg_id)
         return None
-    finally:
-        await conn.close()
 
 
 async def anon_reveal_count(tg_id: int) -> int:

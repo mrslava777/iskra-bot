@@ -14,8 +14,7 @@ async def get_user_badge_ids(tg_id: int) -> set[str]:
 
 async def award_badge(tg_id: int, badge_id: str, awarded_at: int) -> None:
     """Записывает значок в БД."""
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             """
             INSERT INTO user_badges (tg_id, badge_id, awarded_at) VALUES ($1, $2, $3)
@@ -23,8 +22,6 @@ async def award_badge(tg_id: int, badge_id: str, awarded_at: int) -> None:
             """,
             tg_id, badge_id, awarded_at,
         )
-    finally:
-        await conn.close()
 
 
 async def get_user_stats(tg_id: int) -> dict:

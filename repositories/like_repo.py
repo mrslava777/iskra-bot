@@ -7,8 +7,7 @@ async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
 
     При взаимном лайке создаётся запись в matches и обновляется рейтинг цели.
     """
-    conn = await get_single_db()
-    try:
+    async with db() as conn:
         await conn.execute(
             """
             INSERT INTO likes (from_id, to_id, is_like, created_at)
@@ -46,8 +45,6 @@ async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
                 matched = "INSERT 0 1" in result
 
         return matched
-    finally:
-        await conn.close()
 
 
 async def incoming_likes(tg_id: int) -> list[dict]:
