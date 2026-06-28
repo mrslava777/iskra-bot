@@ -48,46 +48,63 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
         waiting    — уже стоит в очереди (partner = None)
         matched    — найден собеседник, создана сессия (partner = ID)
         queued     — поставлен в очередь, ждём (partner = None)
+
+    ВАЖНО: Вся операция выполняется внутри транзакции с блокировкой,
+    чтобы предотвратить race condition при одновременном входе нескольких пользователей.
     """
     async with db() as conn:
-        # Уже в сессии?
-        existing = await _active_session_row(conn, tg_id)
-        if existing:
-            partner = existing["b_id"] if existing["a_id"] == tg_id else existing["a_id"]
-            return "in_session", partner
+        # Начинаем транзакцию
+        tr = conn.transaction()
+        await tr.start()
 
-        # Уже в очереди?
-        row = await conn.fetchrow("SELECT 1 FROM anon_queue WHERE tg_id = $1", tg_id)
-        if row:
-            return "waiting", None
+        try:
+            # Уже в сессии?
+            existing = await _active_session_row(conn, tg_id)
+            if existing:
+                partner = existing["b_id"] if existing["a_id"] == tg_id else existing["a_id"]
+                await tr.commit()
+                return "in_session", partner
 
-        # Ищем любого другого ожидающего.
-        row = await conn.fetchrow(
-            "SELECT tg_id FROM anon_queue WHERE tg_id != $1 ORDER BY queued_at ASC LIMIT 1",
-            tg_id,
-        )
-        if row:
-            partner = row["tg_id"]
-            await conn.execute("DELETE FROM anon_queue WHERE tg_id IN ($1, $2)", tg_id, partner)
+            # Уже в очереди?
+            row = await conn.fetchrow("SELECT 1 FROM anon_queue WHERE tg_id = $1", tg_id)
+            if row:
+                await tr.commit()
+                return "waiting", None
+
+            # Ищем любого другого ожидающего с блокировкой (FOR UPDATE SKIP LOCKED)
+            row = await conn.fetchrow(
+                "SELECT tg_id FROM anon_queue WHERE tg_id != $1 ORDER BY queued_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED",
+                tg_id,
+            )
+            if row:
+                partner = row["tg_id"]
+                # Удаляем обоих из очереди
+                await conn.execute("DELETE FROM anon_queue WHERE tg_id IN ($1, $2)", tg_id, partner)
+                # Создаём сессию
+                await conn.execute(
+                    """
+                    INSERT INTO anon_sessions (a_id, b_id, a_reveal, b_reveal, started_at)
+                    VALUES ($1, $2, 0, 0, EXTRACT(EPOCH FROM NOW())::INTEGER)
+                    """,
+                    tg_id, partner,
+                )
+                await tr.commit()
+                return "matched", partner
+
+            # Никого нет — встаём в очередь
             await conn.execute(
                 """
-                INSERT INTO anon_sessions (a_id, b_id, a_reveal, b_reveal, started_at)
-                VALUES ($1, $2, 0, 0, EXTRACT(EPOCH FROM NOW())::INTEGER)
+                INSERT INTO anon_queue (tg_id, queued_at)
+                VALUES ($1, EXTRACT(EPOCH FROM NOW())::INTEGER)
+                ON CONFLICT (tg_id) DO NOTHING
                 """,
-                tg_id, partner,
+                tg_id,
             )
-            return "matched", partner
-
-        # Никого нет — встаём в очередь.
-        await conn.execute(
-            """
-            INSERT INTO anon_queue (tg_id, queued_at)
-            VALUES ($1, EXTRACT(EPOCH FROM NOW())::INTEGER)
-            ON CONFLICT (tg_id) DO NOTHING
-            """,
-            tg_id,
-        )
-        return "queued", None
+            await tr.commit()
+            return "queued", None
+        except Exception:
+            await tr.rollback()
+            raise
 
 
 async def anon_leave_queue(tg_id: int) -> None:
@@ -120,16 +137,24 @@ async def anon_end(tg_id: int) -> Optional[int]:
     Возвращает ID собеседника, если завершилась сессия, иначе None.
     """
     async with db() as conn:
-        row = await _active_session_row(conn, tg_id)
-        if row:
-            await conn.execute(
-                "UPDATE anon_sessions SET ended_at = EXTRACT(EPOCH FROM NOW())::INTEGER WHERE id = $1",
-                row["id"],
-            )
-            return row["b_id"] if row["a_id"] == tg_id else row["a_id"]
-        # Сессии нет — на всякий случай выходим из очереди.
-        await conn.execute("DELETE FROM anon_queue WHERE tg_id = $1", tg_id)
-        return None
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            row = await _active_session_row(conn, tg_id)
+            if row:
+                await conn.execute(
+                    "UPDATE anon_sessions SET ended_at = EXTRACT(EPOCH FROM NOW())::INTEGER WHERE id = $1",
+                    row["id"],
+                )
+                await tr.commit()
+                return row["b_id"] if row["a_id"] == tg_id else row["a_id"]
+            # Сессии нет — на всякий случай выходим из очереди
+            await conn.execute("DELETE FROM anon_queue WHERE tg_id = $1", tg_id)
+            await tr.commit()
+            return None
+        except Exception:
+            await tr.rollback()
+            raise
 
 
 async def anon_reveal_count(tg_id: int) -> int:
