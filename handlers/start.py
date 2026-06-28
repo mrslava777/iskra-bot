@@ -44,6 +44,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     user = await user_repo.get_user(message.from_user.id)
     if user and user["name"] and user["photo_id"]:
         # touch_activity — fire-and-forget, не блокирует ответ
+        # FIX: create_task for actual coroutine
         asyncio.create_task(_safe_touch(message.from_user.id))
         await message.answer(Message.WELCOME_BACK, reply_markup=MAIN_MENU)
         return
