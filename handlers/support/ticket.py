@@ -1,4 +1,9 @@
-"""Создание тикетов поддержки — меню категорий, отправка."""
+"""Создание тикетов поддержки — меню категорий, отправка.
+
+FIX: добавлено логирование ошибок доставки тикетов админам.
+"""
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -13,6 +18,7 @@ from keyboards import MAIN_MENU, HIDE_MENU
 from states import Support
 
 router = Router()
+log = logging.getLogger("iskra.support")
 
 
 @router.message(Command(Cmd.SUPPORT.value[1:]))
@@ -112,7 +118,7 @@ async def _process_ticket(
                     admin_id, text=ticket_text,
                     reply_markup=support_reply_kb(uid, ticket_id),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Не удалось отправить тикет #%s → admin %d: %s", ticket_id, admin_id, e)
 
     await message.answer(Message.TICKET_SENT, reply_markup=MAIN_MENU)

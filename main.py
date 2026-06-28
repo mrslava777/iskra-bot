@@ -26,13 +26,22 @@ _shutdown_event = asyncio.Event()
 
 
 async def on_startup(bot: Bot) -> None:
-    """Устанавливаем webhook при старте."""
+    """Устанавливаем webhook при старте и выполняем периодическое обслуживание."""
     if WEBHOOK_HOST:
         webhook_url = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
         await bot.set_webhook(webhook_url)
         logging.info("Webhook установлен: %s", webhook_url)
     else:
         logging.warning("WEBHOOK_HOST не задан, webhook не установлен")
+
+    # FIX: очистка shown_profiles при запуске (таблица растёт бесконечно)
+    try:
+        from repositories.profile_repo import cleanup_shown_profiles
+        deleted = await cleanup_shown_profiles(max_age_days=30)
+        if deleted:
+            logging.info("Очищено %d старых записей shown_profiles", deleted)
+    except Exception as e:
+        logging.warning("Не удалось очистить shown_profiles: %s", e)
 
 
 async def on_shutdown(bot: Bot) -> None:

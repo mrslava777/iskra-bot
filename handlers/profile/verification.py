@@ -1,5 +1,10 @@
-"""Верификация профиля через кружочек со случайным жестом."""
+"""Верификация профиля через кружочек со случайным жестом.
+
+FIX: добавлено логирование ошибок доставки уведомлений.
+"""
+import logging
 import random
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -13,6 +18,7 @@ from services.profile_formatter import format_profile_async
 from states import Verify
 
 router = Router()
+log = logging.getLogger("iskra.verify")
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:verify")
@@ -70,8 +76,8 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
                 "Проверь, что жест виден в кадре и лицо совпадает с анкетой.",
                 reply_markup=verify_kb(message.from_user.id),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Не удалось отправить запрос верификации → admin %d: %s", admin_id, e)
 
     await message.answer(Message.VERIFICATION_SENT, reply_markup=MAIN_MENU)
 
@@ -101,8 +107,8 @@ async def on_approve_verify(call: CallbackQuery) -> None:
         )
     try:
         await call.bot.send_message(tg_id, Message.VERIFICATION_APPROVED)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Не удалось уведомить об одобрении верификации → %d: %s", tg_id, e)
 
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.VERIFY.value}:{VerifyAction.REJECT.value}:"))
@@ -123,5 +129,5 @@ async def on_reject_verify(call: CallbackQuery) -> None:
         )
     try:
         await call.bot.send_message(tg_id, Message.VERIFICATION_REJECTED)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Не удалось уведомить об отклонении верификации → %d: %s", tg_id, e)

@@ -3,8 +3,13 @@
 format_profile        — синхронная версия (без значков/совместимости),
                         для финала регистрации.
 format_profile_async  — асинхронная версия со значками и совместимостью.
+
+FIX: импорты badge_service и badge_formatter вынесены на уровень модуля —
+     раньше import внутри функции добавлял overhead при каждом вызове.
 """
 from data.content import daily_question
+from services.badge_formatter import format_user_badges_inline
+from services.badge_service import get_user_badges
 from services.compatibility import (
     common_interests,
     compat_bar,
@@ -57,8 +62,6 @@ async def format_profile_async(
     lines = [f"<b>{name}</b>{verified}, {age} {gender_emoji(user['gender'])}  •  📍 {city}"]
 
     if show_badges:
-        from services.badge_service import get_user_badges
-        from services.badge_formatter import format_user_badges_inline
         badges = await get_user_badges(user["tg_id"])
         badge_line = format_user_badges_inline(badges)
         if badge_line:

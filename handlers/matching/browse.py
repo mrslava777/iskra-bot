@@ -1,4 +1,12 @@
-"""Лента анкет — показ кандидатов, свайпы, жалобы."""
+"""Лента анкет — показ кандидатов, свайпы, жалобы.
+
+FIX: _show_next параллелизирует mark_shown + update_max_compat + photo_count
+     через asyncio.gather вместо последовательных вызовов.
+FIX: добавлено логирование ошибок отправки фото.
+"""
+import asyncio
+import logging
+
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InputMediaPhoto, Message
@@ -8,7 +16,7 @@ import repositories.photo_repo as photo_repo
 import repositories.profile_repo as profile_repo
 import repositories.settings_repo as settings_repo
 import repositories.user_repo as user_repo
-from data.constants import EMOJI, MenuText, Message
+from data.constants import EMOJI, MenuText, Message as Msg
 from data.enums import CallbackPrefix, SwipeAction
 from keyboards import MAIN_MENU, HIDE_MENU, browse_kb
 from services.badge_formatter import format_badge_card
@@ -18,6 +26,7 @@ from services.notification import announce_match, notify_liked
 from services.profile_formatter import format_profile_async
 
 router = Router()
+log = logging.getLogger("iskra.browse")
 
 
 @router.message(F.text == MenuText.SEARCH)
@@ -26,32 +35,44 @@ async def start_browse(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = await user_repo.get_user(message.from_user.id)
     if not user or not user["name"]:
-        await message.answer(Message.CREATE_PROFILE_FIRST)
+        await message.answer(Msg.CREATE_PROFILE_FIRST)
         return
     await user_repo.touch_activity(message.from_user.id)
     await _show_next(message, message.from_user.id)
 
 
 async def _show_next(message: Message, viewer_id: int) -> None:
-    """Показывает следующую анкету в ленте."""
+    """Показывает следующую анкету в ленте.
+
+    FIX: независимые DB-операции (mark_shown, update_max_compat, photo_count)
+    запускаются параллельно через asyncio.gather.
+    """
     viewer = await user_repo.get_user(viewer_id)
     cand = await profile_repo.next_candidate(viewer_id, viewer)
     if cand is None:
-        await message.answer(Message.NO_MORE_PROFILES, reply_markup=HIDE_MENU)
+        await message.answer(Msg.NO_MORE_PROFILES, reply_markup=HIDE_MENU)
         return
-    await profile_repo.mark_shown(viewer_id, cand["tg_id"])
 
-    # Запоминаем максимальную совместимость (для значка high_compat).
+    # Совместимость (синхронный, быстрый, кэшированный)
     pct = compatibility(viewer.get("interests"), cand.get("interests"))
-    await user_repo.update_max_compat(viewer_id, pct)
 
-    caption = await format_profile_async(cand, viewer=viewer, show_compat=True, show_badges=True)
-    extra = await photo_repo.photo_count(cand["tg_id"]) > 1
+    # Параллельно: mark_shown + update_max_compat + photo_count + format_profile
+    mark_task = profile_repo.mark_shown(viewer_id, cand["tg_id"])
+    compat_task = user_repo.update_max_compat(viewer_id, pct)
+    photo_task = photo_repo.photo_count(cand["tg_id"])
+    format_task = format_profile_async(cand, viewer=viewer, show_compat=True, show_badges=True)
+
+    _, _, n_photos, caption = await asyncio.gather(
+        mark_task, compat_task, photo_task, format_task,
+    )
+
+    extra = n_photos > 1
     kb = browse_kb(cand["tg_id"], has_extra_photos=extra)
 
     try:
         await message.answer_photo(photo=cand["photo_id"], caption=caption, reply_markup=kb)
-    except Exception:
+    except Exception as e:
+        log.debug("Не удалось отправить фото кандидата %d: %s", cand["tg_id"], e)
         await message.answer(caption, reply_markup=kb)
     # Скрываем меню в ленте
     await message.answer("👆 Лента анкет", reply_markup=HIDE_MENU)
@@ -66,7 +87,7 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
 
     if action == SwipeAction.STOP.value:
         await call.message.edit_reply_markup(reply_markup=None)
-        await call.message.answer(Message.SEARCH_STOPPED, reply_markup=HIDE_MENU)
+        await call.message.answer(Msg.SEARCH_STOPPED, reply_markup=HIDE_MENU)
         await call.answer()
         return
 
@@ -90,7 +111,7 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
         await announce_match(bot, viewer_id, target_id)
 
     await _check_badges(call, viewer_id)
-    await call.answer(Message.LIKE_SENT if is_like else Message.DISLIKE_SENT)
+    await call.answer(Msg.LIKE_SENT if is_like else Msg.DISLIKE_SENT)
     await _show_next(call.message, viewer_id)
 
 
@@ -102,8 +123,8 @@ async def _handle_photos(call: CallbackQuery, target_id: int) -> None:
         media = [InputMediaPhoto(media=p["photo_id"]) for p in extras]
         try:
             await call.message.answer_media_group(media)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Не удалось отправить доп. фото %d: %s", target_id, e)
     else:
         await call.answer("Нет дополнительных фото")
     await call.answer()
@@ -113,7 +134,7 @@ async def _handle_report(call: CallbackQuery, viewer_id: int, target_id: int) ->
     """Обрабатывает жалобу на пользователя."""
     await settings_repo.add_report(viewer_id, target_id)
     await _check_badges(call, viewer_id)
-    await call.answer(Message.REPORT_SENT)
+    await call.answer(Msg.REPORT_SENT)
     await _show_next(call.message, viewer_id)
 
 

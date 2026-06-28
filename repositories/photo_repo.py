@@ -2,6 +2,9 @@
 
 position = 0 — главное фото (совпадает с users.photo_id),
 position > 0 — дополнительные фото.
+
+FIX: remove_photo() оптимизирован — вместо DELETE ALL + INSERT по одному
+     используется DELETE целевого + UPDATE позиций (1 DELETE + 1 UPDATE vs 1 DELETE + N INSERTs).
 """
 from database.connection import db
 from data.constants import Photo
@@ -50,27 +53,23 @@ async def photo_count(tg_id: int) -> int:
 async def remove_photo(tg_id: int, position: int) -> None:
     """Удаляет фото по позиции и переиндексирует оставшиеся.
 
-    Все операции выполняются в одной транзакции —
-    исключает промежуточное состояние с пропущенными индексами.
+    FIX: вместо DELETE ALL + INSERT по одному — удаляем одно фото
+    и сдвигаем позиции всех последующих на -1.
+    Было: 1 DELETE + N INSERT = O(N+1) запросов.
+    Стало: 1 DELETE + 1 UPDATE = O(2) запроса.
     """
     async with db() as conn:
         async with conn.transaction():
+            # Удаляем целевое фото
             await conn.execute(
                 "DELETE FROM photos WHERE tg_id = $1 AND position = $2",
                 tg_id, position,
             )
-            # Переиндексация: собираем оставшиеся и раскладываем по 0..N.
-            rows = await conn.fetch(
-                "SELECT photo_id FROM photos WHERE tg_id = $1 ORDER BY position ASC",
-                tg_id,
+            # Сдвигаем позиции всех фото после удалённого на -1
+            await conn.execute(
+                "UPDATE photos SET position = position - 1 WHERE tg_id = $1 AND position > $2",
+                tg_id, position,
             )
-            remaining = [r["photo_id"] for r in rows]
-            await conn.execute("DELETE FROM photos WHERE tg_id = $1", tg_id)
-            for i, pid in enumerate(remaining):
-                await conn.execute(
-                    "INSERT INTO photos (tg_id, photo_id, position) VALUES ($1, $2, $3)",
-                    tg_id, pid, i,
-                )
 
 
 async def sync_photos_to_gallery(tg_id: int) -> None:

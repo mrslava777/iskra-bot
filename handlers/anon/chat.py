@@ -1,4 +1,12 @@
-"""Пересылка сообщений и открытие анкет в анонимном чате."""
+"""Пересылка сообщений и открытие анкет в анонимном чате.
+
+FIX: InAnonChat теперь сохраняет partner_id в event-data, чтобы relay()
+     не делал повторный запрос anon_active_partner() — убрана двойная нагрузка
+     на БД при каждом сообщении в анонимном чате.
+FIX: добавлено логирование ошибок доставки.
+"""
+import logging
+
 from aiogram import Bot, F, Router
 from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, Message
@@ -6,7 +14,7 @@ from aiogram.types import CallbackQuery, Message
 import repositories.anon_repo as anon_repo
 import repositories.like_repo as like_repo
 import repositories.user_repo as user_repo
-from data.constants import Message
+from data.constants import Message as Msg
 from data.enums import CallbackPrefix, AnonAction
 from keyboards import MAIN_MENU, anon_session_kb
 from services.anon_rate_limiter import check_rate_limit
@@ -16,13 +24,22 @@ from services.notification import announce_match
 from services.relationship_service import RelationshipService, add_message_event
 
 router = Router()
+log = logging.getLogger("iskra.anon")
 
 
 class InAnonChat(BaseFilter):
-    """Срабатывает только если пользователь в активной анонимной сессии."""
+    """Срабатывает только если пользователь в активной анонимной сессии.
 
-    async def __call__(self, event: Message | CallbackQuery) -> bool:
-        return await anon_repo.anon_active_partner(event.from_user.id) is not None
+    FIX: сохраняет partner_id в словарь event-data, чтобы хендлер relay()
+    мог получить его без повторного запроса к БД.
+    """
+
+    async def __call__(self, event: Message | CallbackQuery) -> bool | dict:
+        partner = await anon_repo.anon_active_partner(event.from_user.id)
+        if partner is None:
+            return False
+        # Передаём partner_id в хендлер через возвращаемый словарь
+        return {"anon_partner_id": partner}
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.ANON.value}:{AnonAction.REVEAL.value}")
@@ -44,15 +61,15 @@ async def reveal(call: CallbackQuery, bot: Bot) -> None:
     if both_revealed:
         await _handle_both_revealed(bot, s)
     else:
-        await call.message.answer(Message.BLIND_DATE_REVEAL_WAIT)
+        await call.message.answer(Msg.BLIND_DATE_REVEAL_WAIT)
         try:
             await bot.send_message(
                 partner,
-                Message.BLIND_DATE_REVEAL_REQUEST,
+                Msg.BLIND_DATE_REVEAL_REQUEST,
                 reply_markup=anon_session_kb(),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Не удалось отправить запрос reveal → %d: %s", partner, e)
 
 
 async def _handle_both_revealed(bot: Bot, session: dict) -> None:
@@ -68,36 +85,37 @@ async def _handle_both_revealed(bot: Bot, session: dict) -> None:
         try:
             await bot.send_message(
                 who,
-                Message.BLIND_DATE_BOTH_REVEALED,
+                Msg.BLIND_DATE_BOTH_REVEALED,
                 reply_markup=MAIN_MENU,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Не удалось отправить both_revealed → %d: %s", who, e)
 
 
 @router.message(InAnonChat())
-async def relay(message: Message, bot: Bot) -> None:
-    """Пересылает сообщения между собеседниками."""
-    partner = await anon_repo.anon_active_partner(message.from_user.id)
-    if partner is None:
-        return
+async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
+    """Пересылает сообщения между собеседниками.
 
+    FIX: partner_id передаётся из фильтра InAnonChat через keyword argument,
+    вместо повторного запроса anon_active_partner() — убрана двойная нагрузка на БД.
+    """
     allowed, wait = check_rate_limit(message.from_user.id)
     if not allowed:
-        await message.answer(Message.RATE_LIMIT_WAIT.format(wait))
+        await message.answer(Msg.RATE_LIMIT_WAIT.format(wait))
         return
 
     await user_repo.increment_anon_messages(message.from_user.id)
     try:
-        await add_message_event(message.from_user.id, partner)
+        await add_message_event(message.from_user.id, anon_partner_id)
     except Exception:
         pass
 
     try:
         await bot.copy_message(
-            chat_id=partner,
+            chat_id=anon_partner_id,
             from_chat_id=message.chat.id,
             message_id=message.message_id,
         )
-    except Exception:
-        await message.answer(Message.DELIVERY_FAILED)
+    except Exception as e:
+        log.warning("Не удалось переслать сообщение %d → %d: %s", message.from_user.id, anon_partner_id, e)
+        await message.answer(Msg.DELIVERY_FAILED)
