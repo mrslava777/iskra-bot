@@ -109,9 +109,7 @@ async def on_support_from_settings(call: CallbackQuery, state: FSMContext) -> No
 async def on_delete_account(call: CallbackQuery) -> None:
     """Запрашивает подтверждение удаления."""
     await call.message.edit_text(
-        f"{EMOJI.REPORT} <b>Удалить аккаунт?</b>
-
-Все данные будут безвозвратно удалены.",
+        f"{EMOJI.REPORT} <b>Удалить аккаунт?</b>\n\nВсе данные будут безвозвратно удалены.",
         reply_markup=confirm_delete_kb(),
     )
     await call.answer()
