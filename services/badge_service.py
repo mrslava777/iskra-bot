@@ -52,6 +52,22 @@ async def get_user_badges(tg_id: int) -> list[dict]:
     return [BADGE_BY_ID[bid] for bid in badge_ids if bid in BADGE_BY_ID]
 
 
+async def get_user_badges_batch(tg_ids: list[int]) -> dict[int, list[dict]]:
+    """Возвращает значки для нескольких пользователей одним запросом.
+
+    Оптимизация: batch-загрузка вместо N+1.
+    """
+    badge_map = await badge_repo.get_user_badge_ids_batch(tg_ids)
+    result: dict[int, list[dict]] = {}
+    for uid, badge_ids in badge_map.items():
+        result[uid] = [BADGE_BY_ID[bid] for bid in badge_ids if bid in BADGE_BY_ID]
+    # Users with no badges get empty list
+    for uid in tg_ids:
+        if uid not in result:
+            result[uid] = []
+    return result
+
+
 async def get_user_stats(tg_id: int) -> tuple[dict, dict]:
     """Возвращает (user_row, stats_dict) для отображения прогресса.
 
