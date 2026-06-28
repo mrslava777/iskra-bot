@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode
 from config import BOT_TOKEN
 from database.connection import close_db_pool
 from handlers import setup_routers
-from health import start_health_server, stop_health_server
+from health import start_health_server
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,17 +22,17 @@ async def main() -> None:
     root_router = setup_routers()
     dp.include_router(root_router)
 
-    # Запускаем health-сервер ПЕРЕД polling
-    # Railway ждёт, пока порт откроется
+    # Запускаем health-сервер и polling ПАРАЛЛЕЛЬНО
+    # Railway ждёт, что приложение не завершится
     await start_health_server()
 
     # Даём Railway время увидеть открытый порт
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
 
     try:
+        # polling должен блокировать main() — иначе Railway убьёт контейнер
         await dp.start_polling(bot)
     finally:
-        await stop_health_server()
         await bot.session.close()
         await close_db_pool()
 
