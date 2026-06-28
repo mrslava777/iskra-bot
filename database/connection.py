@@ -224,10 +224,22 @@ CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
 CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, age);
 """
 
-# Колонки, которые могут отсутствовать в существующих таблицах
+# ВСЕ колонки всех таблиц, которые могут отсутствовать в старых/частичных таблицах
 # (ключ: таблица, значение: список (имя_колонки, тип, default))
 MISSING_COLUMNS = {
     "users": [
+        ("tg_id", "BIGINT", "0"),
+        ("username", "TEXT", "NULL"),
+        ("name", "TEXT", "NULL"),
+        ("age", "INTEGER", "NULL"),
+        ("gender", "TEXT", "NULL"),
+        ("seeking", "TEXT", "NULL"),
+        ("city", "TEXT", "NULL"),
+        ("bio", "TEXT", "NULL"),
+        ("interests", "TEXT", "''"),
+        ("photo_id", "TEXT", "NULL"),
+        ("active", "INTEGER", "1"),
+        ("verified", "INTEGER", "0"),
         ("is_banned", "INTEGER", "0"),
         ("streak", "INTEGER", "0"),
         ("rating", "INTEGER", "0"),
@@ -237,42 +249,74 @@ MISSING_COLUMNS = {
         ("min_age", "INTEGER", "18"),
         ("max_age", "INTEGER", "99"),
         ("max_compat", "INTEGER", "0"),
+        ("created_at", "INTEGER", "0"),
+        ("last_active", "INTEGER", "0"),
+    ],
+    "photos": [
+        ("id", "SERIAL", None),
+        ("tg_id", "BIGINT", "0"),
+        ("photo_id", "TEXT", "''"),
+        ("position", "INTEGER", "0"),
     ],
     "likes": [
+        ("id", "SERIAL", None),
+        ("from_id", "BIGINT", "0"),
+        ("to_id", "BIGINT", "0"),
         ("is_like", "INTEGER", "1"),
         ("message", "TEXT", "NULL"),
         ("created_at", "INTEGER", "0"),
     ],
     "matches": [
+        ("id", "SERIAL", None),
+        ("a_id", "BIGINT", "0"),
+        ("b_id", "BIGINT", "0"),
         ("created_at", "INTEGER", "0"),
     ],
     "shown_profiles": [
+        ("from_id", "BIGINT", "0"),
+        ("to_id", "BIGINT", "0"),
         ("shown_at", "INTEGER", "0"),
     ],
     "reports": [
+        ("id", "SERIAL", None),
+        ("from_id", "BIGINT", "0"),
+        ("to_id", "BIGINT", "0"),
         ("created_at", "INTEGER", "0"),
     ],
     "anon_queue": [
+        ("tg_id", "BIGINT", "0"),
         ("queued_at", "INTEGER", "0"),
     ],
     "anon_sessions": [
+        ("id", "SERIAL", None),
+        ("a_id", "BIGINT", "0"),
+        ("b_id", "BIGINT", "0"),
         ("a_reveal", "INTEGER", "0"),
         ("b_reveal", "INTEGER", "0"),
         ("started_at", "INTEGER", "0"),
         ("ended_at", "INTEGER", "NULL"),
     ],
     "relationships": [
+        ("id", "SERIAL", None),
+        ("user1_id", "BIGINT", "0"),
+        ("user2_id", "BIGINT", "0"),
         ("points", "INTEGER", "0"),
         ("level", "INTEGER", "0"),
         ("created_at", "INTEGER", "0"),
     ],
     "tickets": [
+        ("id", "SERIAL", None),
+        ("tg_id", "BIGINT", "0"),
+        ("category", "TEXT", "'other'"),
+        ("text", "TEXT", "''"),
         ("photo_id", "TEXT", "NULL"),
         ("reply", "TEXT", "NULL"),
         ("status", "TEXT", "'open'"),
         ("created_at", "INTEGER", "0"),
     ],
     "user_badges": [
+        ("tg_id", "BIGINT", "0"),
+        ("badge_id", "TEXT", "''"),
         ("awarded_at", "INTEGER", "0"),
     ],
 }
@@ -283,9 +327,15 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
     for table, columns in MISSING_COLUMNS.items():
         for col_name, col_type, default in columns:
             try:
-                await conn.execute(
-                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type} DEFAULT {default}"
-                )
+                if default is None:
+                    # Для SERIAL и других auto-generated — без DEFAULT
+                    await conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                    )
+                else:
+                    await conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type} DEFAULT {default}"
+                    )
                 log.info("Колонка %s.%s проверена/добавлена", table, col_name)
             except Exception as e:
                 log.warning("Не удалось добавить колонку %s.%s: %s", table, col_name, e)
