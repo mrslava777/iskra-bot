@@ -367,11 +367,24 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
                 table, col_name
             )
             if row and row["data_type"] in ("timestamp without time zone", "timestamp with time zone", "timestamp"):
-                # Мигрируем: создаём временную колонку, копируем данные, удаляем старую, переименовываем
+                # Шаг 1: Удаляем DEFAULT constraint (иначе ALTER TYPE не сработает)
+                await conn.execute(
+                    f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
+                )
+                # Шаг 2: Мигрируем тип
                 await conn.execute(
                     f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} \
                     USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
                 )
+                # Шаг 3: Добавляем новый DEFAULT
+                if default_val != "NULL":
+                    await conn.execute(
+                        f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT {default_val}"
+                    )
+                else:
+                    await conn.execute(
+                        f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT NULL"
+                    )
                 log.info("Тип колонки %s.%s мигрирован на %s", table, col_name, new_type)
         except Exception as e:
             log.warning("Не удалось мигрировать тип %s.%s: %s", table, col_name, e)
