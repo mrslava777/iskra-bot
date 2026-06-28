@@ -224,7 +224,7 @@ CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
 CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, age);
 """
 
-# Колонки, которые могут отсутствовать в старых версиях таблицы
+# Колонки, которые могут отсутствовать в существующих таблицах
 # (ключ: таблица, значение: список (имя_колонки, тип, default))
 MISSING_COLUMNS = {
     "users": [
@@ -237,7 +237,44 @@ MISSING_COLUMNS = {
         ("min_age", "INTEGER", "18"),
         ("max_age", "INTEGER", "99"),
         ("max_compat", "INTEGER", "0"),
-    ]
+    ],
+    "likes": [
+        ("is_like", "INTEGER", "1"),
+        ("message", "TEXT", "NULL"),
+        ("created_at", "INTEGER", "0"),
+    ],
+    "matches": [
+        ("created_at", "INTEGER", "0"),
+    ],
+    "shown_profiles": [
+        ("shown_at", "INTEGER", "0"),
+    ],
+    "reports": [
+        ("created_at", "INTEGER", "0"),
+    ],
+    "anon_queue": [
+        ("queued_at", "INTEGER", "0"),
+    ],
+    "anon_sessions": [
+        ("a_reveal", "INTEGER", "0"),
+        ("b_reveal", "INTEGER", "0"),
+        ("started_at", "INTEGER", "0"),
+        ("ended_at", "INTEGER", "NULL"),
+    ],
+    "relationships": [
+        ("points", "INTEGER", "0"),
+        ("level", "INTEGER", "0"),
+        ("created_at", "INTEGER", "0"),
+    ],
+    "tickets": [
+        ("photo_id", "TEXT", "NULL"),
+        ("reply", "TEXT", "NULL"),
+        ("status", "TEXT", "'open'"),
+        ("created_at", "INTEGER", "0"),
+    ],
+    "user_badges": [
+        ("awarded_at", "INTEGER", "0"),
+    ],
 }
 
 
