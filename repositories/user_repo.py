@@ -1,7 +1,7 @@
 """Репозиторий пользователей."""
 from typing import Optional
 
-from database.connection import db, get_single_db
+from database.connection import db
 
 
 async def get_user(tg_id: int) -> Optional[dict]:
@@ -96,20 +96,25 @@ async def update_max_compat(tg_id: int, pct: int) -> None:
 
 
 async def delete_user(tg_id: int) -> None:
-    """Полностью удаляет пользователя и все связанные данные."""
+    """Полностью удаляет пользователя и все связанные данные.
+
+    Все DELETE-операции выполняются в одной транзакции — 
+    либо пользователь удалён полностью, либо не удалён вообще.
+    """
     async with db() as conn:
-        statements = [
-            ("DELETE FROM users WHERE tg_id = $1", (tg_id,)),
-            ("DELETE FROM photos WHERE tg_id = $1", (tg_id,)),
-            ("DELETE FROM likes WHERE from_id = $1 OR to_id = $1", (tg_id,)),
-            ("DELETE FROM matches WHERE a_id = $1 OR b_id = $1", (tg_id,)),
-            ("DELETE FROM reports WHERE from_id = $1 OR to_id = $1", (tg_id,)),
-            ("DELETE FROM shown_profiles WHERE from_id = $1 OR to_id = $1", (tg_id,)),
-            ("DELETE FROM anon_queue WHERE tg_id = $1", (tg_id,)),
-            ("DELETE FROM anon_sessions WHERE a_id = $1 OR b_id = $1", (tg_id,)),
-            ("DELETE FROM relationships WHERE user1_id = $1 OR user2_id = $1", (tg_id,)),
-            ("DELETE FROM tickets WHERE tg_id = $1", (tg_id,)),
-            ("DELETE FROM user_badges WHERE tg_id = $1", (tg_id,)),
-        ]
-        for sql, params in statements:
-            await conn.execute(sql, *params)
+        async with conn.transaction():
+            statements = [
+                ("DELETE FROM users WHERE tg_id = $1", (tg_id,)),
+                ("DELETE FROM photos WHERE tg_id = $1", (tg_id,)),
+                ("DELETE FROM likes WHERE from_id = $1 OR to_id = $1", (tg_id,)),
+                ("DELETE FROM matches WHERE a_id = $1 OR b_id = $1", (tg_id,)),
+                ("DELETE FROM reports WHERE from_id = $1 OR to_id = $1", (tg_id,)),
+                ("DELETE FROM shown_profiles WHERE from_id = $1 OR to_id = $1", (tg_id,)),
+                ("DELETE FROM anon_queue WHERE tg_id = $1", (tg_id,)),
+                ("DELETE FROM anon_sessions WHERE a_id = $1 OR b_id = $1", (tg_id,)),
+                ("DELETE FROM relationships WHERE user1_id = $1 OR user2_id = $1", (tg_id,)),
+                ("DELETE FROM tickets WHERE tg_id = $1", (tg_id,)),
+                ("DELETE FROM user_badges WHERE tg_id = $1", (tg_id,)),
+            ]
+            for sql, params in statements:
+                await conn.execute(sql, *params)

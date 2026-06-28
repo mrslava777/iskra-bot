@@ -1,7 +1,7 @@
 """Репозиторий для операций с отношениями."""
 from typing import Optional
 
-from database.connection import db, get_single_db
+from database.connection import db
 
 
 async def create_relationship(user1_id: int, user2_id: int) -> None:
@@ -37,35 +37,40 @@ async def add_points(user1_id: int, user2_id: int, points: int) -> None:
 
 
 async def add_points_with_level_update(user1_id: int, user2_id: int, points: int) -> None:
-    """Добавляет очки и обновляет уровень одной транзакцией."""
+    """Добавляет очки и обновляет уровень одной транзакцией.
+
+    UPDATE с RETURNING и последующий UPDATE level выполняются
+    в одной транзакции — исключает race condition.
+    """
     a, b = sorted((user1_id, user2_id))
     async with db() as conn:
-        # Получаем текущие points, level и сразу обновляем points
-        row = await conn.fetchrow(
-            """
-            UPDATE relationships SET points = points + $1
-            WHERE user1_id = $2 AND user2_id = $3
-            RETURNING points, level
-            """,
-            points, a, b,
-        )
+        async with conn.transaction():
+            # Получаем текущие points, level и сразу обновляем points
+            row = await conn.fetchrow(
+                """
+                UPDATE relationships SET points = points + $1
+                WHERE user1_id = $2 AND user2_id = $3
+                RETURNING points, level
+                """,
+                points, a, b,
+            )
 
-        if row:
-            new_points = row["points"]
-            current_level = row["level"]
+            if row:
+                new_points = row["points"]
+                current_level = row["level"]
 
-            # Вычисляем новый уровень
-            from data.constants import Relationship
-            new_level = 0
-            for i, threshold in enumerate(Relationship.THRESHOLDS):
-                if new_points >= threshold:
-                    new_level = i
+                # Вычисляем новый уровень
+                from data.constants import Relationship
+                new_level = 0
+                for i, threshold in enumerate(Relationship.THRESHOLDS):
+                    if new_points >= threshold:
+                        new_level = i
 
-            if new_level > current_level:
-                await conn.execute(
-                    "UPDATE relationships SET level = $1 WHERE user1_id = $2 AND user2_id = $3",
-                    new_level, a, b,
-                )
+                if new_level > current_level:
+                    await conn.execute(
+                        "UPDATE relationships SET level = $1 WHERE user1_id = $2 AND user2_id = $3",
+                        new_level, a, b,
+                    )
 
 
 async def get_points_and_level(user1_id: int, user2_id: int) -> Optional[tuple[int, int]]:

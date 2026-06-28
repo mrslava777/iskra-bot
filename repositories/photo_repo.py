@@ -3,7 +3,7 @@
 position = 0 — главное фото (совпадает с users.photo_id),
 position > 0 — дополнительные фото.
 """
-from database.connection import db, get_single_db
+from database.connection import db
 from data.constants import Photo
 
 
@@ -48,24 +48,29 @@ async def photo_count(tg_id: int) -> int:
 
 
 async def remove_photo(tg_id: int, position: int) -> None:
-    """Удаляет фото по позиции и переиндексирует оставшиеся."""
+    """Удаляет фото по позиции и переиндексирует оставшиеся.
+
+    Все операции выполняются в одной транзакции — 
+    исключает промежуточное состояние с пропущенными индексами.
+    """
     async with db() as conn:
-        await conn.execute(
-            "DELETE FROM photos WHERE tg_id = $1 AND position = $2",
-            tg_id, position,
-        )
-        # Переиндексация: собираем оставшиеся и раскладываем по 0..N.
-        rows = await conn.fetch(
-            "SELECT photo_id FROM photos WHERE tg_id = $1 ORDER BY position ASC",
-            tg_id,
-        )
-        remaining = [r["photo_id"] for r in rows]
-        await conn.execute("DELETE FROM photos WHERE tg_id = $1", tg_id)
-        for i, pid in enumerate(remaining):
+        async with conn.transaction():
             await conn.execute(
-                "INSERT INTO photos (tg_id, photo_id, position) VALUES ($1, $2, $3)",
-                tg_id, pid, i,
+                "DELETE FROM photos WHERE tg_id = $1 AND position = $2",
+                tg_id, position,
             )
+            # Переиндексация: собираем оставшиеся и раскладываем по 0..N.
+            rows = await conn.fetch(
+                "SELECT photo_id FROM photos WHERE tg_id = $1 ORDER BY position ASC",
+                tg_id,
+            )
+            remaining = [r["photo_id"] for r in rows]
+            await conn.execute("DELETE FROM photos WHERE tg_id = $1", tg_id)
+            for i, pid in enumerate(remaining):
+                await conn.execute(
+                    "INSERT INTO photos (tg_id, photo_id, position) VALUES ($1, $2, $3)",
+                    tg_id, pid, i,
+                )
 
 
 async def sync_photos_to_gallery(tg_id: int) -> None:
