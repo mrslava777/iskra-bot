@@ -22,8 +22,12 @@ async def main() -> None:
     root_router = setup_routers()
     dp.include_router(root_router)
 
-    # Запускаем health-сервер
+    # Запускаем health-сервер ПЕРЕД polling
+    # Railway ждёт, пока порт откроется
     await start_health_server()
+
+    # Даём Railway время увидеть открытый порт
+    await asyncio.sleep(2)
 
     try:
         await dp.start_polling(bot)
