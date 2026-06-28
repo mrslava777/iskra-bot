@@ -390,6 +390,28 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
             log.warning("Не удалось мигрировать тип %s.%s: %s", table, col_name, e)
 
 
+async def _clear_statement_cache(conn: asyncpg.Connection) -> None:
+    """Сбрасывает кэш prepared statements после изменения схемы.
+
+    Критически важно: после ALTER TYPE/ALTER COLUMN asyncpg может хранить
+    устаревшие prepared statements, что приводит к:
+    InvalidCachedStatementError: cached statement plan is invalid due to 
+    a database schema or configuration change
+    """
+    try:
+        # Сбрасываем ВСЕ prepared statements в текущей сессии
+        await conn.execute("DEALLOCATE ALL")
+        log.info("Кэш prepared statements сброшен")
+    except Exception as e:
+        log.warning("Не удалось сбросить кэш prepared statements: %s", e)
+        # Fallback: более радикальный сброс
+        try:
+            await conn.execute("DISCARD ALL")
+            log.info("Выполнен DISCARD ALL")
+        except Exception as e2:
+            log.warning("DISCARD ALL тоже не сработал: %s", e2)
+
+
 async def init_schema(conn: asyncpg.Connection) -> None:
     """Создаёт все таблицы и индексы (идемпотентно).
 
@@ -406,7 +428,11 @@ async def init_schema(conn: asyncpg.Connection) -> None:
     # Шаг 3: Мигрируем типы колонок (timestamp -> INTEGER)
     await _migrate_types(conn)
 
-    # Шаг 4: Создаём индексы (теперь все колонки гарантированно существуют)
+    # ШАГ 4 (КРИТИЧЕСКИ ВАЖНЫЙ): Сбрасываем кэш prepared statements,
+    # т.к. ALTER TYPE делает все ранее подготовленные запросы невалидными
+    await _clear_statement_cache(conn)
+
+    # Шаг 5: Создаём индексы (теперь все колонки гарантированно существуют)
     await conn.execute(INDEX_SQL)
 
     log.info("Таблицы созданы")
