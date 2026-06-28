@@ -11,11 +11,12 @@ log = logging.getLogger("iskra.health")
 
 _app: web.Application | None = None
 _runner: web.AppRunner | None = None
+_site: web.TCPSite | None = None
 
 
 async def start_health_server() -> None:
-    """Запускает health-сервер и держит его alive."""
-    global _app, _runner
+    """Запускает health-сервер."""
+    global _app, _runner, _site
 
     port = int(os.getenv("PORT", str(Health.PORT)))
     _app = web.Application()
@@ -24,13 +25,18 @@ async def start_health_server() -> None:
 
     _runner = web.AppRunner(_app)
     await _runner.setup()
-    site = web.TCPSite(_runner, "0.0.0.0", port)
-    await site.start()
+    _site = web.TCPSite(_runner, "0.0.0.0", port)
+    await _site.start()
     log.info("Health server started on port %s", port)
 
-    # Держим сервер alive — Railway не убьёт контейнер
-    while True:
-        await asyncio.sleep(60)
+    # Просто ждём, пока не будет вызван stop_health_server
+    # НЕ используем бесконечный цикл — AppRunner сам держит сервер
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        log.info("Health server task cancelled")
+        raise
 
 
 async def stop_health_server() -> None:
@@ -53,4 +59,5 @@ async def _ready_handler(request: web.Request) -> web.Response:
             await conn.execute("SELECT 1")
         return web.json_response({"status": "ready"})
     except Exception as e:
+        log.error("Health check failed: %s", e)
         return web.json_response({"status": "not_ready", "error": str(e)}, status=Health.HTTP_NOT_READY)
