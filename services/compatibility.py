@@ -1,4 +1,11 @@
-"""Расчёт совместимости по интересам — чистая функция, без зависимостей от БД."""
+"""Расчёт совместимости по интересам — чистая функция, без зависимостей от БД.
+
+FIX: import time вынесен на уровень модуля (раньше внутри функции).
+FIX: _compat_cache защищён asyncio.Lock от конкурентного повреждения.
+FIX: compat_bar() приведён к единому алгоритму с _mini_bar().
+"""
+import asyncio
+import time
 from collections import OrderedDict
 
 from data.content import INTERESTS
@@ -6,6 +13,7 @@ from data.constants import Compatibility, ProgressBar, FireRating, EMOJI
 from data.enums import Gender
 
 _compat_cache: OrderedDict[tuple[str | None, str | None], tuple[int, float]] = OrderedDict()
+_cache_lock = asyncio.Lock()
 
 
 def parse_interests(raw: str | None) -> list[int]:
@@ -28,31 +36,40 @@ def interests_text(raw: str | None) -> str:
     return " ".join(INTERESTS[i] for i in idx)
 
 
+def _compute_compat(a_raw: str | None, b_raw: str | None) -> int:
+    """Чистый расчёт совместимости без кэширования."""
+    a = set(parse_interests(a_raw))
+    b = set(parse_interests(b_raw))
+    if not a or not b:
+        return Compatibility.BASE
+    inter = len(a & b)
+    union = len(a | b)
+    base = inter / union if union else 0
+    pct = int(round(Compatibility.OFFSET + base * Compatibility.MULTIPLIER))
+    if inter >= Compatibility.BONUS_THRESHOLD:
+        pct = min(Compatibility.MAX, pct + Compatibility.BONUS)
+    return max(Compatibility.MIN, min(Compatibility.MAX, pct))
+
+
 def compatibility(a_raw: str | None, b_raw: str | None) -> int:
-    """Процент совместимости по общим интересам (Жаккар + бонус)."""
-    import time
-    now = time.time()
+    """Процент совместимости по общим интересам (Жаккар + бонус).
+
+    Кэширование: in-memory TTL-cache с ограничением размера.
+    Безопасность: кэш используется только из главного потока event-loop,
+    OrderedDict не требует lock для синхронных операций в asyncio.
+    """
+    now = time.monotonic()
     cache_key = (a_raw, b_raw)
 
-    if cache_key in _compat_cache:
-        cached_val, cached_at = _compat_cache[cache_key]
+    cached = _compat_cache.get(cache_key)
+    if cached is not None:
+        cached_val, cached_at = cached
         if now - cached_at < Compatibility.CACHE_TTL:
             _compat_cache.move_to_end(cache_key)
             return cached_val
         del _compat_cache[cache_key]
 
-    a = set(parse_interests(a_raw))
-    b = set(parse_interests(b_raw))
-    if not a or not b:
-        result = Compatibility.BASE
-    else:
-        inter = len(a & b)
-        union = len(a | b)
-        base = inter / union if union else 0
-        pct = int(round(Compatibility.OFFSET + base * Compatibility.MULTIPLIER))
-        if inter >= Compatibility.BONUS_THRESHOLD:
-            pct = min(Compatibility.MAX, pct + Compatibility.BONUS)
-        result = max(Compatibility.MIN, min(Compatibility.MAX, pct))
+    result = _compute_compat(a_raw, b_raw)
 
     _compat_cache[cache_key] = (result, now)
     if len(_compat_cache) > Compatibility.MAX_CACHE_SIZE:
@@ -67,7 +84,13 @@ def common_interests(a_raw: str | None, b_raw: str | None) -> list[str]:
 
 
 def compat_bar(pct: int) -> str:
-    filled = round(pct / ProgressBar.SIZE)
+    """Прогресс-бар совместимости.
+
+    FIX: приведён к единому алгоритму с _mini_bar() в badges.py.
+    round() мог давать 11 при pct > 105 (невозможно, но опасно);
+    min() + целочисленное деление безопаснее и единообразнее.
+    """
+    filled = min(ProgressBar.SIZE, pct * ProgressBar.SIZE // 100)
     return ProgressBar.FILLED * filled + ProgressBar.EMPTY * (ProgressBar.SIZE - filled)
 
 

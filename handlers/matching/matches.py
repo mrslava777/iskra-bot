@@ -1,18 +1,26 @@
-"""Список мэтчей — просмотр взаимных лайков и контактов."""
+"""Список мэтчей — просмотр взаимных лайков и контактов.
+
+FIX: убрана дублирующая _format_profile_with_batch_badges — используется
+     единый format_profile_async из profile_formatter.py.
+     Значки подставляются через badges_map (batch-загрузка сохранена).
+"""
+import logging
+
 from aiogram import F, Router
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.match_repo as match_repo
 import repositories.user_repo as user_repo
-from data.constants import EMOJI, MenuText, Message, Format
+from data.constants import EMOJI, MenuText, Message as Msg, Format
 from data.enums import CallbackPrefix
 from keyboards import MAIN_MENU, HIDE_MENU
-from services.profile_formatter import format_profile_async
-from services.badge_formatter import format_user_badges_inline_batch
+from services.badge_formatter import format_user_badges_inline
 from services.badge_service import get_user_badges_batch
 from services.compatibility import common_interests, compatibility, compat_bar
+from services.profile_formatter import format_profile_async
 
 router = Router()
+log = logging.getLogger("iskra.matches")
 
 
 @router.message(F.text == MenuText.MATCHES)
@@ -24,7 +32,7 @@ async def show_matches(message: Message) -> None:
     """
     rows = await match_repo.get_matches(message.from_user.id)
     if not rows:
-        await message.answer(Message.NO_MATCHES, reply_markup=HIDE_MENU)
+        await message.answer(Msg.NO_MATCHES, reply_markup=HIDE_MENU)
         return
     viewer = await user_repo.get_user(message.from_user.id)
 
@@ -46,12 +54,24 @@ async def _show_match(
 ) -> None:
     """Показывает одного мэтча с кнопкой уровня отношений.
 
-    Использует предзагруженные значки из badges_map вместо N+1 запросов.
+    FIX: использует format_profile_async вместо дублирующей локальной функции.
+    Значки подставляются из batch-загруженного badges_map.
     """
     contact = _format_contact(match)
 
-    # Форматируем профиль с batch-загруженными значками
-    caption = await _format_profile_with_batch_badges(match, viewer, badges_map)
+    caption = await format_profile_async(match, viewer=viewer, show_compat=True, show_badges=False)
+
+    # Добавляем значки из batch-загрузки (без дополнительного запроса)
+    match_badges = badges_map.get(match["tg_id"], [])
+    badge_line = format_user_badges_inline(match_badges)
+    if badge_line:
+        # Вставляем строку значков после первой строки (имя)
+        lines = caption.split("\n", 1)
+        if len(lines) > 1:
+            caption = lines[0] + "\n" + badge_line + "\n" + lines[1]
+        else:
+            caption = lines[0] + "\n" + badge_line
+
     caption += f"\n\n{EMOJI.MESSAGE_LIKE} Контакт: {contact}"
 
     rel_kb = InlineKeyboardMarkup(
@@ -63,55 +83,6 @@ async def _show_match(
         await message.answer_photo(photo=match["photo_id"], caption=caption, reply_markup=rel_kb)
     except Exception:
         await message.answer(caption, reply_markup=rel_kb)
-
-
-async def _format_profile_with_batch_badges(
-    user: dict,
-    viewer: dict,
-    badges_map: dict[int, list[dict]],
-) -> str:
-    """Форматирует профиль с использованием предзагруженных значков.
-
-    Оптимизация: вместо вызова format_profile_async (который делает N+1 запрос
-    get_user_badges) — используем batch-загруженные значки.
-    """
-    from data.content import daily_question
-    from services.compatibility import fire_level, gender_emoji, interests_text
-
-    name = user["name"] or "Без имени"
-    age = user["age"]
-    city = user["city"] or "—"
-    verified = " ✅" if user["verified"] else ""
-    lines = [f"<b>{name}</b>{verified}, {age} {gender_emoji(user['gender'])}  •  📍 {city}"]
-
-    # Значки из batch-загрузки
-    badge_line = format_user_badges_inline_batch(badges_map, user["tg_id"])
-    if badge_line:
-        lines.append(badge_line)
-
-    interests = interests_text(user["interests"])
-    if interests != "—":
-        lines.append(f"\n🏷 {interests}")
-
-    if user["daily_a"]:
-        q = daily_question(user["daily_q"] or 0)
-        lines.append(f"\n💭 <i>{q}</i>\n— {user['daily_a']}")
-
-    if user["bio"]:
-        lines.append(f"\n📝 {user['bio']}")
-
-    fire = fire_level(user["rating"] or 0)
-    lines.append(f"\n{fire}  Симпатий: {user['rating'] or 0}")
-
-    # Совместимость
-    pct = compatibility(viewer["interests"], user["interests"])
-    common = common_interests(viewer["interests"], user["interests"])
-    bar = compat_bar(pct)
-    lines.append(f"\n💞 Совместимость: <b>{pct}%</b>\n{bar}")
-    if common:
-        lines.append("🏷 Общее: " + ", ".join(common))
-
-    return "\n".join(lines)
 
 
 def _format_contact(user: dict) -> str:

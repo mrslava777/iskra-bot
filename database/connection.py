@@ -16,12 +16,12 @@
     # Для транзакций:
     conn = await get_single_db()
     try:
-        await conn.execute("BEGIN")
-        ...
-        await conn.execute("COMMIT")
+        await conn.execute("INSERT INTO ...")
+        await conn.execute("UPDATE ...")
     finally:
         await release_db(conn)  # ← ВАЖНО: возвращаем в пул!
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
@@ -33,7 +33,9 @@ from config import DATABASE_URL
 log = logging.getLogger("iskra.db")
 
 _pool: Optional[asyncpg.Pool] = None
+_pool_lock = asyncio.Lock()
 _schema_ready = False
+_schema_lock = asyncio.Lock()
 
 
 def _build_dsn() -> str:
@@ -41,6 +43,11 @@ def _build_dsn() -> str:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
     return DATABASE_URL
+
+
+async def _conn_init(conn: asyncpg.Connection) -> None:
+    """Инициализирует каждое новое соединение в пуле."""
+    await conn.execute("SET application_name = 'iskra_bot'")
 
 
 async def _init_pool() -> asyncpg.Pool:
@@ -53,18 +60,48 @@ async def _init_pool() -> asyncpg.Pool:
         max_size=10,
         command_timeout=30,
         server_settings={"jit": "off"},
-        init=lambda conn: conn.execute("SET application_name = 'iskra_bot'"),
+        init=_conn_init,
     )
     log.info("Пул создан (min=2, max=10)")
     return pool
 
 
 async def _get_pool() -> asyncpg.Pool:
-    """Возвращает существующий пул или создаёт новый."""
+    """Возвращает существующий пул или создаёт новый.
+
+    FIX: asyncio.Lock предотвращает создание нескольких пулов
+    при конкурентных запросах на старте.
+    """
     global _pool
-    if _pool is None:
+    if _pool is not None:
+        return _pool
+    async with _pool_lock:
+        if _pool is not None:
+            return _pool
         _pool = await _init_pool()
-    return _pool
+        return _pool
+
+
+async def _ensure_schema(pool: asyncpg.Pool) -> None:
+    """Гарантирует инициализацию схемы ровно один раз.
+
+    FIX: asyncio.Lock предотвращает одновременную инициализацию
+    из нескольких корутин при конкурентных первых запросах.
+    """
+    global _schema_ready
+    if _schema_ready:
+        return
+    async with _schema_lock:
+        if _schema_ready:
+            return
+        async with pool.acquire() as conn:
+            try:
+                await init_schema(conn)
+                _schema_ready = True
+                log.info("Схема БД инициализирована")
+            except Exception as e:
+                log.error("Ошибка инициализации схемы: %s", e)
+                raise
 
 
 @asynccontextmanager
@@ -73,21 +110,13 @@ async def db() -> AsyncGenerator[asyncpg.Connection, None]:
 
     Берёт соединение из пула, выполняет запросы, автоматически возвращает.
     При первом использовании инициализирует схему.
+
+    FIX: убрано двойное получение соединения (раньше — одно для схемы,
+    второе для работы). Теперь схема инициализируется отдельно, а для
+    работы используется только одно соединение.
     """
-    global _schema_ready
-
     pool = await _get_pool()
-
-    if not _schema_ready:
-        async with pool.acquire() as init_conn:
-            try:
-                await init_schema(init_conn)
-                _schema_ready = True
-                log.info("Схема БД инициализирована")
-            except Exception as e:
-                log.error("Ошибка инициализации схемы: %s", e)
-                raise
-
+    await _ensure_schema(pool)
     async with pool.acquire() as conn:
         yield conn
 
@@ -106,12 +135,8 @@ async def get_single_db() -> asyncpg.Connection:
         finally:
             await release_db(conn)  # ← НЕ conn.close()!
     """
-    global _schema_ready
     pool = await _get_pool()
-    if not _schema_ready:
-        async with pool.acquire() as init_conn:
-            await init_schema(init_conn)
-            _schema_ready = True
+    await _ensure_schema(pool)
     return await pool.acquire()
 
 
@@ -127,10 +152,11 @@ async def release_db(conn: asyncpg.Connection) -> None:
 
 async def close_db_pool() -> None:
     """Закрывает пул соединений (graceful shutdown)."""
-    global _pool
+    global _pool, _schema_ready
     if _pool is not None:
         await _pool.close()
         _pool = None
+        _schema_ready = False
         log.info("Пул соединений с PostgreSQL закрыт")
 
 
@@ -259,11 +285,16 @@ CREATE INDEX IF NOT EXISTS idx_matches_a           ON matches(a_id);
 CREATE INDEX IF NOT EXISTS idx_matches_b           ON matches(b_id);
 CREATE INDEX IF NOT EXISTS idx_shown_from_to       ON shown_profiles(from_id, to_id);
 CREATE INDEX IF NOT EXISTS idx_reports_to          ON reports(to_id);
+CREATE INDEX IF NOT EXISTS idx_reports_from        ON reports(from_id);
 CREATE INDEX IF NOT EXISTS idx_anon_sessions_active ON anon_sessions(ended_at);
+CREATE INDEX IF NOT EXISTS idx_anon_sessions_a     ON anon_sessions(a_id) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_anon_sessions_b     ON anon_sessions(b_id) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_relationships_pair  ON relationships(user1_id, user2_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status      ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
 CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, age);
+CREATE INDEX IF NOT EXISTS idx_users_gender        ON users(gender);
+CREATE INDEX IF NOT EXISTS idx_users_seeking       ON users(seeking);
 """
 
 MISSING_COLUMNS = {
@@ -363,7 +394,11 @@ MISSING_COLUMNS = {
 
 
 async def _ensure_columns(conn: asyncpg.Connection) -> None:
-    """Добавляет недостающие колонки в существующие таблицы."""
+    """Добавляет недостающие колонки в существующие таблицы.
+
+    FIX: уровень логирования снижен с INFO до DEBUG — иначе при каждом
+    запуске в лог попадают десятки строк «колонка проверена».
+    """
     for table, columns in MISSING_COLUMNS.items():
         for col_name, col_type, default in columns:
             try:
@@ -375,13 +410,17 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
                     await conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type} DEFAULT {default}"
                     )
-                log.info("Колонка %s.%s проверена/добавлена", table, col_name)
+                log.debug("Колонка %s.%s проверена/добавлена", table, col_name)
             except Exception as e:
                 log.warning("Не удалось добавить колонку %s.%s: %s", table, col_name, e)
 
 
 async def _migrate_types(conn: asyncpg.Connection) -> None:
-    """Мигрирует типы колонок с timestamp на INTEGER (unix timestamp)."""
+    """Мигрирует типы колонок с timestamp на INTEGER (unix timestamp).
+
+    FIX: сначала проверяем, есть ли вообще колонки с типом timestamp,
+    чтобы не делать N запросов к information_schema при каждом запуске.
+    """
     type_migrations = [
         ("users", "created_at", "INTEGER", "0"),
         ("users", "last_active", "INTEGER", "0"),
@@ -396,30 +435,41 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
         ("tickets", "created_at", "INTEGER", "0"),
     ]
 
+    # Проверяем все колонки одним batch-запросом вместо N отдельных.
+    tables = list({t for t, _, _, _ in type_migrations})
+    placeholders = ",".join(f"${i+1}" for i in range(len(tables)))
+    timestamp_cols = await conn.fetch(
+        f"""SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_name IN ({placeholders})
+          AND data_type IN ('timestamp without time zone', 'timestamp with time zone', 'timestamp')""",
+        *tables,
+    )
+    needs_migration = {(r["table_name"], r["column_name"]) for r in timestamp_cols}
+
+    if not needs_migration:
+        log.debug("Миграция типов не требуется")
+        return
+
     for table, col_name, new_type, default_val in type_migrations:
+        if (table, col_name) not in needs_migration:
+            continue
         try:
-            row = await conn.fetchrow(
-                """SELECT data_type FROM information_schema.columns
-                WHERE table_name = $1 AND column_name = $2""",
-                table, col_name
+            await conn.execute(
+                f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
             )
-            if row and row["data_type"] in ("timestamp without time zone", "timestamp with time zone", "timestamp"):
+            await conn.execute(
+                f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} "
+                f"USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
+            )
+            if default_val != "NULL":
                 await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
+                    f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT {default_val}"
                 )
+            else:
                 await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} \
-                    USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
+                    f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT NULL"
                 )
-                if default_val != "NULL":
-                    await conn.execute(
-                        f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT {default_val}"
-                    )
-                else:
-                    await conn.execute(
-                        f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT NULL"
-                    )
-                log.info("Тип колонки %s.%s мигрирован на %s", table, col_name, new_type)
+            log.info("Тип колонки %s.%s мигрирован на %s", table, col_name, new_type)
         except Exception as e:
             log.warning("Не удалось мигрировать тип %s.%s: %s", table, col_name, e)
 
@@ -428,19 +478,18 @@ async def _clear_statement_cache(conn: asyncpg.Connection) -> None:
     """Сбрасывает кэш prepared statements после изменения схемы."""
     try:
         await conn.execute("DEALLOCATE ALL")
-        log.info("Кэш prepared statements сброшен")
+        log.debug("Кэш prepared statements сброшен")
     except Exception as e:
         log.warning("Не удалось сбросить кэш prepared statements: %s", e)
         try:
             await conn.execute("DISCARD ALL")
-            log.info("Выполнен DISCARD ALL")
         except Exception as e2:
             log.warning("DISCARD ALL тоже не сработал: %s", e2)
 
 
 async def init_schema(conn: asyncpg.Connection) -> None:
     """Создаёт все таблицы и индексы (идемпотентно)."""
-    log.info("Создаю таблицы...")
+    log.info("Инициализация схемы БД...")
 
     await conn.execute(SCHEMA_SQL)
     await _ensure_columns(conn)
@@ -448,4 +497,4 @@ async def init_schema(conn: asyncpg.Connection) -> None:
     await _clear_statement_cache(conn)
     await conn.execute(INDEX_SQL)
 
-    log.info("Таблицы созданы")
+    log.info("Схема БД готова")

@@ -1,4 +1,9 @@
-"""Очередь анонимного чата — поиск, отмена, подключение."""
+"""Очередь анонимного чата — поиск, отмена, подключение.
+
+FIX: добавлено логирование ошибок доставки вместо silent pass.
+"""
+import logging
+
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -11,6 +16,7 @@ from data.enums import CallbackPrefix, AnonAction
 from keyboards import ANON_CHAT_MENU, MAIN_MENU, HIDE_MENU, anon_queue_kb, anon_session_kb
 
 router = Router()
+log = logging.getLogger("iskra.anon.queue")
 
 INTRO = Message.BLIND_DATE_INTRO
 
@@ -62,8 +68,8 @@ async def _notify_matched(bot: Bot, uid: int) -> None:
             Message.BLIND_DATE_REVEAL_PROMPT,
             reply_markup=anon_session_kb(),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Не удалось уведомить о мэтче → %d: %s", uid, e)
 
 
 @router.message(F.text == MenuText.STOP_BLIND_DATE)
@@ -86,7 +92,7 @@ async def cancel_queue(call: CallbackQuery, bot: Bot) -> None:
     try:
         await call.message.edit_reply_markup(reply_markup=None)
     except Exception:
-        pass
+        pass  # edit_reply_markup fails if message was already modified — OK
     await call.message.answer("Поиск отменён. Возвращайся в меню.", reply_markup=MAIN_MENU)
 
 
@@ -97,7 +103,7 @@ async def stop_cb(call: CallbackQuery, bot: Bot) -> None:
     try:
         await call.message.edit_reply_markup(reply_markup=None)
     except Exception:
-        pass
+        pass  # edit_reply_markup fails if message was already modified — OK
     await _end_session(call.from_user.id, bot)
 
 
@@ -113,8 +119,8 @@ async def _end_session(uid: int, bot: Bot, notifier: Message | None = None) -> N
         else:
             try:
                 await bot.send_message(uid, text, reply_markup=MAIN_MENU)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("Не удалось отправить end_session → %d: %s", uid, e)
         return
 
     for who in (uid, partner):
@@ -124,5 +130,5 @@ async def _end_session(uid: int, bot: Bot, notifier: Message | None = None) -> N
                 Message.BLIND_DATE_ENDED,
                 reply_markup=MAIN_MENU,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Не удалось отправить blind_date_ended → %d: %s", who, e)

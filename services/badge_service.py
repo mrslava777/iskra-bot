@@ -1,4 +1,10 @@
-"""Бизнес-логика проверки и выдачи значков — только через репозитории."""
+"""Бизнес-логика проверки и выдачи значков — только через репозитории.
+
+FIX: _collect_stats параллелизирует независимые запросы через asyncio.gather.
+FIX: check_and_award кэширует результат на 30 сек, чтобы не гонять тяжёлые
+     запросы при каждом свайпе/клике (вызывается из 6+ точек).
+"""
+import asyncio
 import time
 
 from badges import BADGES, BADGE_BY_ID
@@ -7,9 +13,28 @@ import repositories.badge_repo as badge_repo
 import repositories.photo_repo as photo_repo
 import repositories.user_repo as user_repo
 
+# Кэш недавних проверок: {tg_id: (result_badges, timestamp)}
+# Предотвращает тяжёлые повторные проверки при быстрых действиях
+_award_cache: dict[int, tuple[list[dict], float]] = {}
+_AWARD_CACHE_TTL = 30  # секунд
+_AWARD_CACHE_MAX = 500
+
 
 async def check_and_award(tg_id: int) -> list[dict]:
-    """Проверяет все значки для пользователя и выдаёт новые."""
+    """Проверяет все значки для пользователя и выдаёт новые.
+
+    FIX: добавлен TTL-кэш — при множественных вызовах за короткий период
+    (свайп → лайк → мэтч → уведомление) повторная проверка пропускается.
+    """
+    now = time.monotonic()
+
+    # Проверяем кэш — если проверяли недавно, пропускаем
+    cached = _award_cache.get(tg_id)
+    if cached is not None:
+        _, cached_at = cached
+        if now - cached_at < _AWARD_CACHE_TTL:
+            return []  # Недавно проверяли — нечего выдавать повторно
+
     user = await user_repo.get_user(tg_id)
     if not user:
         return []
@@ -25,23 +50,38 @@ async def check_and_award(tg_id: int) -> list[dict]:
             await badge_repo.award_badge(tg_id, badge["id"], int(time.time()))
             new_badges.append(badge)
 
+    # Обновляем кэш
+    _award_cache[tg_id] = (new_badges, now)
+    if len(_award_cache) > _AWARD_CACHE_MAX:
+        # Вытесняем самую старую запись
+        oldest = min(_award_cache, key=lambda k: _award_cache[k][1])
+        del _award_cache[oldest]
+
     return new_badges
 
 
 async def _collect_stats(tg_id: int, user: dict) -> dict:
     """Собирает статистику через репозитории.
 
-    Оптимизация: используем batch-запрос get_user_stats() вместо 5 отдельных.
+    FIX: параллелизация через asyncio.gather — вместо 3 последовательных
+    запросов (batch_stats, photo_count, anon_reveals) запускаем их одновременно.
     """
-    batch = await badge_repo.get_user_stats(tg_id)
+    batch_task = badge_repo.get_user_stats(tg_id)
+    photo_task = photo_repo.photo_count(tg_id)
+    reveals_task = anon_repo.anon_reveal_count(tg_id)
+
+    batch, photos, reveals = await asyncio.gather(
+        batch_task, photo_task, reveals_task,
+    )
+
     return {
         "matches": batch["matches"],
         "likes_sent": batch["likes_sent"],
         "anon_messages": user.get("anon_messages_count", 0),
-        "photo_count": await photo_repo.photo_count(tg_id),
+        "photo_count": photos,
         "reports_sent": batch["reports_sent"],
         "msglikes": batch["msglikes"],
-        "anon_reveals": await anon_repo.anon_reveal_count(tg_id),
+        "anon_reveals": reveals,
         "max_compat": user.get("max_compat", 0) or 0,
     }
 
