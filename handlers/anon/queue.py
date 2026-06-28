@@ -40,6 +40,7 @@ async def blind_date(message: Message, state: FSMContext, bot: Bot) -> None:
         return
     await state.clear()
     # touch_activity — fire-and-forget, не блокирует
+    # FIX: create_task for actual coroutine
     asyncio.create_task(_safe_touch(message.from_user.id))
 
     status, partner = await anon_repo.anon_find_or_queue(message.from_user.id)
