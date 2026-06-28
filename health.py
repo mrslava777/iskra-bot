@@ -2,7 +2,8 @@
 import logging
 import os
 from aiohttp import web
-from database.connection import close_db_pool
+
+from database.connection import db
 from data.constants import Health
 
 log = logging.getLogger("iskra.health")
@@ -21,7 +22,8 @@ async def start_health_server() -> None:
 
 
 async def stop_health_server() -> None:
-    await close_db_pool()
+    """Graceful shutdown — пул закрывается в main.py, не здесь."""
+    pass
 
 
 async def _health_handler(request: web.Request) -> web.Response:
@@ -29,11 +31,10 @@ async def _health_handler(request: web.Request) -> web.Response:
 
 
 async def _ready_handler(request: web.Request) -> web.Response:
-    # Проверяем, что БД доступна
+    """Проверяем, что БД доступна — быстрый запрос без инициализации схемы."""
     try:
-        from database.connection import get_db
-        conn = await get_db()
-        await conn.execute("SELECT 1")
+        async with db() as conn:
+            await conn.execute("SELECT 1")
         return web.json_response({"status": "ready"})
     except Exception as e:
         return web.json_response({"status": "not_ready", "error": str(e)}, status=Health.HTTP_NOT_READY)
