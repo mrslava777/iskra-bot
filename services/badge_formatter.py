@@ -10,10 +10,8 @@ def format_badge_card(badge: dict, is_new: bool = False) -> str:
     new_mark = Message.BADGE_NEW if is_new else ""
     return (
         f"{new_mark}"
-        f"{badge['icon']} <b>{badge['name']}</b> {rarity_emoji}
-"
-        f"<i>{badge['description']}</i>
-"
+        f"{badge['icon']} <b>{badge['name']}</b> {rarity_emoji}\n"
+        f"<i>{badge['description']}</i>\n"
         f"{Message.BADGE_RARITY_LABEL.format(label)}"
     )
 
@@ -33,16 +31,3 @@ async def get_user_badges_inline(tg_id: int) -> str:
     badge_ids = await get_user_badge_ids(tg_id)
     badges = [BADGE_BY_ID[bid] for bid in badge_ids if bid in BADGE_BY_ID]
     return format_user_badges_inline(badges)
-
-
-def format_user_badges_inline_batch(
-    badges_map: dict[int, list[dict]], 
-    tg_id: int,
-    max_show: int = BadgeDisplay.INLINE_MAX
-) -> str:
-    """Форматирует строку значков из предзагруженного batch-результата.
-
-    Оптимизация: используется в списках мэтчей, где значки уже загружены batch-запросом.
-    """
-    badges = badges_map.get(tg_id, [])
-    return format_user_badges_inline(badges, max_show)
