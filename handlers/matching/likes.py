@@ -1,6 +1,7 @@
 """Входящие симпатии — просмотр и ответ на лайки.
 
 PERF: viewer загружается один раз и передаётся дальше.
+PERF: call.answer — fire-and-forget.
 PERF: badge check параллелизирован с загрузкой следующей анкеты.
 """
 import asyncio
@@ -19,6 +20,12 @@ from services.notification import announce_match
 from services.profile_formatter import format_profile_async
 
 router = Router()
+
+
+def _fire(coro) -> None:
+    """Запускает корутину fire-and-forget с перехватом ошибок."""
+    task = asyncio.create_task(coro)
+    task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
 
 
 @router.message(F.text == MenuText.LIKES_INBOX)
@@ -55,18 +62,20 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
     _, decision, uid = call.data.split(":")
     target_id = int(uid)
     viewer_id = call.from_user.id
-    await call.message.edit_reply_markup(reply_markup=None)
+
+    # Fire-and-forget: убираем кнопки
+    _fire(call.message.edit_reply_markup(reply_markup=None))
 
     if decision == LikeResponse.YES.value:
         matched = await like_repo.add_like(viewer_id, target_id, True)
         if matched:
-            await announce_match(bot, viewer_id, target_id)
-            await call.answer(Message.MATCH_ACHIEVED)
+            _fire(announce_match(bot, viewer_id, target_id))
+            _fire(call.answer(Message.MATCH_ACHIEVED))
         else:
-            await call.answer(Message.LIKE_SENT)
+            _fire(call.answer(Message.LIKE_SENT))
     else:
         await like_repo.add_like(viewer_id, target_id, False)
-        await call.answer(Message.DISLIKE_SENT)
+        _fire(call.answer(Message.DISLIKE_SENT))
 
     # Параллельно: значки + загрузка данных для следующей анкеты
     new_badges, user, rows = await asyncio.gather(
@@ -86,5 +95,5 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
 @router.callback_query(F.data == "open_likes")
 async def on_open_likes(call: CallbackQuery) -> None:
     """Обработчик кнопки из пуш-уведомления о лайке."""
-    await call.answer()
+    _fire(call.answer())
     await show_incoming(call.message)
