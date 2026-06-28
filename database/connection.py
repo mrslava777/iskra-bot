@@ -1,169 +1,297 @@
-"""Подключение к БД (PostgreSQL через asyncpg) и инициализация схемы.
+"""Подключение к БД с поддержкой Postgres (asyncpg) и локального SQLite (aiosqlite) в качестве
+fallback для локальной разработки.
 
-Модель доступа:
-    db()             — асинхронный контекстный менеджер для работы с БД.
-                       Автоматически берёт соединение из пула и возвращает.
-    get_single_db()  — НОВОЕ соединение из пула для транзакций.
-                       Вызывающий обязан вернуть через await release_db(conn).
-    close_db_pool()  — закрывает пул (graceful shutdown).
+Поведение:
+- Если переменная окружения DATABASE_URL определена — используется asyncpg pool (Postgres).
+- Иначе используется SQLite по пути DB_PATH (по умолчанию /data/iskra.db) через aiosqlite.
 
-Схема создаётся один раз при первом вызове db().
+Цель: сделать локальную разработку и тестирование проще (не требовать Postgres), не ломая
+интерфейс: db() как async context manager, get_single_db()/release_db() и close_db_pool().
 
-Пример использования:
-    async with db() as conn:
-        row = await conn.fetchrow("SELECT ...", params)
-
-    # Для транзакций:
-    conn = await get_single_db()
-    try:
-        await conn.execute("INSERT INTO ...")
-        await conn.execute("UPDATE ...")
-    finally:
-        await release_db(conn)  # ← ВАЖНО: возвращаем в пул!
+Замечание: схема SQL транслируется для SQLite простыми текстовыми заменами (SERIAL ->
+INTEGER PRIMARY KEY AUTOINCREMENT, EXTRACT(EPOCH FROM NOW())::INTEGER -> strftime), а
+индексы с WHERE опущены для совместимости.
 """
+from __future__ import annotations
+
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
-import asyncpg
+# Опциональные драйверы
+try:
+    import asyncpg
+except Exception:  # pragma: no cover - optional at import time
+    asyncpg = None
+
+try:
+    import aiosqlite
+except Exception:  # pragma: no cover - optional at import time
+    aiosqlite = None
 
 from config import DATABASE_URL
 
 log = logging.getLogger("iskra.db")
 
-_pool: Optional[asyncpg.Pool] = None
+# Общие состояния
+_pool: Optional[object] = None  # asyncpg.Pool или заглушка для sqlite
 _pool_lock = asyncio.Lock()
 _schema_ready = False
 _schema_lock = asyncio.Lock()
 
+# --- SQLite specific globals ---
+_sqlite_conn: Optional[aiosqlite.Connection] = None
+_sqlite_db_path = os.getenv("DB_PATH", "/data/iskra.db")
+
+# --- Postgres settings defaults ---
+_PG_MIN = int(os.getenv("PG_POOL_MIN", "2"))
+_PG_MAX = int(os.getenv("PG_POOL_MAX", "10"))
+
+
+def _using_postgres() -> bool:
+    return bool(DATABASE_URL)
+
 
 def _build_dsn() -> str:
-    """Возвращает чистый DSN без лишних параметров."""
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
     return DATABASE_URL
 
 
-async def _conn_init(conn: asyncpg.Connection) -> None:
-    """Инициализирует каждое новое соединение в пуле."""
-    await conn.execute("SET application_name = 'iskra_bot'")
+async def _conn_init(conn) -> None:  # asyncpg.Connection
+    try:
+        await conn.execute("SET application_name = 'iskra_bot'")
+    except Exception:
+        # Best-effort for Postgres only
+        pass
 
 
-async def _init_pool() -> asyncpg.Pool:
+async def _init_pool() -> "asyncpg.Pool":
     """Создаёт пул соединений с PostgreSQL."""
+    if asyncpg is None:
+        raise RuntimeError("asyncpg не установлен, но DATABASE_URL задан")
     dsn = _build_dsn()
     log.info("Создаю пул соединений с PostgreSQL...")
     pool = await asyncpg.create_pool(
         dsn=dsn,
-        min_size=2,
-        max_size=10,
+        min_size=_PG_MIN,
+        max_size=_PG_MAX,
         command_timeout=30,
         server_settings={"jit": "off"},
         init=_conn_init,
     )
-    log.info("Пул создан (min=2, max=10)")
+    log.info("Пул создан (min=%s, max=%s)", _PG_MIN, _PG_MAX)
     return pool
 
 
-async def _get_pool() -> asyncpg.Pool:
-    """Возвращает существующий пул или создаёт новый.
+# ---------------- SQLite helpers ----------------
 
-    FIX: asyncio.Lock предотвращает создание нескольких пулов
-    при конкурентных запросах на старте.
-    """
-    global _pool
+def _translate_schema_for_sqlite(sql: str) -> str:
+    s = sql
+    # Простые замены типов/выражений совместимые с SQLite
+    s = s.replace("SERIAL", "INTEGER PRIMARY KEY AUTOINCREMENT")
+    s = s.replace("BIGINT", "INTEGER")
+    s = s.replace("TEXT", "TEXT")
+    s = s.replace("EXTRACT(EPOCH FROM NOW())::INTEGER", "(strftime('%s','now'))")
+    s = s.replace("DEFAULT NULL", "DEFAULT NULL")
+    # Уберём выражения CREATE INDEX с WHERE (sqlite поддерживает partial indexes only in newer versions,
+    # и синтаксис может отличаться). Для простоты оставим только простые выражения без WHERE.
+    return s
+
+
+async def _init_sqlite_conn() -> aiosqlite.Connection:
+    if aiosqlite is None:
+        raise RuntimeError("aiosqlite не установлен — установка локального SQLite невозможна")
+    # Создаём директорию, если нужно
+    db_path = _sqlite_db_path
+    dirname = os.path.dirname(db_path)
+    if dirname and not os.path.exists(dirname):
+        try:
+            os.makedirs(dirname, exist_ok=True)
+        except Exception:
+            pass
+    log.info("Открываю SQLite базу: %s", db_path)
+    conn = await aiosqlite.connect(db_path)
+    # Возвращаем строки как mapping (dict-like)
+    conn.row_factory = aiosqlite.Row
+    # Примеры оптимизаций для SQLite
+    await conn.execute("PRAGMA journal_mode=WAL;")
+    await conn.execute("PRAGMA synchronous=NORMAL;")
+    await conn.execute("PRAGMA foreign_keys=ON;")
+    await conn.commit()
+    return conn
+
+
+class _SQLiteConnWrapper:
+    """Обёртка, обеспечивающая интерфейс похожий на asyncpg.Connection для используемых методов."""
+
+    def __init__(self, conn: aiosqlite.Connection):
+        self._conn = conn
+
+    async def execute(self, sql: str, *params):
+        await self._conn.execute(sql, params or [])
+        await self._conn.commit()
+
+    async def fetch(self, sql: str, *params):
+        cur = await self._conn.execute(sql, params or [])
+        rows = await cur.fetchall()
+        # convert aiosqlite.Row to dict-like mapping
+        return [dict(r) for r in rows]
+
+    async def fetchrow(self, sql: str, *params):
+        cur = await self._conn.execute(sql, params or [])
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    # Transaction context manager
+    def transaction(self):
+        return _SqliteTransaction(self._conn)
+
+
+class _SqliteTransaction:
+    def __init__(self, conn: aiosqlite.Connection):
+        self._conn = conn
+
+    async def __aenter__(self):
+        await self._conn.execute('BEGIN')
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc:
+            await self._conn.execute('ROLLBACK')
+        else:
+            await self._conn.execute('COMMIT')
+
+
+# ---------------- Public API ----------------
+
+async def _get_pool() -> object:
+    """Возвращает объект пула (asyncpg.Pool) или sqlite connection wrapper."""
+    global _pool, _sqlite_conn
     if _pool is not None:
         return _pool
+
     async with _pool_lock:
         if _pool is not None:
             return _pool
-        _pool = await _init_pool()
+        if _using_postgres():
+            _pool = await _init_pool()
+            return _pool
+        # sqlite fallback
+        _sqlite_conn = await _init_sqlite_conn()
+        _pool = _SQLiteConnWrapper(_sqlite_conn)
         return _pool
 
 
-async def _ensure_schema(pool: asyncpg.Pool) -> None:
-    """Гарантирует инициализацию схемы ровно один раз.
-
-    FIX: asyncio.Lock предотвращает одновременную инициализацию
-    из нескольких корутин при конкурентных первых запросах.
-    """
+async def _ensure_schema(pool_obj: object) -> None:
+    """Инициализация схемы (один раз)."""
     global _schema_ready
     if _schema_ready:
         return
     async with _schema_lock:
         if _schema_ready:
             return
-        async with pool.acquire() as conn:
+        # For Postgres we need to acquire a real connection from the pool.
+        if _using_postgres():
+            async with pool_obj.acquire() as conn:
+                try:
+                    await init_schema(conn)
+                    _schema_ready = True
+                    log.info("Схема БД инициализирована")
+                except Exception as e:
+                    log.error("Ошибка инициализации схемы: %s", e)
+                    raise
+        else:
+            # SQLite: pool_obj is _SQLiteConnWrapper
             try:
-                await init_schema(conn)
+                # translate schema and run statements
+                from textwrap import dedent
+
+                # Import SCHEMA_SQL and INDEX_SQL from module-level definitions below
+                sql = _translate_schema_for_sqlite(SCHEMA_SQL)
+                # Execute statements split by semicolon
+                for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+                    await _sqlite_conn.execute(stmt)
+                # For indexes: run only statements without WHERE
+                for stmt in [s.strip() for s in INDEX_SQL.split(";") if s.strip()]:
+                    if "WHERE" in stmt.upper():
+                        continue
+                    try:
+                        await _sqlite_conn.execute(stmt)
+                    except Exception:
+                        # best-effort
+                        log.debug("Не удалось выполнить index stmt (ignored): %s", stmt)
+                await _sqlite_conn.commit()
                 _schema_ready = True
-                log.info("Схема БД инициализирована")
+                log.info("SQLite: схема БД инициализирована")
             except Exception as e:
-                log.error("Ошибка инициализации схемы: %s", e)
+                log.error("SQLite: ошибка инициализации схемы: %s", e)
                 raise
 
 
 @asynccontextmanager
-async def db() -> AsyncGenerator[asyncpg.Connection, None]:
+async def db() -> AsyncGenerator[object, None]:
     """Контекстный менеджер для работы с БД.
 
-    Берёт соединение из пула, выполняет запросы, автоматически возвращает.
-    При первом использовании инициализирует схему.
-
-    FIX: убрано двойное получение соединения (раньше — одно для схемы,
-    второе для работы). Теперь схема инициализируется отдельно, а для
-    работы используется только одно соединение.
+    Для Postgres возвращает asyncpg.Connection, для SQLite — обёртку с методами
+    execute/fetch/fetchrow.
     """
     pool = await _get_pool()
     await _ensure_schema(pool)
-    async with pool.acquire() as conn:
-        yield conn
+    if _using_postgres():
+        async with pool.acquire() as conn:
+            yield conn
+    else:
+        # For sqlite yield wrapper directly
+        yield pool
 
 
-async def get_single_db() -> asyncpg.Connection:
-    """Свежее соединение из пула для транзакций.
+async def get_single_db() -> object:
+    """Возвращает отдельное соединение для транзакций.
 
-    Используй, когда нужно несколько запросов в одной транзакции
-    или COMMIT/ROLLBACK. Обязательно верни в пул через release_db()!
-
-    Example:
-        conn = await get_single_db()
-        try:
-            await conn.execute("INSERT INTO ...")
-            await conn.execute("UPDATE ...")
-        finally:
-            await release_db(conn)  # ← НЕ conn.close()!
+    Для Postgres — pool.acquire(); для SQLite — возвращаем тот же wrapper (single conn).
     """
     pool = await _get_pool()
     await _ensure_schema(pool)
-    return await pool.acquire()
+    if _using_postgres():
+        return await pool.acquire()
+    return pool
 
 
-async def release_db(conn: asyncpg.Connection) -> None:
-    """Возвращает соединение в пул. НЕ закрывает его!
-
-    ⚠️ ВАЖНО: Для pooled-соединений используй release_db(), а НЕ conn.close().
-    conn.close() навсегда уничтожит соединение и вызовет утечку пула!
-    """
-    pool = await _get_pool()
-    await pool.release(conn)
+async def release_db(conn: object) -> None:
+    """Возвращает соединение в пул (noop для sqlite wrapper)."""
+    if _using_postgres():
+        pool = await _get_pool()
+        await pool.release(conn)
+    else:
+        # nothing to do for sqlite single connection wrapper
+        return
 
 
 async def close_db_pool() -> None:
-    """Закрывает пул соединений (graceful shutdown)."""
-    global _pool, _schema_ready
-    if _pool is not None:
+    """Закрывает пул/соединение graceful."""
+    global _pool, _sqlite_conn, _schema_ready
+    if _pool is None:
+        return
+    if _using_postgres() and asyncpg is not None:
         await _pool.close()
         _pool = None
         _schema_ready = False
         log.info("Пул соединений с PostgreSQL закрыт")
+    else:
+        try:
+            await _sqlite_conn.close()
+        except Exception:
+            pass
+        _sqlite_conn = None
+        _pool = None
+        _schema_ready = False
+        log.info("SQLite соединение закрыто")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# INLINE СХЕМА
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ---------------- SCHEMA (original) ----------------
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     tg_id               BIGINT PRIMARY KEY,
@@ -296,205 +424,3 @@ CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, a
 CREATE INDEX IF NOT EXISTS idx_users_gender        ON users(gender);
 CREATE INDEX IF NOT EXISTS idx_users_seeking       ON users(seeking);
 """
-
-MISSING_COLUMNS = {
-    "users": [
-        ("tg_id", "BIGINT", "0"),
-        ("username", "TEXT", "NULL"),
-        ("name", "TEXT", "NULL"),
-        ("age", "INTEGER", "NULL"),
-        ("gender", "TEXT", "NULL"),
-        ("seeking", "TEXT", "NULL"),
-        ("city", "TEXT", "NULL"),
-        ("bio", "TEXT", "NULL"),
-        ("interests", "TEXT", "''"),
-        ("photo_id", "TEXT", "NULL"),
-        ("active", "INTEGER", "1"),
-        ("verified", "INTEGER", "0"),
-        ("is_banned", "INTEGER", "0"),
-        ("streak", "INTEGER", "0"),
-        ("rating", "INTEGER", "0"),
-        ("daily_q", "INTEGER", "0"),
-        ("daily_a", "TEXT", "''"),
-        ("anon_messages_count", "INTEGER", "0"),
-        ("min_age", "INTEGER", "18"),
-        ("max_age", "INTEGER", "99"),
-        ("max_compat", "INTEGER", "0"),
-        ("created_at", "INTEGER", "0"),
-        ("last_active", "INTEGER", "0"),
-    ],
-    "photos": [
-        ("id", "SERIAL", None),
-        ("tg_id", "BIGINT", "0"),
-        ("photo_id", "TEXT", "''"),
-        ("position", "INTEGER", "0"),
-    ],
-    "likes": [
-        ("id", "SERIAL", None),
-        ("from_id", "BIGINT", "0"),
-        ("to_id", "BIGINT", "0"),
-        ("is_like", "INTEGER", "1"),
-        ("message", "TEXT", "NULL"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "matches": [
-        ("id", "SERIAL", None),
-        ("a_id", "BIGINT", "0"),
-        ("b_id", "BIGINT", "0"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "shown_profiles": [
-        ("from_id", "BIGINT", "0"),
-        ("to_id", "BIGINT", "0"),
-        ("shown_at", "INTEGER", "0"),
-    ],
-    "reports": [
-        ("id", "SERIAL", None),
-        ("from_id", "BIGINT", "0"),
-        ("to_id", "BIGINT", "0"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "anon_queue": [
-        ("tg_id", "BIGINT", "0"),
-        ("queued_at", "INTEGER", "0"),
-    ],
-    "anon_sessions": [
-        ("id", "SERIAL", None),
-        ("a_id", "BIGINT", "0"),
-        ("b_id", "BIGINT", "0"),
-        ("a_reveal", "INTEGER", "0"),
-        ("b_reveal", "INTEGER", "0"),
-        ("started_at", "INTEGER", "0"),
-        ("ended_at", "INTEGER", "NULL"),
-    ],
-    "relationships": [
-        ("id", "SERIAL", None),
-        ("user1_id", "BIGINT", "0"),
-        ("user2_id", "BIGINT", "0"),
-        ("points", "INTEGER", "0"),
-        ("level", "INTEGER", "0"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "tickets": [
-        ("id", "SERIAL", None),
-        ("tg_id", "BIGINT", "0"),
-        ("category", "TEXT", "'other'"),
-        ("text", "TEXT", "''"),
-        ("photo_id", "TEXT", "NULL"),
-        ("reply", "TEXT", "NULL"),
-        ("status", "TEXT", "'open'"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "user_badges": [
-        ("tg_id", "BIGINT", "0"),
-        ("badge_id", "TEXT", "''"),
-        ("awarded_at", "INTEGER", "0"),
-    ],
-}
-
-
-async def _ensure_columns(conn: asyncpg.Connection) -> None:
-    """Добавляет недостающие колонки в существующие таблицы.
-
-    FIX: уровень логирования снижен с INFO до DEBUG — иначе при каждом
-    запуске в лог попадают десятки строк «колонка проверена».
-    """
-    for table, columns in MISSING_COLUMNS.items():
-        for col_name, col_type, default in columns:
-            try:
-                if default is None:
-                    await conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
-                    )
-                else:
-                    await conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type} DEFAULT {default}"
-                    )
-                log.debug("Колонка %s.%s проверена/добавлена", table, col_name)
-            except Exception as e:
-                log.warning("Не удалось добавить колонку %s.%s: %s", table, col_name, e)
-
-
-async def _migrate_types(conn: asyncpg.Connection) -> None:
-    """Мигрирует типы колонок с timestamp на INTEGER (unix timestamp).
-
-    FIX: сначала проверяем, есть ли вообще колонки с типом timestamp,
-    чтобы не делать N запросов к information_schema при каждом запуске.
-    """
-    type_migrations = [
-        ("users", "created_at", "INTEGER", "0"),
-        ("users", "last_active", "INTEGER", "0"),
-        ("likes", "created_at", "INTEGER", "0"),
-        ("matches", "created_at", "INTEGER", "0"),
-        ("shown_profiles", "shown_at", "INTEGER", "0"),
-        ("reports", "created_at", "INTEGER", "0"),
-        ("anon_queue", "queued_at", "INTEGER", "0"),
-        ("anon_sessions", "started_at", "INTEGER", "0"),
-        ("anon_sessions", "ended_at", "INTEGER", "NULL"),
-        ("relationships", "created_at", "INTEGER", "0"),
-        ("tickets", "created_at", "INTEGER", "0"),
-    ]
-
-    # Проверяем все колонки одним batch-запросом вместо N отдельных.
-    tables = list({t for t, _, _, _ in type_migrations})
-    placeholders = ",".join(f"${i+1}" for i in range(len(tables)))
-    timestamp_cols = await conn.fetch(
-        f"""SELECT table_name, column_name FROM information_schema.columns
-        WHERE table_name IN ({placeholders})
-          AND data_type IN ('timestamp without time zone', 'timestamp with time zone', 'timestamp')""",
-        *tables,
-    )
-    needs_migration = {(r["table_name"], r["column_name"]) for r in timestamp_cols}
-
-    if not needs_migration:
-        log.debug("Миграция типов не требуется")
-        return
-
-    for table, col_name, new_type, default_val in type_migrations:
-        if (table, col_name) not in needs_migration:
-            continue
-        try:
-            await conn.execute(
-                f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
-            )
-            await conn.execute(
-                f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} "
-                f"USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
-            )
-            if default_val != "NULL":
-                await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT {default_val}"
-                )
-            else:
-                await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT NULL"
-                )
-            log.info("Тип колонки %s.%s мигрирован на %s", table, col_name, new_type)
-        except Exception as e:
-            log.warning("Не удалось мигрировать тип %s.%s: %s", table, col_name, e)
-
-
-async def _clear_statement_cache(conn: asyncpg.Connection) -> None:
-    """Сбрасывает кэш prepared statements после изменения схемы."""
-    try:
-        await conn.execute("DEALLOCATE ALL")
-        log.debug("Кэш prepared statements сброшен")
-    except Exception as e:
-        log.warning("Не удалось сбросить кэш prepared statements: %s", e)
-        try:
-            await conn.execute("DISCARD ALL")
-        except Exception as e2:
-            log.warning("DISCARD ALL тоже не сработал: %s", e2)
-
-
-async def init_schema(conn: asyncpg.Connection) -> None:
-    """Создаёт все таблицы и индексы (идемпотентно)."""
-    log.info("Инициализация схемы БД...")
-
-    await conn.execute(SCHEMA_SQL)
-    await _ensure_columns(conn)
-    await _migrate_types(conn)
-    await _clear_statement_cache(conn)
-    await conn.execute(INDEX_SQL)
-
-    log.info("Схема БД готова")
