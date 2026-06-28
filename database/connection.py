@@ -28,12 +28,10 @@ _schema_ready = False
 
 
 def _build_dsn() -> str:
-    """Добавляет параметры стабильности к DSN."""
+    """Возвращает чистый DSN без лишних параметров."""
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
-    dsn = DATABASE_URL
-    sep = "&" if "?" in dsn else "?"
-    return f"{dsn}{sep}sslmode=require&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
+    return DATABASE_URL
 
 
 async def _init_pool() -> asyncpg.Pool:
@@ -46,6 +44,7 @@ async def _init_pool() -> asyncpg.Pool:
         max_size=10,
         command_timeout=30,
         server_settings={"jit": "off"},
+        init=lambda conn: conn.execute("SET application_name = 'iskra_bot'"),
     )
     log.info("Пул создан (min=2, max=10)")
     return pool
@@ -382,8 +381,7 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
                     f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
                 )
                 await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} \
-                    USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
+                    f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type}                     USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
                 )
                 if default_val != "NULL":
                     await conn.execute(
