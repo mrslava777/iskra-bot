@@ -1,40 +1,4 @@
-"""Подключение к БД (PostgreSQL через asyncpg) и инициализация схемы.
-
-Модель доступа:
-    db()             — асинхронный контекстный менеджер для работы с БД.
-                       Автоматически берёт соединение из пула и возвращает.
-    get_single_db()  — НОВОЕ соединение из пула для транзакций.
-                       Вызывающий обязан закрыть через await conn.close().
-    close_db_pool()  — закрывает пул (graceful shutdown).
-
-Схема создаётся один раз при первом вызове db().
-
-Пример использования:
-    async with db() as conn:
-        row = await conn.fetchrow("SELECT ...", params)
-"""
-import asyncio
-import logging
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
-
-import asyncpg
-
-from config import DATABASE_URL
-
-log = logging.getLogger("iskra.db")
-
-_pool: Optional[asyncpg.Pool] = None
-_schema_ready = False
-_schema_lock = asyncio.Lock()
-
-
-def _build_dsn() -> str:
-    """Возвращает чистый DSN без лишних параметров."""
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
-    return DATABASE_URL
-
+ц
 
 async def _init_pool() -> asyncpg.Pool:
     """Создаёт пул соединений с PostgreSQL."""
