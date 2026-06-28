@@ -1,6 +1,7 @@
 """Просмотр своей анкеты — /myprofile, кнопка «👤 Моя анкета».
 
 PERF: photo_count + format_profile_async + check_and_award запускаются параллельно.
+PERF: HIDE_MENU и badge-уведомления — fire-and-forget.
 """
 import asyncio
 
@@ -13,6 +14,7 @@ import repositories.photo_repo as photo_repo
 from data.constants import MenuText, Message, Format
 from data.enums import Command as Cmd
 from keyboards import profile_kb, HIDE_MENU
+from services.async_utils import fire as _fire
 from services.profile_formatter import format_profile_async
 from services.badge_service import check_and_award
 from services.badge_formatter import format_badge_card
@@ -45,8 +47,8 @@ async def show_my_profile(message: Message) -> None:
     except Exception:
         await message.answer(caption, reply_markup=kb)
 
-    # Скрываем основное меню — оставляем только кнопку «Меню»
-    await message.answer("👆 Твоя анкета", reply_markup=HIDE_MENU)
+    # Fire-and-forget: HIDE_MENU и badge-уведомления не блокируют ответ
+    _fire(message.answer("👆 Твоя анкета", reply_markup=HIDE_MENU))
 
     for badge in new_badges:
-        await message.answer(format_badge_card(badge, is_new=True))
+        _fire(message.answer(format_badge_card(badge, is_new=True)))

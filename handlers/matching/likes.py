@@ -36,7 +36,7 @@ async def show_incoming(message: Message) -> None:
     if not rows:
         await message.answer(Message.NO_LIKES, reply_markup=HIDE_MENU)
         return
-    await message.answer(Format.INCOMING_LIKES.format(len(rows)))
+    _fire(message.answer(Format.INCOMING_LIKES.format(len(rows))))
     await _show_incoming(message, rows[0], user)
 
 

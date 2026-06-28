@@ -41,6 +41,12 @@ HIDE_MENU = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+# Клавиатура поиска собеседника — кнопка отмены в reply keyboard
+ANON_SEARCH_MENU = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=MenuText.CANCEL_SEARCH)]],
+    resize_keyboard=True,
+)
+
 # Клавиатура внутри анонимного свидания — только выход
 ANON_CHAT_MENU = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=MenuText.STOP_BLIND_DATE)]],
@@ -53,14 +59,6 @@ def anon_session_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=f"{EMOJI.BLIND_DATE} Открыться", callback_data=CallbackPrefix.ANON.with_param(AnonAction.REVEAL.value))],
             [InlineKeyboardButton(text=f"{EMOJI.STOP} Завершить", callback_data=CallbackPrefix.ANON.with_param(AnonAction.STOP.value))],
-        ]
-    )
-
-
-def anon_queue_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"{EMOJI.STOP} Отменить поиск", callback_data=CallbackPrefix.ANON.with_param(AnonAction.CANCEL_QUEUE.value))]
         ]
     )
 

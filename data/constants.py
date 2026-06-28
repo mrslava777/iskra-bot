@@ -272,6 +272,7 @@ class MenuText:
     BADGES = f"{EMOJI.BADGES} Артефакты"
     SETTINGS = f"{EMOJI.SETTINGS} Настройки"
     SUPPORT = f"{EMOJI.SUPPORT} Поддержка"
+    CANCEL_SEARCH = f"{EMOJI.STOP} Отменить поиск"
     STOP_BLIND_DATE = f"{EMOJI.STOP} Завершить свидание"
     MENU = "📋 Меню"
 
