@@ -4,7 +4,7 @@
     db()             — асинхронный контекстный менеджер для работы с БД.
                        Автоматически берёт соединение из пула и возвращает.
     get_single_db()  — НОВОЕ соединение из пула для транзакций.
-                       ВЫЗЫВАЮЩИЙ ОБЯЗАН закрыть через await conn.close().
+                       Вызывающий обязан закрыть через await conn.close().
     close_db_pool()  — закрывает пул (graceful shutdown).
 
 Схема создаётся один раз при первом вызове db().
@@ -13,9 +13,7 @@
     async with db() as conn:
         row = await conn.fetchrow("SELECT ...", params)
 """
-import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
@@ -27,7 +25,6 @@ log = logging.getLogger("iskra.db")
 
 _pool: Optional[asyncpg.Pool] = None
 _schema_ready = False
-_schema_lock = asyncio.Lock()
 
 
 def _build_dsn() -> str:
@@ -44,14 +41,12 @@ async def _init_pool() -> asyncpg.Pool:
     pool = await asyncpg.create_pool(
         dsn=dsn,
         min_size=2,
-        max_size=20,
+        max_size=10,
         command_timeout=30,
-        server_settings={"jit": "off", "application_name": "iskra_bot"},
-        # Отключаем prepared statement cache для совместимости с PgBouncer
-        # и избежания проблем при миграциях схемы
-        statement_cache_size=0,
+        server_settings={"jit": "off"},
+        init=lambda conn: conn.execute("SET application_name = 'iskra_bot'"),
     )
-    log.info("Пул создан (min=2, max=20, statement_cache=0)")
+    log.info("Пул создан (min=2, max=10)")
     return pool
 
 
@@ -75,16 +70,14 @@ async def db() -> AsyncGenerator[asyncpg.Connection, None]:
     pool = await _get_pool()
 
     if not _schema_ready:
-        async with _schema_lock:
-            if not _schema_ready:
-                async with pool.acquire() as init_conn:
-                    try:
-                        await init_schema(init_conn)
-                        _schema_ready = True
-                        log.info("Схема БД инициализирована")
-                    except Exception as e:
-                        log.error("Ошибка инициализации схемы: %s", e)
-                        raise
+        async with pool.acquire() as init_conn:
+            try:
+                await init_schema(init_conn)
+                _schema_ready = True
+                log.info("Схема БД инициализирована")
+            except Exception as e:
+                log.error("Ошибка инициализации схемы: %s", e)
+                raise
 
     async with pool.acquire() as conn:
         yield conn
@@ -99,11 +92,9 @@ async def get_single_db() -> asyncpg.Connection:
     global _schema_ready
     pool = await _get_pool()
     if not _schema_ready:
-        async with _schema_lock:
-            if not _schema_ready:
-                async with pool.acquire() as init_conn:
-                    await init_schema(init_conn)
-                    _schema_ready = True
+        async with pool.acquire() as init_conn:
+            await init_schema(init_conn)
+            _schema_ready = True
     return await pool.acquire()
 
 
@@ -232,56 +223,20 @@ CREATE TABLE IF NOT EXISTS user_badges (
 """
 
 INDEX_SQL = """
--- Основные индексы для users
-CREATE INDEX IF NOT EXISTS idx_users_active_banned ON users(active, is_banned) WHERE active = 1 AND is_banned = 0;
-CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active DESC) WHERE active = 1 AND is_banned = 0;
-CREATE INDEX IF NOT EXISTS idx_users_gender ON users(gender) WHERE active = 1 AND is_banned = 0;
-CREATE INDEX IF NOT EXISTS idx_users_seeking ON users(seeking) WHERE active = 1 AND is_banned = 0;
-CREATE INDEX IF NOT EXISTS idx_users_photo ON users(photo_id) WHERE photo_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_users_age ON users(age) WHERE active = 1 AND is_banned = 0;
-
--- Составной индекс для ленты (покрывающий)
-CREATE INDEX IF NOT EXISTS idx_users_feed ON users(active, is_banned, gender, age, photo_id, last_active DESC) 
-    WHERE active = 1 AND is_banned = 0 AND photo_id IS NOT NULL;
-
--- Индексы для likes (покрывающие)
-CREATE INDEX IF NOT EXISTS idx_likes_from_to ON likes(from_id, to_id);
-CREATE INDEX IF NOT EXISTS idx_likes_to_from ON likes(to_id, from_id, is_like);
-CREATE INDEX IF NOT EXISTS idx_likes_to_islike ON likes(to_id, is_like) WHERE is_like = 1;
-
--- Индексы для matches
-CREATE INDEX IF NOT EXISTS idx_matches_a ON matches(a_id);
-CREATE INDEX IF NOT EXISTS idx_matches_b ON matches(b_id);
-CREATE INDEX IF NOT EXISTS idx_matches_created ON matches(created_at DESC);
-
--- Индексы для shown_profiles
-CREATE INDEX IF NOT EXISTS idx_shown_from_to ON shown_profiles(from_id, to_id);
-
--- Индексы для reports
-CREATE INDEX IF NOT EXISTS idx_reports_to ON reports(to_id);
-CREATE INDEX IF NOT EXISTS idx_reports_from ON reports(from_id);
-
--- Индексы для anon_queue (важно для поиска старейшего)
-CREATE INDEX IF NOT EXISTS idx_anon_queue_queued ON anon_queue(queued_at ASC);
-
--- Индексы для anon_sessions
-CREATE INDEX IF NOT EXISTS idx_anon_sessions_active ON anon_sessions(ended_at) WHERE ended_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_anon_sessions_a ON anon_sessions(a_id, ended_at);
-CREATE INDEX IF NOT EXISTS idx_anon_sessions_b ON anon_sessions(b_id, ended_at);
-
--- Индексы для relationships
-CREATE INDEX IF NOT EXISTS idx_relationships_pair ON relationships(user1_id, user2_id);
-
--- Индексы для tickets
-CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status) WHERE status = 'open';
-CREATE INDEX IF NOT EXISTS idx_tickets_tg ON tickets(tg_id);
-
--- Индексы для user_badges
-CREATE INDEX IF NOT EXISTS idx_user_badges_tg ON user_badges(tg_id);
-CREATE INDEX IF NOT EXISTS idx_user_badges_badge ON user_badges(badge_id);
-
--- Индексы для photos
-CREATE INDEX IF NOT EXISTS idx_photos_tg ON photos(tg_id, position);
+CREATE INDEX IF NOT EXISTS idx_users_active_banned ON users(active, is_banned);
+CREATE INDEX IF NOT EXISTS idx_users_last_active   ON users(last_active DESC);
+CREATE INDEX IF NOT EXISTS idx_photos_tg           ON photos(tg_id);
+CREATE INDEX IF NOT EXISTS idx_likes_from_to       ON likes(from_id, to_id);
+CREATE INDEX IF NOT EXISTS idx_likes_to            ON likes(to_id, is_like);
+CREATE INDEX IF NOT EXISTS idx_matches_a           ON matches(a_id);
+CREATE INDEX IF NOT EXISTS idx_matches_b           ON matches(b_id);
+CREATE INDEX IF NOT EXISTS idx_shown_from_to       ON shown_profiles(from_id, to_id);
+CREATE INDEX IF NOT EXISTS idx_reports_to          ON reports(to_id);
+CREATE INDEX IF NOT EXISTS idx_anon_sessions_active ON anon_sessions(ended_at);
+CREATE INDEX IF NOT EXISTS idx_relationships_pair  ON relationships(user1_id, user2_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_status      ON tickets(status);
+CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
+CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, age);
 """
 
 MISSING_COLUMNS = {
@@ -393,6 +348,7 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
                     await conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type} DEFAULT {default}"
                     )
+                log.info("Колонка %s.%s проверена/добавлена", table, col_name)
             except Exception as e:
                 log.warning("Не удалось добавить колонку %s.%s: %s", table, col_name, e)
 
@@ -425,7 +381,7 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
                     f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
                 )
                 await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
+                    f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type}                     USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
                 )
                 if default_val != "NULL":
                     await conn.execute(
@@ -440,11 +396,28 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
             log.warning("Не удалось мигрировать тип %s.%s: %s", table, col_name, e)
 
 
+async def _clear_statement_cache(conn: asyncpg.Connection) -> None:
+    """Сбрасывает кэш prepared statements после изменения схемы."""
+    try:
+        await conn.execute("DEALLOCATE ALL")
+        log.info("Кэш prepared statements сброшен")
+    except Exception as e:
+        log.warning("Не удалось сбросить кэш prepared statements: %s", e)
+        try:
+            await conn.execute("DISCARD ALL")
+            log.info("Выполнен DISCARD ALL")
+        except Exception as e2:
+            log.warning("DISCARD ALL тоже не сработал: %s", e2)
+
+
 async def init_schema(conn: asyncpg.Connection) -> None:
     """Создаёт все таблицы и индексы (идемпотентно)."""
     log.info("Создаю таблицы...")
+
     await conn.execute(SCHEMA_SQL)
     await _ensure_columns(conn)
     await _migrate_types(conn)
+    await _clear_statement_cache(conn)
     await conn.execute(INDEX_SQL)
-    log.info("Таблицы и индексы созданы")
+
+    log.info("Таблицы созданы")
