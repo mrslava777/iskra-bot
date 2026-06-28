@@ -3,11 +3,7 @@
 format_profile        — синхронная версия (без значков/совместимости),
                         для финала регистрации.
 format_profile_async  — асинхронная версия со значками и совместимостью.
-
-FIX: импорты badge_service и badge_formatter вынесены на уровень модуля —
-     раньше import внутри функции добавлял overhead при каждом вызове.
 """
-from data.content import daily_question
 from services.badge_formatter import format_user_badges_inline
 from services.badge_service import get_user_badges
 from services.compatibility import (
@@ -35,10 +31,6 @@ def _base_lines(user: dict) -> str:
     interests = interests_text(user["interests"])
     if interests != "—":
         lines.append(f"\n🏷 {interests}")
-
-    if user["daily_a"]:
-        q = daily_question(user["daily_q"] or 0)
-        lines.append(f"\n💭 <i>{q}</i>\n— {user['daily_a']}")
 
     if user["bio"]:
         lines.append(f"\n📝 {user['bio']}")
@@ -70,10 +62,6 @@ async def format_profile_async(
     interests = interests_text(user["interests"])
     if interests != "—":
         lines.append(f"\n🏷 {interests}")
-
-    if user["daily_a"]:
-        q = daily_question(user["daily_q"] or 0)
-        lines.append(f"\n💭 <i>{q}</i>\n— {user['daily_a']}")
 
     if user["bio"]:
         lines.append(f"\n📝 {user['bio']}")

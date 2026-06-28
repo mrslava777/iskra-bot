@@ -3,11 +3,12 @@
 FIX: убрана дублирующая _format_profile_with_batch_badges — используется
      единый format_profile_async из profile_formatter.py.
      Значки подставляются через badges_map (batch-загрузка сохранена).
+FIX: добавлен обработчик callback rel:<uid> — уровень отношений.
 """
 import logging
 
 from aiogram import F, Router
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.match_repo as match_repo
 import repositories.user_repo as user_repo
@@ -18,6 +19,7 @@ from services.badge_formatter import format_user_badges_inline
 from services.badge_service import get_user_badges_batch
 from services.compatibility import common_interests, compatibility, compat_bar
 from services.profile_formatter import format_profile_async
+from services.relationship_service import get_relationship, format_status
 
 router = Router()
 log = logging.getLogger("iskra.matches")
@@ -90,3 +92,18 @@ def _format_contact(user: dict) -> str:
     if user.get("username"):
         return Format.CONTACT_USERNAME.format(user["username"])
     return Format.CONTACT_LINK.format(user["tg_id"], user["name"])
+
+
+@router.callback_query(F.data.startswith(f"{CallbackPrefix.RELATIONSHIP.value}:"))
+async def on_relationship(call: CallbackQuery) -> None:
+    """Показывает уровень отношений с мэтчем."""
+    parts = call.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        await call.answer("Ошибка")
+        return
+    target_id = int(parts[1])
+    viewer_id = call.from_user.id
+
+    rel_stats = await get_relationship(viewer_id, target_id)
+    text = format_status(rel_stats, viewer_id)
+    await call.answer(text, show_alert=True)

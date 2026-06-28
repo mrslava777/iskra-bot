@@ -223,8 +223,6 @@ class EditField(Enum):
     BIO = "bio"
     INTERESTS = "interests"
     PHOTOS = "photos"
-    DAILY = "daily"
-    DELETE_DAILY = "del_daily"
     VERIFY = "verify"
 
 

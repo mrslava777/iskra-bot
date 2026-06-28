@@ -45,11 +45,10 @@ async def on_verify_back(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     user = await user_repo.get_user(call.from_user.id)
     caption = await format_profile_async(user, show_compat=False, show_badges=True)
-    has_daily = bool(user.get("daily_a"))
     try:
-        await call.message.edit_text(caption, reply_markup=profile_kb(has_daily=has_daily))
+        await call.message.edit_text(caption, reply_markup=profile_kb())
     except Exception:
-        await call.message.answer(caption, reply_markup=profile_kb(has_daily=has_daily))
+        await call.message.answer(caption, reply_markup=profile_kb())
     await call.answer()
 
 

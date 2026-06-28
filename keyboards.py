@@ -29,8 +29,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text=MenuText.SEARCH)],
         [KeyboardButton(text=MenuText.BLIND_DATE)],
         [KeyboardButton(text=MenuText.LIKES_INBOX), KeyboardButton(text=MenuText.MATCHES)],
-        [KeyboardButton(text=MenuText.MY_PROFILE), KeyboardButton(text=MenuText.DAILY_QUESTION)],
-        [KeyboardButton(text=MenuText.BADGES)],
+        [KeyboardButton(text=MenuText.MY_PROFILE), KeyboardButton(text=MenuText.BADGES)],
         [KeyboardButton(text=MenuText.SETTINGS)],
     ],
     resize_keyboard=True,
@@ -136,7 +135,7 @@ def like_response_kb(uid: int) -> InlineKeyboardMarkup:
     )
 
 
-def profile_kb(has_daily: bool = False) -> InlineKeyboardMarkup:
+def profile_kb() -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(text="✏️ Имя", callback_data=CallbackPrefix.EDIT.with_param(EditField.NAME.value)),
@@ -150,10 +149,8 @@ def profile_kb(has_daily: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"{EMOJI.INTERESTS} Интересы", callback_data=CallbackPrefix.EDIT.with_param(EditField.INTERESTS.value)),
             InlineKeyboardButton(text="🖼 Фото", callback_data=CallbackPrefix.EDIT.with_param(EditField.PHOTOS.value)),
         ],
+        [InlineKeyboardButton(text=f"{EMOJI.VERIFIED} Верификация", callback_data=CallbackPrefix.EDIT.with_param(EditField.VERIFY.value))],
     ]
-    if has_daily:
-        rows.append([InlineKeyboardButton(text=f"{EMOJI.DELETE} Удалить ответ дня", callback_data=CallbackPrefix.EDIT.with_param(EditField.DELETE_DAILY.value))])
-    rows.append([InlineKeyboardButton(text=f"{EMOJI.VERIFIED} Верификация", callback_data=CallbackPrefix.EDIT.with_param(EditField.VERIFY.value))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

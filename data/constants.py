@@ -281,7 +281,6 @@ class MenuText:
     LIKES_INBOX = f"{EMOJI.LIKES_INBOX} Кто меня лайкнул"
     MATCHES = f"{EMOJI.MATCHES} Мэтчи"
     MY_PROFILE = f"{EMOJI.PROFILE} Моя анкета"
-    DAILY_QUESTION = f"{EMOJI.DAILY_QUESTION} Вопрос дня"
     BADGES = f"{EMOJI.BADGES} Артефакты"
     SETTINGS = f"{EMOJI.SETTINGS} Настройки"
     SUPPORT = f"{EMOJI.SUPPORT} Поддержка"

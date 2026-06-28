@@ -18,7 +18,6 @@ class Edit(StatesGroup):
     field = State()
     value = State()
     interests = State()
-    daily = State()
     filters_age = State()
     photos = State()
 

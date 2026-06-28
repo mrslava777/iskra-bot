@@ -1,8 +1,8 @@
 """Лента анкет — показ кандидатов, свайпы, жалобы.
 
-PERF v3: CTE — next_candidate + mark_shown в одном SQL-запросе.
-PERF v3: fire-and-forget для call.answer() и edit_reply_markup().
-PERF v3: update_max_compat параллельно с format_profile_async.
+PERF v4: notify_liked/announce_match — fire-and-forget (viewer не ждёт чужие уведомления).
+PERF v4: update_max_compat — fire-and-forget (не влияет на отображение).
+PERF v4: check_and_award — fire-and-forget с авто-отправкой значков.
 """
 import asyncio
 import logging
@@ -35,6 +35,16 @@ def _fire(coro) -> None:
     task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
 
 
+async def _fire_badges(tg_id: int, message: Message) -> None:
+    """Fire-and-forget: проверяет значки и отправляет уведомления."""
+    try:
+        new_badges = await check_and_award(tg_id)
+        for badge in new_badges:
+            await message.answer(format_badge_card(badge, is_new=True))
+    except Exception:
+        pass
+
+
 @router.message(F.text == MenuText.SEARCH)
 async def start_browse(message: Message, state: FSMContext) -> None:
     """Начинает просмотр ленты анкет."""
@@ -51,7 +61,8 @@ async def _show_next(message: Message, viewer_id: int, viewer: dict | None = Non
     """Показывает следующую анкету в ленте.
 
     PERF: CTE объединяет next_candidate + mark_shown в 1 SQL-запрос.
-    PERF: photo_count + format_profile + update_max_compat — параллельно.
+    PERF: update_max_compat — fire-and-forget (не влияет на отображение).
+    PERF: format + photo_count — единственный блокирующий gather.
     """
     if viewer is None:
         viewer = await user_repo.get_user(viewer_id)
@@ -65,11 +76,13 @@ async def _show_next(message: Message, viewer_id: int, viewer: dict | None = Non
     # Совместимость (синхронный, кэшированный — мгновенно)
     pct = compatibility(viewer.get("interests"), cand.get("interests"))
 
-    # Параллельно: format + photo_count + update_max_compat
-    caption, n_photos, _ = await asyncio.gather(
+    # update_max_compat — fire-and-forget (не критично для ответа)
+    _fire(user_repo.update_max_compat(viewer_id, pct))
+
+    # Параллельно: format + photo_count (оба нужны для ответа)
+    caption, n_photos = await asyncio.gather(
         format_profile_async(cand, viewer=viewer, show_compat=True, show_badges=True),
         photo_repo.photo_count(cand["tg_id"]),
-        user_repo.update_max_compat(viewer_id, pct),
     )
 
     extra = n_photos > 1
@@ -86,8 +99,9 @@ async def _show_next(message: Message, viewer_id: int, viewer: dict | None = Non
 async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     """Обработчик свайпов (лайк, дизлайк, жалоба, фото).
 
-    PERF: edit_reply_markup и call.answer — fire-and-forget.
-    PERF: уведомления + значки + viewer загружаются параллельно.
+    PERF v4: notify_liked и announce_match — fire-and-forget.
+    Viewer не должен ждать доставку уведомлений другому пользователю.
+    Экономия: ~200-400мс на каждый лайк-свайп.
     """
     parts = call.data.split(":")
     action = parts[1]
@@ -101,7 +115,7 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
 
     target_id = int(parts[2])
 
-    # Fire-and-forget: убираем кнопки со старой карточки — не ждём ответа Telegram
+    # Fire-and-forget: убираем кнопки со старой карточки
     _fire(call.message.edit_reply_markup(reply_markup=None))
 
     if action == SwipeAction.PHOTOS.value:
@@ -117,28 +131,20 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     # add_like — нужен результат (matched?)
     matched = await like_repo.add_like(viewer_id, target_id, is_like)
 
-    # Fire-and-forget: call.answer() — снимает спиннер, но ждать не нужно
+    # === Все фоновые операции — fire-and-forget ===
+    # Viewer не ждёт доставку уведомлений и проверку значков
     _fire(call.answer(Msg.LIKE_SENT if is_like else Msg.DISLIKE_SENT))
 
-    # Параллельно: уведомления + значки + загрузка viewer для следующей анкеты
-    tasks = []
     if is_like:
-        tasks.append(notify_liked(bot, viewer_id, target_id, with_message=(action == SwipeAction.MESSAGE_LIKE.value)))
+        _fire(notify_liked(bot, viewer_id, target_id, with_message=(action == SwipeAction.MESSAGE_LIKE.value)))
     if matched:
-        tasks.append(announce_match(bot, viewer_id, target_id))
-    tasks.append(check_and_award(viewer_id))
-    tasks.append(user_repo.get_user(viewer_id))
+        _fire(announce_match(bot, viewer_id, target_id))
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Значки — fire-and-forget с авто-отправкой
+    _fire(_fire_badges(viewer_id, call.message))
 
-    # Новые значки — предпоследний элемент (check_and_award)
-    badge_result = results[-2]
-    if isinstance(badge_result, list):
-        for badge in badge_result:
-            await call.message.answer(format_badge_card(badge, is_new=True))
-
-    # Viewer из параллельной загрузки
-    viewer = results[-1] if not isinstance(results[-1], Exception) else None
+    # === Единственное блокирующее: показать следующую карточку ===
+    viewer = await user_repo.get_user(viewer_id)  # cached — мгновенно
     await _show_next(call.message, viewer_id, viewer=viewer)
 
 
@@ -160,11 +166,7 @@ async def _handle_photos(call: CallbackQuery, target_id: int) -> None:
 async def _handle_report(call: CallbackQuery, viewer_id: int, target_id: int) -> None:
     """Обрабатывает жалобу на пользователя."""
     _fire(call.answer(Msg.REPORT_SENT))
-    _, new_badges, viewer = await asyncio.gather(
-        settings_repo.add_report(viewer_id, target_id),
-        check_and_award(viewer_id),
-        user_repo.get_user(viewer_id),
-    )
-    for badge in new_badges:
-        await call.message.answer(format_badge_card(badge, is_new=True))
+    _fire(settings_repo.add_report(viewer_id, target_id))
+    _fire(_fire_badges(viewer_id, call.message))
+    viewer = await user_repo.get_user(viewer_id)  # cached
     await _show_next(call.message, viewer_id, viewer=viewer)

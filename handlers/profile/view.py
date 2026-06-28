@@ -38,14 +38,15 @@ async def show_my_profile(message: Message) -> None:
 
     photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
     caption += photo_note
-
-    has_daily = bool(user.get("daily_a"))
-    kb = profile_kb(has_daily=has_daily)
+    kb = profile_kb()
 
     try:
         await message.answer_photo(photo=user["photo_id"], caption=caption, reply_markup=kb)
     except Exception:
         await message.answer(caption, reply_markup=kb)
+
+    # Скрываем основное меню — оставляем только кнопку «Меню»
+    await message.answer("👆 Твоя анкета", reply_markup=HIDE_MENU)
 
     for badge in new_badges:
         await message.answer(format_badge_card(badge, is_new=True))

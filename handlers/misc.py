@@ -19,7 +19,7 @@ async def cmd_help(message: Message) -> None:
         f"• {MenuText.BLIND_DATE} — анонимный чат вживую; откроетесь оба — будет мэтч\n"
         f"• {MenuText.LIKES_INBOX} — входящие симпатии\n"
         f"• {MenuText.MATCHES} — взаимные лайки и контакты\n"
-        f"• {MenuText.DAILY_QUESTION} — добавь изюминку в анкету\n"
+        f"• {MenuText.BADGES} — коллекция значков\n"
         f"• {MenuText.SETTINGS} — фильтры и видимость\n\n"
         f"Команды: {Cmd.START.value} {Cmd.MYPROFILE.value} {Cmd.BADGES.value} {Cmd.HELP.value} {Cmd.STOP.value} (выйти со свидания)"
     )
