@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 import repositories.user_repo as user_repo
 from data.constants import Age, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SettingsAction
-from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU, HIDE_MENU
+from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
 from states import Edit
 
@@ -26,11 +26,6 @@ async def show_settings(message: Message) -> None:
         return
     active = bool(user.get("active"))
     await message.answer(f"{EMOJI.SETTINGS} Настройки", reply_markup=settings_kb(active))
-    # FIX: await directly instead of fire-and-forget
-    try:
-        await message.answer("👆 Настройки", reply_markup=HIDE_MENU)
-    except Exception:
-        pass
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:back")
@@ -114,7 +109,9 @@ async def on_support_from_settings(call: CallbackQuery, state: FSMContext) -> No
 async def on_delete_account(call: CallbackQuery) -> None:
     """Запрашивает подтверждение удаления."""
     await call.message.edit_text(
-        f"{EMOJI.REPORT} <b>Удалить аккаунт?</b>\n\nВсе данные будут безвозвратно удалены.",
+        f"{EMOJI.REPORT} <b>Удалить аккаунт?</b>
+
+Все данные будут безвозвратно удалены.",
         reply_markup=confirm_delete_kb(),
     )
     await call.answer()
