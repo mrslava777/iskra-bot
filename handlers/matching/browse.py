@@ -29,9 +29,6 @@ router = Router()
 log = logging.getLogger("iskra.browse")
 
 
-from services.async_utils import fire as _fire  # noqa: E302
-
-
 async def _fire_badges(tg_id: int, message: Message) -> None:
     """Fire-and-forget: проверяет значки и отправляет уведомления."""
     try:
@@ -50,7 +47,11 @@ async def start_browse(message: Message, state: FSMContext) -> None:
     if not user or not user["name"]:
         await message.answer(Msg.CREATE_PROFILE_FIRST)
         return
-    _fire(user_repo.touch_activity(message.from_user.id))
+    # FIX: await touch_activity directly
+    try:
+        await user_repo.touch_activity(message.from_user.id)
+    except Exception:
+        pass
     await _show_next(message, message.from_user.id, viewer=user)
 
 
@@ -74,7 +75,11 @@ async def _show_next(message: Message, viewer_id: int, viewer: dict | None = Non
     pct = compatibility(viewer.get("interests"), cand.get("interests"))
 
     # update_max_compat — fire-and-forget (не критично для ответа)
-    _fire(user_repo.update_max_compat(viewer_id, pct))
+    # FIX: create_task for actual coroutine
+    try:
+        asyncio.create_task(user_repo.update_max_compat(viewer_id, pct))
+    except Exception:
+        pass
 
     # Параллельно: format + photo_count (оба нужны для ответа)
     caption, n_photos = await asyncio.gather(
@@ -105,15 +110,22 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     viewer_id = call.from_user.id
 
     if action == SwipeAction.STOP.value:
-        _fire(call.message.edit_reply_markup(reply_markup=None))
+        # FIX: await directly
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await call.message.answer(Msg.SEARCH_STOPPED, reply_markup=HIDE_MENU)
-        _fire(call.answer())
+        await call.answer()
         return
 
     target_id = int(parts[2])
 
-    # Fire-and-forget: убираем кнопки со старой карточки
-    _fire(call.message.edit_reply_markup(reply_markup=None))
+    # FIX: await edit_reply_markup directly
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
     if action == SwipeAction.PHOTOS.value:
         await _handle_photos(call, target_id)
@@ -130,15 +142,25 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
 
     # === Все фоновые операции — fire-and-forget ===
     # Viewer не ждёт доставку уведомлений и проверку значков
-    _fire(call.answer(Msg.LIKE_SENT if is_like else Msg.DISLIKE_SENT))
+    await call.answer(Msg.LIKE_SENT if is_like else Msg.DISLIKE_SENT)
 
     if is_like:
-        _fire(notify_liked(bot, viewer_id, target_id, with_message=(action == SwipeAction.MESSAGE_LIKE.value)))
+        # FIX: create_task for actual coroutine
+        try:
+            asyncio.create_task(notify_liked(bot, viewer_id, target_id, with_message=(action == SwipeAction.MESSAGE_LIKE.value)))
+        except Exception:
+            pass
     if matched:
-        _fire(announce_match(bot, viewer_id, target_id))
+        try:
+            asyncio.create_task(announce_match(bot, viewer_id, target_id))
+        except Exception:
+            pass
 
     # Значки — fire-and-forget с авто-отправкой
-    _fire(_fire_badges(viewer_id, call.message))
+    try:
+        asyncio.create_task(_fire_badges(viewer_id, call.message))
+    except Exception:
+        pass
 
     # === Единственное блокирующее: показать следующую карточку ===
     viewer = await user_repo.get_user(viewer_id)  # cached — мгновенно
@@ -157,13 +179,20 @@ async def _handle_photos(call: CallbackQuery, target_id: int) -> None:
             log.debug("Не удалось отправить доп. фото %d: %s", target_id, e)
     else:
         await call.answer("Нет дополнительных фото")
-    _fire(call.answer())
+    await call.answer()
 
 
 async def _handle_report(call: CallbackQuery, viewer_id: int, target_id: int) -> None:
     """Обрабатывает жалобу на пользователя."""
-    _fire(call.answer(Msg.REPORT_SENT))
-    _fire(settings_repo.add_report(viewer_id, target_id))
-    _fire(_fire_badges(viewer_id, call.message))
+    await call.answer(Msg.REPORT_SENT)
+    # FIX: create_task for actual coroutine
+    try:
+        asyncio.create_task(settings_repo.add_report(viewer_id, target_id))
+    except Exception:
+        pass
+    try:
+        asyncio.create_task(_fire_badges(viewer_id, call.message))
+    except Exception:
+        pass
     viewer = await user_repo.get_user(viewer_id)  # cached
     await _show_next(call.message, viewer_id, viewer=viewer)

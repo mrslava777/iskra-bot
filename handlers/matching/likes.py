@@ -22,9 +22,6 @@ from services.profile_formatter import format_profile_async
 router = Router()
 
 
-from services.async_utils import fire as _fire  # noqa: E302
-
-
 @router.message(F.text == MenuText.LIKES_INBOX)
 async def show_incoming(message: Message) -> None:
     """Показывает входящие лайки."""
@@ -36,7 +33,10 @@ async def show_incoming(message: Message) -> None:
     if not rows:
         await message.answer(Message.NO_LIKES, reply_markup=HIDE_MENU)
         return
-    _fire(message.answer(Format.INCOMING_LIKES.format(len(rows))))
+    try:
+        await message.answer(Format.INCOMING_LIKES.format(len(rows)))
+    except Exception:
+        pass
     await _show_incoming(message, rows[0], user)
 
 
@@ -60,19 +60,26 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
     target_id = int(uid)
     viewer_id = call.from_user.id
 
-    # Fire-and-forget: убираем кнопки
-    _fire(call.message.edit_reply_markup(reply_markup=None))
+    # FIX: await directly
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
     if decision == LikeResponse.YES.value:
         matched = await like_repo.add_like(viewer_id, target_id, True)
         if matched:
-            _fire(announce_match(bot, viewer_id, target_id))
-            _fire(call.answer(Message.MATCH_ACHIEVED))
+            # FIX: create_task for actual coroutine
+            try:
+                asyncio.create_task(announce_match(bot, viewer_id, target_id))
+            except Exception:
+                pass
+            await call.answer(Message.MATCH_ACHIEVED)
         else:
-            _fire(call.answer(Message.LIKE_SENT))
+            await call.answer(Message.LIKE_SENT)
     else:
         await like_repo.add_like(viewer_id, target_id, False)
-        _fire(call.answer(Message.DISLIKE_SENT))
+        await call.answer(Message.DISLIKE_SENT)
 
     # Параллельно: значки + загрузка данных для следующей анкеты
     new_badges, user, rows = await asyncio.gather(
@@ -81,7 +88,10 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
         like_repo.incoming_likes(viewer_id),
     )
     for badge in new_badges:
-        await call.message.answer(format_badge_card(badge, is_new=True))
+        try:
+            await call.message.answer(format_badge_card(badge, is_new=True))
+        except Exception:
+            pass
 
     if not rows:
         await call.message.answer("Это были все входящие симпатии ✨", reply_markup=HIDE_MENU)
@@ -92,5 +102,5 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
 @router.callback_query(F.data == "open_likes")
 async def on_open_likes(call: CallbackQuery) -> None:
     """Обработчик кнопки из пуш-уведомления о лайке."""
-    _fire(call.answer())
+    await call.answer()
     await show_incoming(call.message)
