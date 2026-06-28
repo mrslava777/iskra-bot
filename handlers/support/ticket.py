@@ -14,7 +14,7 @@ import repositories.user_repo as user_repo
 from config import ADMIN_IDS
 from data.constants import Length, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SupportCategory, Command as Cmd
-from keyboards import MAIN_MENU, HIDE_MENU
+from keyboards import MAIN_MENU
 from states import Support
 
 router = Router()
@@ -34,12 +34,8 @@ async def cmd_support(message: Message, state: FSMContext) -> None:
             [InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.SUPPORT.with_param("back"))],
         ]
     )
-    await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>\nС чем у вас возникла проблема?", reply_markup=kb)
-    # FIX: await directly instead of fire-and-forget with message.answer()
-    try:
-        await message.answer("👆 Поддержка", reply_markup=HIDE_MENU)
-    except Exception:
-        pass
+    await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>
+С чем у вас возникла проблема?", reply_markup=kb)
 
 
 @router.callback_query(F.data == CallbackPrefix.SUPPORT.with_param("back"))
@@ -65,9 +61,12 @@ async def on_support_category(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(support_cat=cat, support_label=category.display_name)
     await state.set_state(Support.message)
     await call.message.edit_text(
-        f"{category.display_name}\n"
-        "Опишите вашу проблему одним сообщением.\n"
-        "Можете прикрепить скриншот 📷\n"
+        f"{category.display_name}
+"
+        "Опишите вашу проблему одним сообщением.
+"
+        "Можете прикрепить скриншот 📷
+"
         f"Для отмены — {Cmd.CANCEL.value}"
     )
     await call.answer()
