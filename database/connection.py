@@ -9,20 +9,13 @@
 
 Схема создаётся один раз при первом вызове db().
 
-Пример использования:
-    async with db() as conn:
-        row = await conn.fetchrow("SELECT ...", params)
-
-    # Для транзакций:
-    conn = await get_single_db()
-    try:
-        await conn.execute("INSERT INTO ...")
-        await conn.execute("UPDATE ...")
-    finally:
-        await release_db(conn)  # ← ВАЖНО: возвращаем в пул!
+Этот модуль дополнительно содержит более устойчивую логику инициализации
+с retry/backoff и утилитой wait_until_db_ready(), чтобы процесс старта
+мог корректно прогреть БД в условиях rolling/deploy и transient ошибок.
 """
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
@@ -36,6 +29,12 @@ _pool: Optional[asyncpg.Pool] = None
 _pool_lock = asyncio.Lock()
 _schema_ready = False
 _schema_lock = asyncio.Lock()
+
+# Retry/backoff параметры для инициализации схемы
+_SCHEMA_INIT_RETRIES = int(os.getenv("SCHEMA_INIT_RETRIES", "5"))
+_SCHEMA_BACKOFF_BASE = float(os.getenv("SCHEMA_BACKOFF_BASE", "0.5"))
+_SCHEMA_BACKOFF_MULT = float(os.getenv("SCHEMA_BACKOFF_MULT", "2"))
+
 
 # ---------------- SCHEMA (inline) ----------------
 SCHEMA_SQL = """
@@ -374,6 +373,104 @@ async def init_schema(conn: asyncpg.Connection) -> None:
     log.info("Схема БД готова")
 
 
+async def _ensure_schema(pool: asyncpg.Pool) -> None:
+    """Гарантирует инициализацию схемы ровно один раз.
+
+    Добавлены retry/backoff и подробный логинг с traceback
+    чтобы rolling deploy/частичные обновления не приводили к падению
+    процесса при transient ошибках.
+    """
+    global _schema_ready
+    if _schema_ready:
+        return
+    async with _schema_lock:
+        if _schema_ready:
+            return
+
+        last_exc = None
+        for attempt in range(1, _SCHEMA_INIT_RETRIES + 1):
+            try:
+                async with pool.acquire() as conn:
+                    schema_fn = globals().get("init_schema")
+                    if schema_fn is None:
+                        log.warning("init_schema not found in module, falling back to minimal schema creation")
+                        await conn.execute(SCHEMA_SQL)
+                        try:
+                            await conn.execute(INDEX_SQL)
+                        except Exception:
+                            log.debug("INDEX_SQL execution failed in fallback (ignored)")
+                    else:
+                        await schema_fn(conn)
+
+                _schema_ready = True
+                log.info("Схема БД инициализирована")
+                return
+            except Exception as e:
+                last_exc = e
+                log.exception("Ошибка инициализации схемы (попытка %d/%d): %s", attempt, _SCHEMA_INIT_RETRIES, e)
+                if attempt < _SCHEMA_INIT_RETRIES:
+                    backoff = _SCHEMA_BACKOFF_BASE * (_SCHEMA_BACKOFF_MULT ** (attempt - 1))
+                    log.info("Повтор через %.1f сек...", backoff)
+                    await asyncio.sleep(backoff)
+
+        log.error("Не удалось инициализировать схему после %d попыток", _SCHEMA_INIT_RETRIES)
+        # raise the last exception so caller can handle/retry/shutdown
+        raise last_exc
+
+
+@asynccontextmanager
+async def db() -> AsyncGenerator[asyncpg.Connection, None]:
+    """Контекстный менеджер для работы с БД.
+
+    Берёт соединение из пула, выполняет запросы, автоматически возвращает.
+    При первом использовании инициализирует схему.
+    """
+    pool = await _get_pool()
+    await _ensure_schema(pool)
+    async with pool.acquire() as conn:
+        yield conn
+
+
+async def get_single_db() -> asyncpg.Connection:
+    pool = await _get_pool()
+    await _ensure_schema(pool)
+    return await pool.acquire()
+
+
+async def release_db(conn: asyncpg.Connection) -> None:
+    pool = await _get_pool()
+    await pool.release(conn)
+
+
+async def close_db_pool() -> None:
+    global _pool, _schema_ready
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+        _schema_ready = False
+        log.info("Пул соединений с PostgreSQL закрыт")
+
+
+async def wait_until_db_ready(timeout: float = 60.0) -> None:
+    """Вспомогательная утилита для блокировки старта приложения до прогрева БД.
+
+    Вызывает _ensure_schema с retry и ожидает, пока схема будет инициализирована
+    или пока не истечёт timeout.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        try:
+            pool = await _get_pool()
+            await _ensure_schema(pool)
+            return
+        except Exception as e:
+            if asyncio.get_event_loop().time() > deadline:
+                log.exception("wait_until_db_ready: timeout waiting for DB ready: %s", e)
+                raise
+            # небольшой пауза перед повторной попыткой
+            await asyncio.sleep(0.5)
+
+
 def _build_dsn() -> str:
     """Возвращает чистый DSN без лишних параметров."""
     if not DATABASE_URL:
@@ -387,7 +484,6 @@ async def _conn_init(conn: asyncpg.Connection) -> None:
 
 
 async def _init_pool() -> asyncpg.Pool:
-    """Создаёт пул соединений с PostgreSQL."""
     dsn = _build_dsn()
     log.info("Создаю пул соединений с PostgreSQL...")
     pool = await asyncpg.create_pool(
@@ -403,11 +499,6 @@ async def _init_pool() -> asyncpg.Pool:
 
 
 async def _get_pool() -> asyncpg.Pool:
-    """Возвращает существующий пул или создаёт новый.
-
-    FIX: asyncio.Lock предотвращает создание нескольких пулов
-    при конкурентных запросах на старте.
-    """
     global _pool
     if _pool is not None:
         return _pool
@@ -416,81 +507,3 @@ async def _get_pool() -> asyncpg.Pool:
             return _pool
         _pool = await _init_pool()
         return _pool
-
-
-async def _ensure_schema(pool: asyncpg.Pool) -> None:
-    """Гарантирует инициализацию схемы ровно один раз.
-
-    FIX: asyncio.Lock предотвращает одновременную инициализацию
-    из нескольких корутин при конкурентных первых запросах.
-    """
-    global _schema_ready
-    if _schema_ready:
-        return
-    async with _schema_lock:
-        if _schema_ready:
-            return
-        async with pool.acquire() as conn:
-            try:
-                await init_schema(conn)
-                _schema_ready = True
-                log.info("Схема БД инициализирована")
-            except Exception as e:
-                log.error("Ошибка инициализации схемы: %s", e)
-                raise
-
-
-@asynccontextmanager
-async def db() -> AsyncGenerator[asyncpg.Connection, None]:
-    """Контекстный менеджер для работы с БД.
-
-    Берёт соединение из пула, выполняет запросы, автоматически возвращает.
-    При первом использовании инициализирует схему.
-
-    FIX: убрано двойное получение соединения (раньше — одно для схемы,
-    второе для работы). Теперь схема инициализируется отдельно, а для
-    работы используется только одно соединение.
-    """
-    pool = await _get_pool()
-    await _ensure_schema(pool)
-    async with pool.acquire() as conn:
-        yield conn
-
-
-async def get_single_db() -> asyncpg.Connection:
-    """Свежее соединение из пула для транзакций.
-
-    Используй, когда нужно несколько запросов в одной транзакции
-    или COMMIT/ROLLBACK. Обязательно верни в пул через release_db()!
-
-    Example:
-        conn = await get_single_db()
-        try:
-            await conn.execute("INSERT INTO ...")
-            await conn.execute("UPDATE ...")
-        finally:
-            await release_db(conn)  # ← НЕ conn.close()!
-    """
-    pool = await _get_pool()
-    await _ensure_schema(pool)
-    return await pool.acquire()
-
-
-async def release_db(conn: asyncpg.Connection) -> None:
-    """Возвращает соединение в пул. НЕ закрывает его!
-
-    ⚠️ ВАЖНО: Для pooled-соединений используй release_db(), а НЕ conn.close().
-    conn.close() навсегда уничтожит соединение и вызовет утечку пула!
-    """
-    pool = await _get_pool()
-    await pool.release(conn)
-
-
-async def close_db_pool() -> None:
-    """Закрывает пул соединений (graceful shutdown)."""
-    global _pool, _schema_ready
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
-        _schema_ready = False
-        log.info("Пул соединений с PostgreSQL закрыт")
