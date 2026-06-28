@@ -1,4 +1,9 @@
-"""Клавиатуры бота."""
+"""Клавиатуры бота.
+Оптимизации: кешируем неизменяемые фабрики клавиатур через lru_cache,
+и используем кеш для interests (по tuple selected) чтобы избежать постоянного
+пересоздания одинаковых объектов при высоком QPS.
+"""
+from functools import lru_cache
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -54,6 +59,7 @@ ANON_CHAT_MENU = ReplyKeyboardMarkup(
 )
 
 
+@lru_cache(maxsize=64)
 def anon_session_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -63,6 +69,7 @@ def anon_session_kb() -> InlineKeyboardMarkup:
     )
 
 
+@lru_cache(maxsize=128)
 def gender_kb(prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -74,6 +81,7 @@ def gender_kb(prefix: str) -> InlineKeyboardMarkup:
     )
 
 
+@lru_cache(maxsize=128)
 def seeking_kb(prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -86,11 +94,13 @@ def seeking_kb(prefix: str) -> InlineKeyboardMarkup:
     )
 
 
-def interests_kb(selected: list[int], prefix: str = "int") -> InlineKeyboardMarkup:
+# interests_kb принимает изменяемый список; кешируем по кортежу selected
+@lru_cache(maxsize=1024)
+def _interests_kb_cached(selected_tuple: tuple, prefix: str = "int") -> InlineKeyboardMarkup:
     rows = []
     row = []
     for i, name in enumerate(INTERESTS):
-        mark = "✅ " if i in selected else ""
+        mark = "✅ " if i in selected_tuple else ""
         row.append(
             InlineKeyboardButton(text=f"{mark}{name}", callback_data=f"{prefix}:{i}")
         )
@@ -103,7 +113,12 @@ def interests_kb(selected: list[int], prefix: str = "int") -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def browse_kb(uid: int, has_extra_photos: bool = False) -> InlineKeyboardMarkup:
+def interests_kb(selected: list[int], prefix: str = "int") -> InlineKeyboardMarkup:
+    return _interests_kb_cached(tuple(selected), prefix)
+
+
+@lru_cache(maxsize=256)
+def browse_kb_cached(uid: int, has_extra_photos: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(text=EMOJI.LIKE, callback_data=CallbackPrefix.SWIPE.with_param(SwipeAction.LIKE.value, uid)),
@@ -122,6 +137,12 @@ def browse_kb(uid: int, has_extra_photos: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def browse_kb(uid: int, has_extra_photos: bool = False) -> InlineKeyboardMarkup:
+    # lru_cache requires hashable args; uid and bool are hashable, so use cached
+    return browse_kb_cached(uid, has_extra_photos)
+
+
+@lru_cache(maxsize=512)
 def like_response_kb(uid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -133,6 +154,7 @@ def like_response_kb(uid: int) -> InlineKeyboardMarkup:
     )
 
 
+@lru_cache(maxsize=64)
 def profile_kb() -> InlineKeyboardMarkup:
     rows = [
         [
@@ -166,6 +188,7 @@ def photos_manage_kb(photo_count: int, max_photos: int = Photo.MAX_TOTAL) -> Inl
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+@lru_cache(maxsize=64)
 def extra_photos_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -185,6 +208,7 @@ def verify_kb(tg_id: int) -> InlineKeyboardMarkup:
     )
 
 
+@lru_cache(maxsize=128)
 def settings_kb(active: bool) -> InlineKeyboardMarkup:
     toggle = f"{EMOJI.ACTIVE} Анкета активна (скрыть)" if active else f"{EMOJI.INACTIVE} Анкета скрыта (показать)"
     return InlineKeyboardMarkup(
@@ -198,6 +222,7 @@ def settings_kb(active: bool) -> InlineKeyboardMarkup:
     )
 
 
+@lru_cache(maxsize=32)
 def confirm_delete_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -217,6 +242,7 @@ def confirm_delete_kb() -> InlineKeyboardMarkup:
     )
 
 
+@lru_cache(maxsize=64)
 def support_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -253,6 +279,7 @@ def support_reply_kb(tg_id: int, ticket_id: int | None = None) -> InlineKeyboard
 _BADGE_PAGE_SIZE = 10
 
 
+@lru_cache(maxsize=64)
 def badges_kb(total: int) -> InlineKeyboardMarkup:
     """Клавиатура раздела Артефакты — коллекция полученных значков."""
     return InlineKeyboardMarkup(
@@ -306,6 +333,7 @@ def badge_detail_kb() -> InlineKeyboardMarkup:
 
 # ===== АДМИН-ПАНЕЛЬ =====
 
+@lru_cache(maxsize=64)
 def admin_menu_kb() -> InlineKeyboardMarkup:
     """Главное меню админ-панели."""
     return InlineKeyboardMarkup(
@@ -321,6 +349,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
     )
 
 
+@lru_cache(maxsize=32)
 def back_kb() -> InlineKeyboardMarkup:
     """Кнопка «Назад» в главное меню админ-панели."""
     return InlineKeyboardMarkup(
