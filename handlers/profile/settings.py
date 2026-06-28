@@ -26,9 +26,11 @@ async def show_settings(message: Message) -> None:
         return
     active = bool(user.get("active"))
     await message.answer(f"{EMOJI.SETTINGS} Настройки", reply_markup=settings_kb(active))
-    # Fire-and-forget: HIDE_MENU не блокирует ответ
-    from services.async_utils import fire as _fire
-    _fire(message.answer("👆 Настройки", reply_markup=HIDE_MENU))
+    # FIX: await directly instead of fire-and-forget
+    try:
+        await message.answer("👆 Настройки", reply_markup=HIDE_MENU)
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:back")

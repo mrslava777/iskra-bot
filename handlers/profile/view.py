@@ -14,7 +14,6 @@ import repositories.photo_repo as photo_repo
 from data.constants import MenuText, Message, Format
 from data.enums import Command as Cmd
 from keyboards import profile_kb, HIDE_MENU
-from services.async_utils import fire as _fire
 from services.profile_formatter import format_profile_async
 from services.badge_service import check_and_award
 from services.badge_formatter import format_badge_card
@@ -47,8 +46,16 @@ async def show_my_profile(message: Message) -> None:
     except Exception:
         await message.answer(caption, reply_markup=kb)
 
-    # Fire-and-forget: HIDE_MENU и badge-уведомления не блокируют ответ
-    _fire(message.answer("👆 Твоя анкета", reply_markup=HIDE_MENU))
+    # Send HIDE_MENU and badge notifications sequentially but non-blocking to user flow
+    # FIX: message.answer() in aiogram 3.x returns SendMessage object, not a coroutine
+    # We must await it directly, not pass to fire()
+    try:
+        await message.answer("👆 Твоя анкета", reply_markup=HIDE_MENU)
+    except Exception:
+        pass
 
     for badge in new_badges:
-        _fire(message.answer(format_badge_card(badge, is_new=True)))
+        try:
+            await message.answer(format_badge_card(badge, is_new=True))
+        except Exception:
+            pass
