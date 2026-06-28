@@ -2,6 +2,7 @@
 
 FIX: добавлен обработчик callback set:support — раньше кнопка не работала.
 FIX: единая логика меню — при входе в раздел показывается HIDE_MENU.
+FIX: unterminated f-string literals (line 112).
 """
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -108,6 +109,7 @@ async def on_support_from_settings(call: CallbackQuery, state: FSMContext) -> No
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.DELETE.value}")
 async def on_delete_account(call: CallbackQuery) -> None:
     """Запрашивает подтверждение удаления."""
+    # FIX: unterminated f-string — use \n instead of literal newlines
     await call.message.edit_text(
         f"{EMOJI.REPORT} <b>Удалить аккаунт?</b>\n\nВсе данные будут безвозвратно удалены.",
         reply_markup=confirm_delete_kb(),
