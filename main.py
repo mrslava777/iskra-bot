@@ -1,17 +1,40 @@
-"""Главный файл бота Искра."""
+"""Главный файл бота Искра — Webhook mode для Railway."""
 import asyncio
 import logging
+import os
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import BOT_TOKEN
 from database.connection import close_db_pool
 from handlers import setup_routers
-from health import start_health_server, stop_health_server
+from health import _health_handler, _ready_handler
 
 logging.basicConfig(level=logging.INFO)
+
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
+PORT = int(os.getenv("PORT", "8080"))
+
+
+async def on_startup(bot: Bot) -> None:
+    """Устанавливаем webhook при старте."""
+    if WEBHOOK_HOST:
+        webhook_url = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+        await bot.set_webhook(webhook_url)
+        logging.info("Webhook установлен: %s", webhook_url)
+    else:
+        logging.warning("WEBHOOK_HOST не задан, webhook не установлен")
+
+
+async def on_shutdown(bot: Bot) -> None:
+    """Удаляем webhook при остановке."""
+    await bot.delete_webhook()
+    logging.info("Webhook удалён")
 
 
 async def main() -> None:
@@ -22,26 +45,42 @@ async def main() -> None:
     root_router = setup_routers()
     dp.include_router(root_router)
 
-    # Запускаем health-сервер и polling ПАРАЛЛЕЛЬНО
-    # Railway ждёт, что приложение не завершится
-    health_task = asyncio.create_task(start_health_server())
+    # Регистрируем startup/shutdown
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
 
-    # Даём Railway время увидеть открытый порт
-    await asyncio.sleep(2)
+    # Создаём aiohttp приложение
+    app = web.Application()
 
-    try:
-        # polling — основной процесс, блокирует main()
-        await dp.start_polling(bot)
-    finally:
-        health_task.cancel()
-        try:
-            await health_task
-        except asyncio.CancelledError:
-            pass
-        await stop_health_server()
-        await bot.session.close()
-        await close_db_pool()
+    # Health endpoints для Railway
+    app.router.add_get("/health", _health_handler)
+    app.router.add_get("/ready", _ready_handler)
+
+    # Webhook endpoint для Telegram
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+
+    # Setup application
+    setup_application(app, dp, bot=bot)
+
+    # Запускаем сервер
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+
+    logging.info("Server started on port %s", PORT)
+
+    # Держим сервер alive
+    while True:
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
