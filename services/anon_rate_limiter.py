@@ -9,14 +9,25 @@ import time
 from collections import deque
 from typing import Deque
 
-from config import ANON_RATE_LIMIT_MSG_PER_MIN
+from config import ANON_RATE_LIMIT_MSG_PER_MIN, MAX_TRACKED_USERS
 from data.constants import AnonChat
+
+# Попытка импортировать prometheus метрики — в тестах/локально библиотеки может не быть
+try:
+    from prometheus_client import Gauge, Counter
+
+    TRACKED_USERS_GAUGE = Gauge("anon_rate_limiter_tracked_users", "Number of tracked users in anon limiter")
+    RATE_LIMIT_DENIED = Counter("anon_rate_limiter_denied_total", "Total number of denied anon messages")
+except Exception:
+    TRACKED_USERS_GAUGE = None
+    RATE_LIMIT_DENIED = None
+
 
 _anon_msg_timestamps: dict[int, Deque[float]] = {}
 _last_cleanup: float = 0.0
 
-# Защита от безграничного роста словаря
-_MAX_TRACKED_USERS = 10_000
+# Защита от безграничного роста словаря (конфиг в config.MAX_TRACKED_USERS)
+_MAX_TRACKED_USERS = MAX_TRACKED_USERS
 
 
 def _cleanup_old_entries() -> None:
@@ -42,6 +53,13 @@ def _cleanup_old_entries() -> None:
 
     _last_cleanup = now
 
+    # Обновляем метрику после очистки
+    try:
+        if TRACKED_USERS_GAUGE is not None:
+            TRACKED_USERS_GAUGE.set(len(_anon_msg_timestamps))
+    except Exception:
+        pass
+
 
 def check_rate_limit(tg_id: int) -> tuple[bool, int]:
     """Проверяет rate limit. Возвращает (allowed, seconds_to_wait)."""
@@ -61,10 +79,23 @@ def check_rate_limit(tg_id: int) -> tuple[bool, int]:
         timestamps = deque(maxlen=ANON_RATE_LIMIT_MSG_PER_MIN)
         _anon_msg_timestamps[tg_id] = timestamps
 
+        # Обновляем метрику после добавления
+        try:
+            if TRACKED_USERS_GAUGE is not None:
+                TRACKED_USERS_GAUGE.set(len(_anon_msg_timestamps))
+        except Exception:
+            pass
+
     while timestamps and now - timestamps[0] >= AnonChat.RATE_LIMIT_WINDOW:
         timestamps.popleft()
 
     if len(timestamps) >= ANON_RATE_LIMIT_MSG_PER_MIN:
+        # метрика отказов
+        try:
+            if RATE_LIMIT_DENIED is not None:
+                RATE_LIMIT_DENIED.inc()
+        except Exception:
+            pass
         wait = int(AnonChat.RATE_LIMIT_WINDOW - (now - timestamps[0]))
         return False, max(1, wait)
 
