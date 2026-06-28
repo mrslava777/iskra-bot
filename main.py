@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import signal
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
@@ -20,6 +21,9 @@ WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 PORT = int(os.getenv("PORT", "8080"))
 
+# Event для graceful shutdown
+_shutdown_event = asyncio.Event()
+
 
 async def on_startup(bot: Bot) -> None:
     """Устанавливаем webhook при старте."""
@@ -35,6 +39,12 @@ async def on_shutdown(bot: Bot) -> None:
     """Удаляем webhook при остановке."""
     await bot.delete_webhook()
     logging.info("Webhook удалён")
+
+
+def _signal_handler(signum: int) -> None:
+    """Обработчик сигналов SIGINT/SIGTERM для graceful shutdown."""
+    logging.info("Получен сигнал %s, начинаем graceful shutdown...", signal.Signals(signum).name)
+    _shutdown_event.set()
 
 
 async def main() -> None:
@@ -63,8 +73,21 @@ async def main() -> None:
     )
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
 
-    # Setup application
+    # Setup application (регистрирует startup/shutdown хуки aiogram в aiohttp)
     setup_application(app, dp, bot=bot)
+
+    # Регистрируем cleanup_ctx для graceful shutdown БД
+    async def _db_cleanup_ctx(_app: web.Application):
+        yield
+        logging.info("Закрываю пул соединений с БД...")
+        await close_db_pool()
+
+    app.cleanup_ctx.append(_db_cleanup_ctx)
+
+    # Регистрируем обработчики сигналов
+    loop = asyncio.get_running_loop()
+    for signame in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(signame, _signal_handler, signame)
 
     # Запускаем сервер
     runner = web.AppRunner(app)
@@ -74,13 +97,14 @@ async def main() -> None:
 
     logging.info("Server started on port %s", PORT)
 
-    # Держим сервер alive
-    while True:
-        await asyncio.sleep(3600)
+    # Ждём сигнала завершения вместо бесконечного цикла
+    try:
+        await _shutdown_event.wait()
+    finally:
+        logging.info("Останавливаю сервер...")
+        await runner.cleanup()
+        logging.info("Сервер остановлен")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())

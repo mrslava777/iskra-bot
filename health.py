@@ -11,11 +11,12 @@ log = logging.getLogger("iskra.health")
 
 _app: web.Application | None = None
 _runner: web.AppRunner | None = None
+_shutdown_event: asyncio.Event | None = None
 
 
 async def start_health_server() -> None:
-    """Запускает health-сервер и держит его alive."""
-    global _app, _runner
+    """Запускает health-сервер и держит его alive до получения сигнала остановки."""
+    global _app, _runner, _shutdown_event
 
     port = int(os.getenv("PORT", str(Health.PORT)))
     _app = web.Application()
@@ -28,14 +29,19 @@ async def start_health_server() -> None:
     await site.start()
     log.info("Health server started on port %s", port)
 
-    # Держим сервер alive — Railway не убьёт контейнер
-    while True:
-        await asyncio.sleep(60)
+    # Ждём сигнала остановки вместо бесконечного цикла
+    _shutdown_event = asyncio.Event()
+    try:
+        await _shutdown_event.wait()
+    finally:
+        log.info("Health server shutting down...")
 
 
 async def stop_health_server() -> None:
-    """Graceful shutdown."""
-    global _runner
+    """Graceful shutdown — сигнализирует серверу остановиться."""
+    global _runner, _shutdown_event
+    if _shutdown_event is not None:
+        _shutdown_event.set()
     if _runner is not None:
         await _runner.cleanup()
         _runner = None
