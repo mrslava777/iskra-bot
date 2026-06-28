@@ -1,4 +1,9 @@
-"""Регистрация анкеты (FSM) и /start."""
+"""Регистрация анкеты (FSM) и /start.
+
+PERF: _finish_registration параллелизирует загрузку user + photo_count + badges.
+"""
+import asyncio
+
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -16,6 +21,15 @@ from states import Reg
 
 router = Router()
 
+
+async def _safe_touch(tg_id: int) -> None:
+    """Fire-and-forget touch_activity с перехватом ошибок."""
+    try:
+        await user_repo.touch_activity(tg_id)
+    except Exception:
+        pass
+
+
 WELCOME = (
     f"{EMOJI.FIRE_MID} <b>Момент</b> — бот знакомств, где важно не только фото.\n\n"
     "Здесь мы считаем <b>совместимость по интересам</b>, подсказываем, "
@@ -29,7 +43,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = await user_repo.get_user(message.from_user.id)
     if user and user["name"] and user["photo_id"]:
-        await user_repo.touch_activity(message.from_user.id)
+        # touch_activity — fire-and-forget, не блокирует ответ
+        asyncio.create_task(_safe_touch(message.from_user.id))
         await message.answer(Message.WELCOME_BACK, reply_markup=MAIN_MENU)
         return
     await message.answer(WELCOME)
@@ -184,11 +199,14 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
 
 async def _finish_registration(message: Message, user_id: int, state: FSMContext) -> None:
     await state.clear()
-    user = await user_repo.get_user(user_id)
-    n_photos = await photo_repo.photo_count(user_id)
-    photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
 
-    new_badges = await check_and_award(user_id)
+    # Параллельно: user + photo_count + badges
+    user, n_photos, new_badges = await asyncio.gather(
+        user_repo.get_user(user_id),
+        photo_repo.photo_count(user_id),
+        check_and_award(user_id),
+    )
+    photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
 
     await message.answer_photo(
         photo=user["photo_id"],

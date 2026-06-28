@@ -1,8 +1,7 @@
 """Уведомления о симпатиях и мэтчах.
 
-FIX: announce_match параллелизирует check_and_award для обоих пользователей.
-FIX: announce_match загружает пользователей параллельно через asyncio.gather.
-FIX: добавлено логирование ошибок доставки вместо pass.
+PERF: notify_liked загружает обоих пользователей параллельно.
+PERF: announce_match параллелизирует все DB-операции.
 """
 import asyncio
 import logging
@@ -19,11 +18,16 @@ log = logging.getLogger("iskra.notification")
 
 
 async def notify_liked(bot: Bot, viewer_id: int, target_id: int, with_message: bool = False) -> None:
-    """Сообщает цели о входящей симпатии (без раскрытия личности)."""
-    target = await user_repo.get_user(target_id)
+    """Сообщает цели о входящей симпатии (без раскрытия личности).
+
+    PERF: загружает обоих пользователей параллельно через asyncio.gather.
+    """
+    target, me = await asyncio.gather(
+        user_repo.get_user(target_id),
+        user_repo.get_user(viewer_id),
+    )
     if not target or not target["active"] or target["is_banned"]:
         return
-    me = await user_repo.get_user(viewer_id)
     if not me:
         return
     pct = compatibility(me["interests"], target["interests"])
@@ -43,23 +47,20 @@ async def notify_liked(bot: Bot, viewer_id: int, target_id: int, with_message: b
 async def announce_match(bot: Bot, a_id: int, b_id: int) -> None:
     """Объявляет мэтч обоим участникам, показывает контакт и значки.
 
-    FIX: параллельная загрузка пользователей и проверка значков
-    через asyncio.gather вместо последовательных вызовов.
+    PERF: все DB-операции параллелизированы — загрузка пользователей,
+    проверка значков и batch-загрузка значков в одном asyncio.gather.
     """
-    # Параллельно загружаем обоих пользователей
-    a, b = await asyncio.gather(
+    # Параллельно: оба пользователя + значки обоих + batch-загрузка значков
+    a, b, new_a, new_b, badges_map = await asyncio.gather(
         user_repo.get_user(a_id),
         user_repo.get_user(b_id),
+        check_and_award(a_id),
+        check_and_award(b_id),
+        get_user_badges_batch([a_id, b_id]),
     )
     if not a or not b:
         return
     ice = icebreaker(a_id + b_id)
-
-    # Параллельно проверяем значки обоих (раньше — последовательно)
-    new_a, new_b = await asyncio.gather(
-        check_and_award(a_id),
-        check_and_award(b_id),
-    )
 
     for uid, new_badges in ((a_id, new_a), (b_id, new_b)):
         for badge in new_badges:
@@ -67,9 +68,6 @@ async def announce_match(bot: Bot, a_id: int, b_id: int) -> None:
                 await bot.send_message(uid, format_badge_card(badge, is_new=True))
             except Exception as e:
                 log.warning("Не удалось отправить значок %s → %d: %s", badge["id"], uid, e)
-
-    # Batch-загрузка значков для обоих пользователей одним запросом
-    badges_map = await get_user_badges_batch([a_id, b_id])
 
     for me, other in ((a, b), (b, a)):
         common = common_interests(a["interests"], b["interests"])

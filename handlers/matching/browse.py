@@ -1,8 +1,9 @@
 """Лента анкет — показ кандидатов, свайпы, жалобы.
 
-FIX: _show_next параллелизирует mark_shown + update_max_compat + photo_count
-     через asyncio.gather вместо последовательных вызовов.
-FIX: добавлено логирование ошибок отправки фото.
+PERF: viewer передаётся в _show_next (не перезапрашивается из БД).
+PERF: touch_activity запускается fire-and-forget (не блокирует ответ).
+PERF: _show_next объединяет все независимые DB-операции в asyncio.gather.
+PERF: badge check в on_swipe запускается параллельно с show_next.
 """
 import asyncio
 import logging
@@ -37,17 +38,27 @@ async def start_browse(message: Message, state: FSMContext) -> None:
     if not user or not user["name"]:
         await message.answer(Msg.CREATE_PROFILE_FIRST)
         return
-    await user_repo.touch_activity(message.from_user.id)
-    await _show_next(message, message.from_user.id)
+    # touch_activity — fire-and-forget, не блокирует ответ пользователю
+    asyncio.create_task(_safe_touch(message.from_user.id))
+    await _show_next(message, message.from_user.id, viewer=user)
 
 
-async def _show_next(message: Message, viewer_id: int) -> None:
+async def _safe_touch(tg_id: int) -> None:
+    """Fire-and-forget touch_activity с перехватом ошибок."""
+    try:
+        await user_repo.touch_activity(tg_id)
+    except Exception:
+        pass
+
+
+async def _show_next(message: Message, viewer_id: int, viewer: dict | None = None) -> None:
     """Показывает следующую анкету в ленте.
 
-    FIX: независимые DB-операции (mark_shown, update_max_compat, photo_count)
-    запускаются параллельно через asyncio.gather.
+    PERF: viewer передаётся из вызывающего кода — экономит 1 DB-запрос.
+    PERF: все независимые операции параллелизированы через asyncio.gather.
     """
-    viewer = await user_repo.get_user(viewer_id)
+    if viewer is None:
+        viewer = await user_repo.get_user(viewer_id)
     cand = await profile_repo.next_candidate(viewer_id, viewer)
     if cand is None:
         await message.answer(Msg.NO_MORE_PROFILES, reply_markup=HIDE_MENU)
@@ -57,13 +68,11 @@ async def _show_next(message: Message, viewer_id: int) -> None:
     pct = compatibility(viewer.get("interests"), cand.get("interests"))
 
     # Параллельно: mark_shown + update_max_compat + photo_count + format_profile
-    mark_task = profile_repo.mark_shown(viewer_id, cand["tg_id"])
-    compat_task = user_repo.update_max_compat(viewer_id, pct)
-    photo_task = photo_repo.photo_count(cand["tg_id"])
-    format_task = format_profile_async(cand, viewer=viewer, show_compat=True, show_badges=True)
-
     _, _, n_photos, caption = await asyncio.gather(
-        mark_task, compat_task, photo_task, format_task,
+        profile_repo.mark_shown(viewer_id, cand["tg_id"]),
+        user_repo.update_max_compat(viewer_id, pct),
+        photo_repo.photo_count(cand["tg_id"]),
+        format_profile_async(cand, viewer=viewer, show_compat=True, show_badges=True),
     )
 
     extra = n_photos > 1
@@ -74,8 +83,6 @@ async def _show_next(message: Message, viewer_id: int) -> None:
     except Exception as e:
         log.debug("Не удалось отправить фото кандидата %d: %s", cand["tg_id"], e)
         await message.answer(caption, reply_markup=kb)
-    # Скрываем меню в ленте
-    await message.answer("👆 Лента анкет", reply_markup=HIDE_MENU)
 
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.SWIPE.value}:"))
@@ -105,14 +112,31 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     is_like = action in (SwipeAction.LIKE.value, SwipeAction.MESSAGE_LIKE.value)
     matched = await like_repo.add_like(viewer_id, target_id, is_like)
 
+    # Уведомления и значки — запускаем параллельно с подготовкой следующей анкеты
+    tasks = []
     if is_like:
-        await notify_liked(bot, viewer_id, target_id, with_message=(action == SwipeAction.MESSAGE_LIKE.value))
+        tasks.append(notify_liked(bot, viewer_id, target_id, with_message=(action == SwipeAction.MESSAGE_LIKE.value)))
     if matched:
-        await announce_match(bot, viewer_id, target_id)
+        tasks.append(announce_match(bot, viewer_id, target_id))
+    tasks.append(check_and_award(viewer_id))
 
-    await _check_badges(call, viewer_id)
+    # Загружаем viewer для следующей анкеты параллельно с уведомлениями
+    viewer_task = user_repo.get_user(viewer_id)
+    tasks.append(viewer_task)
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Новые значки — предпоследний результат (check_and_award)
+    badge_result = results[-2]
+    if isinstance(badge_result, list):
+        for badge in badge_result:
+            await call.message.answer(format_badge_card(badge, is_new=True))
+
     await call.answer(Msg.LIKE_SENT if is_like else Msg.DISLIKE_SENT)
-    await _show_next(call.message, viewer_id)
+
+    # Viewer из параллельной загрузки
+    viewer = results[-1] if not isinstance(results[-1], Exception) else None
+    await _show_next(call.message, viewer_id, viewer=viewer)
 
 
 async def _handle_photos(call: CallbackQuery, target_id: int) -> None:
@@ -132,14 +156,13 @@ async def _handle_photos(call: CallbackQuery, target_id: int) -> None:
 
 async def _handle_report(call: CallbackQuery, viewer_id: int, target_id: int) -> None:
     """Обрабатывает жалобу на пользователя."""
-    await settings_repo.add_report(viewer_id, target_id)
-    await _check_badges(call, viewer_id)
-    await call.answer(Msg.REPORT_SENT)
-    await _show_next(call.message, viewer_id)
-
-
-async def _check_badges(call: CallbackQuery, viewer_id: int) -> None:
-    """Проверяет и показывает новые значки."""
-    new_badges = await check_and_award(viewer_id)
+    # Параллельно: жалоба + проверка значков + загрузка viewer
+    _, new_badges, viewer = await asyncio.gather(
+        settings_repo.add_report(viewer_id, target_id),
+        check_and_award(viewer_id),
+        user_repo.get_user(viewer_id),
+    )
     for badge in new_badges:
         await call.message.answer(format_badge_card(badge, is_new=True))
+    await call.answer(Msg.REPORT_SENT)
+    await _show_next(call.message, viewer_id, viewer=viewer)

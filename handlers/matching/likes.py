@@ -1,4 +1,10 @@
-"""Входящие симпатии — просмотр и ответ на лайки."""
+"""Входящие симпатии — просмотр и ответ на лайки.
+
+PERF: viewer загружается один раз и передаётся дальше.
+PERF: badge check параллелизирован с загрузкой следующей анкеты.
+"""
+import asyncio
+
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, Message
 
@@ -28,8 +34,6 @@ async def show_incoming(message: Message) -> None:
         return
     await message.answer(Format.INCOMING_LIKES.format(len(rows)))
     await _show_incoming(message, rows[0], user)
-    # Скрываем меню
-    await message.answer("👆 Входящие лайки", reply_markup=HIDE_MENU)
 
 
 async def _show_incoming(message: Message, candidate: dict, viewer: dict) -> None:
@@ -64,25 +68,19 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
         await like_repo.add_like(viewer_id, target_id, False)
         await call.answer(Message.DISLIKE_SENT)
 
-    await _check_badges(call, viewer_id)
-    await _show_next_incoming(call.message, viewer_id)
-
-
-async def _show_next_incoming(message: Message, viewer_id: int) -> None:
-    """Показывает следующую входящую анкету."""
-    user = await user_repo.get_user(viewer_id)
-    rows = await like_repo.incoming_likes(viewer_id)
-    if not rows:
-        await message.answer("Это были все входящие симпатии ✨", reply_markup=HIDE_MENU)
-        return
-    await _show_incoming(message, rows[0], user)
-
-
-async def _check_badges(call: CallbackQuery, viewer_id: int) -> None:
-    """Проверяет и показывает новые значки."""
-    new_badges = await check_and_award(viewer_id)
+    # Параллельно: значки + загрузка данных для следующей анкеты
+    new_badges, user, rows = await asyncio.gather(
+        check_and_award(viewer_id),
+        user_repo.get_user(viewer_id),
+        like_repo.incoming_likes(viewer_id),
+    )
     for badge in new_badges:
         await call.message.answer(format_badge_card(badge, is_new=True))
+
+    if not rows:
+        await call.message.answer("Это были все входящие симпатии ✨", reply_markup=HIDE_MENU)
+        return
+    await _show_incoming(call.message, rows[0], user)
 
 
 @router.callback_query(F.data == "open_likes")

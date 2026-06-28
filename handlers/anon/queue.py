@@ -1,7 +1,8 @@
 """Очередь анонимного чата — поиск, отмена, подключение.
 
-FIX: добавлено логирование ошибок доставки вместо silent pass.
+PERF: touch_activity — fire-and-forget, не блокирует ответ.
 """
+import asyncio
 import logging
 
 from aiogram import Bot, F, Router
@@ -21,6 +22,14 @@ log = logging.getLogger("iskra.anon.queue")
 INTRO = Message.BLIND_DATE_INTRO
 
 
+async def _safe_touch(tg_id: int) -> None:
+    """Fire-and-forget touch_activity с перехватом ошибок."""
+    try:
+        await user_repo.touch_activity(tg_id)
+    except Exception:
+        pass
+
+
 @router.message(F.text == MenuText.BLIND_DATE)
 async def blind_date(message: Message, state: FSMContext, bot: Bot) -> None:
     """Обработчик входа в анонимный чат."""
@@ -29,7 +38,8 @@ async def blind_date(message: Message, state: FSMContext, bot: Bot) -> None:
         await message.answer(Message.CREATE_PROFILE_FIRST)
         return
     await state.clear()
-    await user_repo.touch_activity(message.from_user.id)
+    # touch_activity — fire-and-forget, не блокирует
+    asyncio.create_task(_safe_touch(message.from_user.id))
 
     status, partner = await anon_repo.anon_find_or_queue(message.from_user.id)
 
