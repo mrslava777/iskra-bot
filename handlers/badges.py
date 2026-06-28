@@ -95,7 +95,6 @@ async def cmd_badges(message: Message) -> None:
     badges = await get_user_badges(message.from_user.id)
     await message.answer(_format_collection(badges), reply_markup=badges_kb(len(badges)))
     # Скрываем полное меню
-    await message.answer("👆 Артефакты", reply_markup=HIDE_MENU)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.COLLECTION.value}")
