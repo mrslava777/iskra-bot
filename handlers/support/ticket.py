@@ -35,9 +35,11 @@ async def cmd_support(message: Message, state: FSMContext) -> None:
         ]
     )
     await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>\nС чем у вас возникла проблема?", reply_markup=kb)
-    # Fire-and-forget: HIDE_MENU не блокирует ответ
-    from services.async_utils import fire as _fire
-    _fire(message.answer("👆 Поддержка", reply_markup=HIDE_MENU))
+    # FIX: await directly instead of fire-and-forget with message.answer()
+    try:
+        await message.answer("👆 Поддержка", reply_markup=HIDE_MENU)
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == CallbackPrefix.SUPPORT.with_param("back"))
