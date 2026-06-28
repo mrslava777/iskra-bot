@@ -74,8 +74,6 @@ async def upsert_user(
     photo_id: Optional[str] = None,
     active: Optional[int] = None,
     verified: Optional[int] = None,
-    daily_q: Optional[int] = None,
-    daily_a: Optional[str] = None,
     min_age: Optional[int] = None,
     max_age: Optional[int] = None,
 ) -> None:
@@ -84,7 +82,7 @@ async def upsert_user(
         await conn.execute(
             """
             INSERT INTO users (tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, daily_q, daily_a, min_age, max_age, created_at, last_active, streak, rating, anon_messages_count)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, 1), COALESCE($12, 0), COALESCE($13, 0), COALESCE($14, ''), COALESCE($15, 18), COALESCE($16, 99), EXTRACT(EPOCH FROM NOW())::INTEGER, EXTRACT(EPOCH FROM NOW())::INTEGER, 0, 0, 0)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, 1), COALESCE($12, 0), 0, '', COALESCE($13, 18), COALESCE($14, 99), EXTRACT(EPOCH FROM NOW())::INTEGER, EXTRACT(EPOCH FROM NOW())::INTEGER, 0, 0, 0)
             ON CONFLICT (tg_id) DO UPDATE SET
                 username = COALESCE($2, users.username),
                 name = COALESCE($3, users.name),
@@ -97,13 +95,11 @@ async def upsert_user(
                 photo_id = COALESCE($10, users.photo_id),
                 active = COALESCE($11, users.active),
                 verified = COALESCE($12, users.verified),
-                daily_q = COALESCE($13, users.daily_q),
-                daily_a = COALESCE($14, users.daily_a),
-                min_age = COALESCE($15, users.min_age),
-                max_age = COALESCE($16, users.max_age),
+                min_age = COALESCE($13, users.min_age),
+                max_age = COALESCE($14, users.max_age),
                 last_active = EXTRACT(EPOCH FROM NOW())::INTEGER
             """,
-            tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, daily_q, daily_a, min_age, max_age,
+            tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, min_age, max_age,
         )
 
 

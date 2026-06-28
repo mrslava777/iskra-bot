@@ -70,9 +70,8 @@ def _check_profile_complete(user, stats):
         user["city"],
         user["bio"],
         user["interests"],
-        user["daily_a"],
     ]
-    return sum(1 for c in checks if c) >= 5
+    return sum(1 for c in checks if c) >= 4
 
 
 def _check_photographer(user, stats):
@@ -102,7 +101,7 @@ BADGES: list[BadgeDef] = [
     {
         "id": "profile_complete",
         "name": "Открытая книга",
-        "description": "Заполни 5 из 6 полей анкеты",
+        "description": "Заполни 4 из 5 полей анкеты",
         "icon": "📖",
         "rarity": "common",
         "condition": _check_profile_complete,

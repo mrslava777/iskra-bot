@@ -68,12 +68,12 @@ class SupportCategory(Enum):
     @property
     def display_name(self) -> str:
         from data.constants import SUPPORT_CATEGORY_NAMES
-        return SUPPORT_CATEGORY_NAMES[self]
+        return SUPPORT_CATEGORY_NAMES.get(self.value)
 
     @property
     def description(self) -> str:
         from data.constants import SUPPORT_CATEGORY_DESCRIPTIONS
-        return SUPPORT_CATEGORY_DESCRIPTIONS[self]
+        return SUPPORT_CATEGORY_DESCRIPTIONS.get(self.value)
 
 
 class CallbackPrefix(Enum):

@@ -22,10 +22,7 @@ from services.profile_formatter import format_profile_async
 router = Router()
 
 
-def _fire(coro) -> None:
-    """Запускает корутину fire-and-forget с перехватом ошибок."""
-    task = asyncio.create_task(coro)
-    task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
+from services.async_utils import fire as _fire  # noqa: E302
 
 
 @router.message(F.text == MenuText.LIKES_INBOX)

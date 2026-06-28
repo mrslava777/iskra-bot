@@ -1,5 +1,5 @@
 """Settings/Admin repository — операции админ-панели, статистики, жалоб, банов."""
-from database.connection import db, get_single_db
+from database.connection import db
 
 
 # ── Statistics ────────────────────────────────────────────────────

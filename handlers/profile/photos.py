@@ -91,3 +91,7 @@ async def on_photo_received(message: Message, state: FSMContext) -> None:
             Format.PHOTO_ADDED.format(count, Photo.MAX_TOTAL),
             reply_markup=MAIN_MENU,
         )
+    else:
+        # Неизвестное действие — сбрасываем состояние
+        await state.clear()
+        await message.answer(Message.SEND_PHOTO, reply_markup=MAIN_MENU)

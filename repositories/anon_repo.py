@@ -64,15 +64,16 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
         if row:
             return "waiting", None
 
-        # Ищем любого другого ожидающего.
-        row = await conn.fetchrow(
-            "SELECT tg_id FROM anon_queue WHERE tg_id != $1 ORDER BY queued_at ASC LIMIT 1",
-            tg_id,
-        )
-        if row:
-            partner = row["tg_id"]
-            # Атомарно: удаляем обоих из очереди и создаём сессию
-            async with conn.transaction():
+        # Ищем любого другого ожидающего — атомарно с удалением и созданием сессии.
+        # SELECT + DELETE + INSERT в одной транзакции с FOR UPDATE SKIP LOCKED
+        # предотвращает race condition при одновременном подборе одного партнёра.
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT tg_id FROM anon_queue WHERE tg_id != $1 ORDER BY queued_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED",
+                tg_id,
+            )
+            if row:
+                partner = row["tg_id"]
                 await conn.execute(
                     "DELETE FROM anon_queue WHERE tg_id IN ($1, $2)",
                     tg_id, partner,
@@ -84,7 +85,7 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
                     """,
                     tg_id, partner,
                 )
-            return "matched", partner
+                return "matched", partner
 
         # Никого нет — встаём в очередь.
         await conn.execute(

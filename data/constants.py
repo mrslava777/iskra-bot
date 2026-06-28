@@ -18,7 +18,6 @@ class Length:
     NAME = 32
     CITY = 48
     BIO = 300
-    DAILY_ANSWER = 200
     TICKET_TEXT = 1000
 
 
@@ -46,8 +45,8 @@ class Interest:
 # ═══════════════════════════════════════════════════════════════════════════════
 class Profile:
     """Константы профиля."""
-    COMPLETE_FIELDS_COUNT = 6
-    COMPLETE_THRESHOLD = 5
+    COMPLETE_FIELDS_COUNT = 5
+    COMPLETE_THRESHOLD = 4
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -182,15 +181,6 @@ class Verification:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ВОПРОС ДНЯ
-# ═══════════════════════════════════════════════════════════════════════════════
-class DailyQuestion:
-    """Константы вопроса дня."""
-    COUNT = 20
-    SECONDS_PER_DAY = 86400
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # EMOJI
 # ═══════════════════════════════════════════════════════════════════════════════
 class EMOJI:
@@ -210,8 +200,6 @@ class EMOJI:
     LOCATION = "📍"
     INTERESTS = "🏷"
     BIO = "📝"
-    DAILY_QUESTION = "🎯"
-    DAILY_ANSWER = "💭"
 
     # Огонь / рейтинг
     FIRE_LOW = "✨"
@@ -440,8 +428,6 @@ class Message:
     )
     VERIFICATION_REMOVED = "ℹ️ Ваша верификация была снята администратором."
     ACCOUNT_DELETED = "🗑 Аккаунт удалён. До встречи! 👋"
-    DAILY_SAVED = "✅ Ответ сохранён! Теперь он виден в твоей анкете."
-    DAILY_DELETED = "🗑 Ответ на вопрос дня удалён."
     NO_BADGES = (
         "🏆 У тебя пока нет артефактов.\n"
         "Активничай в боте — и они появятся!"
@@ -461,7 +447,6 @@ class Defaults:
     """Значения по умолчанию для полей БД."""
     STREAK = 0
     RATING = 0
-    DAILY_Q = 0
     ANON_MESSAGES = 0
     ACTIVE = True
     VERIFIED = False
@@ -475,7 +460,6 @@ class Defaults:
     AGE = None
     GENDER = None
     SEEKING = None
-    DAILY_A = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -563,7 +547,6 @@ class Format:
     )
     PROFILE_NAME_AGE = "<b>{}</b>{}, {} {}  •  {} {}"
     PROFILE_INTERESTS = "\n🏷 {}"
-    PROFILE_DAILY = "\n💭 <i>{}</i>\n— {}"
     PROFILE_BIO = "\n📝 {}"
     PROFILE_RATING = "\n{}  Симпатий: {}"
     PROFILE_COMPAT = "\n💞 Совместимость: <b>{}%</b>\n{}"

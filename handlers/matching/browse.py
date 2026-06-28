@@ -29,10 +29,7 @@ router = Router()
 log = logging.getLogger("iskra.browse")
 
 
-def _fire(coro) -> None:
-    """Запускает корутину fire-and-forget с перехватом ошибок."""
-    task = asyncio.create_task(coro)
-    task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
+from services.async_utils import fire as _fire  # noqa: E302
 
 
 async def _fire_badges(tg_id: int, message: Message) -> None:

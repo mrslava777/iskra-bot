@@ -1,10 +1,7 @@
 """Расчёт совместимости по интересам — чистая функция, без зависимостей от БД.
 
-FIX: import time вынесен на уровень модуля (раньше внутри функции).
-FIX: _compat_cache защищён asyncio.Lock от конкурентного повреждения.
 FIX: compat_bar() приведён к единому алгоритму с _mini_bar().
 """
-import asyncio
 import time
 from collections import OrderedDict
 
@@ -13,7 +10,6 @@ from data.constants import Compatibility, ProgressBar, FireRating, EMOJI
 from data.enums import Gender
 
 _compat_cache: OrderedDict[tuple[str | None, str | None], tuple[int, float]] = OrderedDict()
-_cache_lock = asyncio.Lock()
 
 
 def parse_interests(raw: str | None) -> list[int]:

@@ -1,2 +1,2 @@
-"""Database package — connection and schema."""
-from database.connection import db, get_single_db, close_db_pool
+"""Database package — connection pool."""
+from database.connection import db, close_db_pool

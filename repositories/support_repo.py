@@ -1,7 +1,7 @@
 """Репозиторий тикетов поддержки."""
 from typing import Optional
 
-from database.connection import db, get_single_db
+from database.connection import db
 
 
 async def create_ticket(

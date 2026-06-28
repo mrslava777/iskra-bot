@@ -38,6 +38,18 @@ async def cmd_support(message: Message, state: FSMContext) -> None:
     await message.answer("👆 Поддержка", reply_markup=HIDE_MENU)
 
 
+@router.callback_query(F.data == CallbackPrefix.SUPPORT.with_param("back"))
+async def on_support_back(call: CallbackQuery, state: FSMContext) -> None:
+    """Кнопка «Назад» из меню поддержки — возврат в главное меню."""
+    await state.clear()
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+    await call.answer()
+
+
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.SUPPORT.value}:"))
 async def on_support_category(call: CallbackQuery, state: FSMContext) -> None:
     """Обработчик выбора категории."""
