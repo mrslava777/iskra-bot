@@ -399,7 +399,7 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
     for table, col_name, new_type, default_val in type_migrations:
         try:
             row = await conn.fetchrow(
-                """SELECT data_type FROM information_schema.columns 
+                """SELECT data_type FROM information_schema.columns
                 WHERE table_name = $1 AND column_name = $2""",
                 table, col_name
             )
@@ -408,7 +408,8 @@ async def _migrate_types(conn: asyncpg.Connection) -> None:
                     f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
                 )
                 await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type}                     USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
+                    f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} \
+                    USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
                 )
                 if default_val != "NULL":
                     await conn.execute(
