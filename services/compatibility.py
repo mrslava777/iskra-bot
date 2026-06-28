@@ -1,4 +1,5 @@
 """Расчёт совместимости по интересам — чистая функция, без зависимостей от БД."""
+import asyncio
 from collections import OrderedDict
 
 from data.content import INTERESTS
@@ -6,6 +7,7 @@ from data.constants import Compatibility, ProgressBar, FireRating, EMOJI
 from data.enums import Gender
 
 _compat_cache: OrderedDict[tuple[str | None, str | None], tuple[int, float]] = OrderedDict()
+_cache_lock = asyncio.Lock()
 
 
 def parse_interests(raw: str | None) -> list[int]:
@@ -28,18 +30,19 @@ def interests_text(raw: str | None) -> str:
     return " ".join(INTERESTS[i] for i in idx)
 
 
-def compatibility(a_raw: str | None, b_raw: str | None) -> int:
+async def compatibility(a_raw: str | None, b_raw: str | None) -> int:
     """Процент совместимости по общим интересам (Жаккар + бонус)."""
     import time
     now = time.time()
     cache_key = (a_raw, b_raw)
 
-    if cache_key in _compat_cache:
-        cached_val, cached_at = _compat_cache[cache_key]
-        if now - cached_at < Compatibility.CACHE_TTL:
-            _compat_cache.move_to_end(cache_key)
-            return cached_val
-        del _compat_cache[cache_key]
+    async with _cache_lock:
+        if cache_key in _compat_cache:
+            cached_val, cached_at = _compat_cache[cache_key]
+            if now - cached_at < Compatibility.CACHE_TTL:
+                _compat_cache.move_to_end(cache_key)
+                return cached_val
+            del _compat_cache[cache_key]
 
     a = set(parse_interests(a_raw))
     b = set(parse_interests(b_raw))
@@ -54,9 +57,10 @@ def compatibility(a_raw: str | None, b_raw: str | None) -> int:
             pct = min(Compatibility.MAX, pct + Compatibility.BONUS)
         result = max(Compatibility.MIN, min(Compatibility.MAX, pct))
 
-    _compat_cache[cache_key] = (result, now)
-    if len(_compat_cache) > Compatibility.MAX_CACHE_SIZE:
-        _compat_cache.popitem(last=False)
+    async with _cache_lock:
+        _compat_cache[cache_key] = (result, now)
+        if len(_compat_cache) > Compatibility.MAX_CACHE_SIZE:
+            _compat_cache.popitem(last=False)
     return result
 
 
