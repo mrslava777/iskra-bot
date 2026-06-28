@@ -1,5 +1,5 @@
 """Репозиторий для операций со значками."""
-from database.connection import db, get_single_db
+from database.connection import db
 
 
 async def get_user_badge_ids(tg_id: int) -> set[str]:
@@ -10,6 +10,28 @@ async def get_user_badge_ids(tg_id: int) -> set[str]:
             tg_id,
         )
         return {r["badge_id"] for r in rows}
+
+
+async def get_user_badge_ids_batch(tg_ids: list[int]) -> dict[int, set[str]]:
+    """Возвращает ID значков для нескольких пользователей одним запросом.
+
+    Оптимизация: вместо N запросов get_user_badge_ids() — один batch-запрос.
+    """
+    if not tg_ids:
+        return {}
+    async with db() as conn:
+        placeholders = ",".join(f"${i+1}" for i in range(len(tg_ids)))
+        rows = await conn.fetch(
+            f"SELECT tg_id, badge_id FROM user_badges WHERE tg_id IN ({placeholders})",
+            *tg_ids,
+        )
+        result: dict[int, set[str]] = {}
+        for r in rows:
+            uid = r["tg_id"]
+            if uid not in result:
+                result[uid] = set()
+            result[uid].add(r["badge_id"])
+        return result
 
 
 async def award_badge(tg_id: int, badge_id: str, awarded_at: int) -> None:
