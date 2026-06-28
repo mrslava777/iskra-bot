@@ -6,12 +6,18 @@ log = logging.getLogger("iskra.async_utils")
 
 
 def fire(coro) -> None:
-    """Fire-and-forget: запускает корутину без ожидания результата.
+    """Fire-and-forget: запускает корутину или awaitable без ожидания результата.
 
-    Ошибки логируются, но не пробрасываются.
-    Используется для неблокирующих побочных операций (уведомления, значки, статистика).
+    FIX: aiogram 3.x message.answer() возвращает Method object (SendMessage),
+    который нужно await'ить. Принимаем любой Awaitable и оборачиваем в корутину.
     """
-    task = asyncio.create_task(coro)
+    if asyncio.iscoroutine(coro):
+        task = asyncio.create_task(coro)
+    else:
+        # aiogram 3.x methods return objects that need to be awaited
+        async def _wrapper():
+            return await coro
+        task = asyncio.create_task(_wrapper())
     task.add_done_callback(_handle_fire_exception)
 
 
