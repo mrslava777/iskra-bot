@@ -3,6 +3,9 @@
 PERF v4: notify_liked/announce_match — fire-and-forget (viewer не ждёт чужие уведомления).
 PERF v4: update_max_compat — fire-and-forget (не влияет на отображение).
 PERF v4: check_and_award — fire-and-forget с авто-отправкой значков.
+PERF v5: next_candidate_full — batch-загружает photo_count + badge_ids в 1 запросе.
+PERF v5: call.answer() ДО edit_reply_markup — убирает воспринимаемую задержку.
+PERF v5: badges отправляются параллельно.
 """
 import asyncio
 import logging
@@ -12,10 +15,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InputMediaPhoto, Message
 
 import repositories.like_repo as like_repo
-import repositories.photo_repo as photo_repo
 import repositories.profile_repo as profile_repo
 import repositories.settings_repo as settings_repo
 import repositories.user_repo as user_repo
+from badges import BADGE_BY_ID
 from data.constants import EMOJI, MenuText, Message as Msg
 from data.enums import CallbackPrefix, SwipeAction
 from keyboards import MAIN_MENU, HIDE_MENU, browse_kb
@@ -30,11 +33,23 @@ log = logging.getLogger("iskra.browse")
 
 
 async def _fire_badges(tg_id: int, message: Message) -> None:
-    """Fire-and-forget: проверяет значки и отправляет уведомления."""
+    """Fire-and-forget: проверяет значки и отправляет уведомления параллельно."""
     try:
         new_badges = await check_and_award(tg_id)
-        for badge in new_badges:
-            await message.answer(format_badge_card(badge, is_new=True))
+        if new_badges:
+            # FIX v5: отправляем значки параллельно, а не последовательно
+            await asyncio.gather(*[
+                message.answer(format_badge_card(b, is_new=True))
+                for b in new_badges
+            ], return_exceptions=True)
+    except Exception:
+        pass
+
+
+async def _safe_edit_markup(message: Message) -> None:
+    """Fire-and-forget: убирает клавиатуру в фоне."""
+    try:
+        await message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
 
@@ -58,15 +73,15 @@ async def start_browse(message: Message, state: FSMContext) -> None:
 async def _show_next(message: Message, viewer_id: int, viewer: dict | None = None) -> None:
     """Показывает следующую анкету в ленте.
 
-    PERF: CTE объединяет next_candidate + mark_shown в 1 SQL-запрос.
-    PERF: update_max_compat — fire-and-forget (не влияет на отображение).
-    PERF: format + photo_count — единственный блокирующий gather.
+    PERF v5: next_candidate_full — 1 SQL-запрос вместо 3.
+    Было: next_candidate_and_mark + photo_count + get_user_badges = 3 запроса.
+    Стало: next_candidate_full = 1 запрос (с photo_count + badge_ids в CTE).
     """
     if viewer is None:
         viewer = await user_repo.get_user(viewer_id)
 
-    # CTE: находим кандидата И отмечаем как показанного — 1 запрос вместо 2
-    cand = await profile_repo.next_candidate_and_mark(viewer_id, viewer)
+    # FIX v5: batch-загружаем всё за 1 запрос
+    cand = await profile_repo.next_candidate_full(viewer_id, viewer)
     if cand is None:
         await message.answer(Msg.NO_MORE_PROFILES, reply_markup=HIDE_MENU)
         return
@@ -75,17 +90,20 @@ async def _show_next(message: Message, viewer_id: int, viewer: dict | None = Non
     pct = compatibility(viewer.get("interests"), cand.get("interests"))
 
     # update_max_compat — fire-and-forget (не критично для ответа)
-    # FIX: create_task for actual coroutine
     try:
         asyncio.create_task(user_repo.update_max_compat(viewer_id, pct))
     except Exception:
         pass
 
-    # Параллельно: format + photo_count (оба нужны для ответа)
-    caption, n_photos = await asyncio.gather(
-        format_profile_async(cand, viewer=viewer, show_compat=True, show_badges=True),
-        photo_repo.photo_count(cand["tg_id"]),
+    # FIX v5: значки из batch-загрузки, не делаем лишний запрос
+    badge_ids = cand.get("badge_ids", [])
+    badges = [BADGE_BY_ID[bid] for bid in badge_ids if bid in BADGE_BY_ID]
+
+    # Только format_profile_async — photo_count уже в cand
+    caption = await format_profile_async(
+        cand, viewer=viewer, show_compat=True, show_badges=True, badges=badges
     )
+    n_photos = cand.get("photo_count", 0)
 
     extra = n_photos > 1
     kb = browse_kb(cand["tg_id"], has_extra_photos=extra)
@@ -101,31 +119,33 @@ async def _show_next(message: Message, viewer_id: int, viewer: dict | None = Non
 async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     """Обработчик свайпов (лайк, дизлайк, жалоба, фото).
 
-    PERF v4: notify_liked и announce_match — fire-and-forget.
-    Viewer не должен ждать доставку уведомлений другому пользователю.
-    Экономия: ~200-400мс на каждый лайк-свайп.
+    PERF v5: call.answer() — ПЕРВЫМ, мгновенная обратная связь.
+    edit_reply_markup — fire-and-forget в фоне.
     """
     parts = call.data.split(":")
     action = parts[1]
     viewer_id = call.from_user.id
 
     if action == SwipeAction.STOP.value:
-        # FIX: await directly
-        try:
-            await call.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        await call.message.answer(Msg.SEARCH_STOPPED, reply_markup=HIDE_MENU)
+        # FIX v5: answer первым — мгновенная реакция
         await call.answer()
+        asyncio.create_task(_safe_edit_markup(call.message))
+        await call.message.answer(Msg.SEARCH_STOPPED, reply_markup=HIDE_MENU)
         return
 
     target_id = int(parts[2])
 
-    # FIX: await edit_reply_markup directly
-    try:
-        await call.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    # FIX v5: answer первым, edit — в фоне
+    if action == SwipeAction.LIKE.value:
+        await call.answer(Msg.LIKE_SENT)
+    elif action == SwipeAction.DISLIKE.value:
+        await call.answer(Msg.DISLIKE_SENT)
+    elif action == SwipeAction.MESSAGE_LIKE.value:
+        await call.answer(Msg.LIKE_SENT)
+    else:
+        await call.answer()
+
+    asyncio.create_task(_safe_edit_markup(call.message))
 
     if action == SwipeAction.PHOTOS.value:
         await _handle_photos(call, target_id)
@@ -141,11 +161,7 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     matched = await like_repo.add_like(viewer_id, target_id, is_like)
 
     # === Все фоновые операции — fire-and-forget ===
-    # Viewer не ждёт доставку уведомлений и проверку значков
-    await call.answer(Msg.LIKE_SENT if is_like else Msg.DISLIKE_SENT)
-
     if is_like:
-        # FIX: create_task for actual coroutine
         try:
             asyncio.create_task(notify_liked(bot, viewer_id, target_id, with_message=(action == SwipeAction.MESSAGE_LIKE.value)))
         except Exception:
@@ -169,7 +185,8 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
 
 async def _handle_photos(call: CallbackQuery, target_id: int) -> None:
     """Показывает дополнительные фото пользователя."""
-    photos = await photo_repo.get_photos(target_id)
+    from repositories.photo_repo import get_photos
+    photos = await get_photos(target_id)
     extras = [p for p in photos if p["position"] > 0]
     if extras:
         media = [InputMediaPhoto(media=p["photo_id"]) for p in extras]
@@ -179,13 +196,11 @@ async def _handle_photos(call: CallbackQuery, target_id: int) -> None:
             log.debug("Не удалось отправить доп. фото %d: %s", target_id, e)
     else:
         await call.answer("Нет дополнительных фото")
-    await call.answer()
 
 
 async def _handle_report(call: CallbackQuery, viewer_id: int, target_id: int) -> None:
     """Обрабатывает жалобу на пользователя."""
     await call.answer(Msg.REPORT_SENT)
-    # FIX: create_task for actual coroutine
     try:
         asyncio.create_task(settings_repo.add_report(viewer_id, target_id))
     except Exception:
