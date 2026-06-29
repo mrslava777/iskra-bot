@@ -27,22 +27,18 @@ def _base_lines(user: dict) -> str:
     age = user["age"]
     city = user["city"] or "—"
     verified = " ✅" if user["verified"] else ""
-    lines = [f"<b>{name}</b>{verified}, {age} {gender_emoji(user['gender'])}  •  📍 {city}"]
+    lines = [f"<b>{name}</b>{verified}, {age} {gender_emoji(user['gender'])}  \u2022  \U0001f4cd {city}"]
 
     interests = interests_text(user["interests"])
     if interests != "—":
-        lines.append(f"
-🏷 {interests}")
+        lines.append(f"\n\U0001f3f7 {interests}")
 
     if user["bio"]:
-        lines.append(f"
-📝 {user['bio']}")
+        lines.append(f"\n\U0001f4dd {user['bio']}")
 
     fire = fire_level(user["rating"] or 0)
-    lines.append(f"
-{fire}  Симпатий: {user['rating'] or 0}")
-    return "
-".join(lines)
+    lines.append(f"\n{fire}  Симпатий: {user['rating'] or 0}")
+    return "\n".join(lines)
 
 
 async def format_profile_async(
@@ -60,7 +56,7 @@ async def format_profile_async(
     age = user["age"]
     city = user["city"] or "—"
     verified = " ✅" if user["verified"] else ""
-    lines = [f"<b>{name}</b>{verified}, {age} {gender_emoji(user['gender'])}  •  📍 {city}"]
+    lines = [f"<b>{name}</b>{verified}, {age} {gender_emoji(user['gender'])}  \u2022  \U0001f4cd {city}"]
 
     if show_badges:
         if badges is None:
@@ -71,26 +67,20 @@ async def format_profile_async(
 
     interests = interests_text(user["interests"])
     if interests != "—":
-        lines.append(f"
-🏷 {interests}")
+        lines.append(f"\n\U0001f3f7 {interests}")
 
     if user["bio"]:
-        lines.append(f"
-📝 {user['bio']}")
+        lines.append(f"\n\U0001f4dd {user['bio']}")
 
     fire = fire_level(user["rating"] or 0)
-    lines.append(f"
-{fire}  Симпатий: {user['rating'] or 0}")
+    lines.append(f"\n{fire}  Симпатий: {user['rating'] or 0}")
 
     if show_compat and viewer is not None:
         pct = compatibility(viewer["interests"], user["interests"])
         common = common_interests(viewer["interests"], user["interests"])
         bar = compat_bar(pct)
-        lines.append(f"
-💞 Совместимость: <b>{pct}%</b>
-{bar}")
+        lines.append(f"\n\U0001f49e Совместимость: <b>{pct}%</b>\n{bar}")
         if common:
-            lines.append("🏷 Общее: " + ", ".join(common))
+            lines.append("\U0001f3f7 Общее: " + ", ".join(common))
 
-    return "
-".join(lines)
+    return "\n".join(lines)
