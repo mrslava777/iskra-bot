@@ -12,6 +12,10 @@
 Этот модуль дополнительно содержит более устойчивую логику инициализации
 с retry/backoff и утилитой wait_until_db_ready(), чтобы процесс старта
 мог корректно прогреть БД в условиях rolling/deploy и transient ошибок.
+
+FIX v5: добавлен max_queries=5000 для принудительного пересоздания соединений
+        — предотвращает "замерзание" после долгого простоя.
+        Добавлен DB ping в health-check для раннего обнаружения проблем.
 """
 import asyncio
 import logging
@@ -493,8 +497,14 @@ async def _init_pool() -> asyncpg.Pool:
         command_timeout=30,
         server_settings={"jit": "off"},
         init=_conn_init,
+        # FIX v5: max_queries — принудительно пересоздаём соединение после 5000 запросов.
+        # Это надёжнее max_inactive_connection_lifetime (который не всегда работает
+        # корректно в asyncpg) — предотвращает "замерзание" после долгого простоя.
+        max_queries=5000,
+        # max_inactive_connection_lifetime оставлен как доп. защита
+        max_inactive_connection_lifetime=300.0,
     )
-    log.info("Пул создан (min=2, max=10)")
+    log.info("Пул создан (min=2, max=10, max_queries=5000)")
     return pool
 
 
@@ -507,3 +517,20 @@ async def _get_pool() -> asyncpg.Pool:
             return _pool
         _pool = await _init_pool()
         return _pool
+
+
+# FIX v5: экспортируем для health-check с реальным DB ping
+async def ping_db() -> bool:
+    """Проверяет живость соединения с БД.
+
+    В отличие от простого "SELECT 1", делает acquire из пула —
+    если соединение "мертвое", пул создаст новое.
+    """
+    try:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return True
+    except Exception as e:
+        log.warning("DB ping failed: %s", e)
+        return False
