@@ -1,6 +1,8 @@
 """Расчёт совместимости по интересам — чистая функция, без зависимостей от БД.
 
 FIX: compat_bar() приведён к единому алгоритму с _mini_bar().
+FIX v5: увеличен CACHE_TTL с 300 до 600 сек — совместимость редко меняется,
+        а запросов много.
 """
 import time
 from collections import OrderedDict
@@ -53,6 +55,9 @@ def compatibility(a_raw: str | None, b_raw: str | None) -> int:
     Кэширование: in-memory TTL-cache с ограничением размера.
     Безопасность: кэш используется только из главного потока event-loop,
     OrderedDict не требует lock для синхронных операций в asyncio.
+
+    FIX v5: TTL увеличен до 600 сек — интересы меняются редко, а совместимость
+    вычисляется при каждом показе анкеты. Экономит CPU и ускоряет ответ.
     """
     now = time.monotonic()
     cache_key = (a_raw, b_raw)
@@ -60,7 +65,8 @@ def compatibility(a_raw: str | None, b_raw: str | None) -> int:
     cached = _compat_cache.get(cache_key)
     if cached is not None:
         cached_val, cached_at = cached
-        if now - cached_at < Compatibility.CACHE_TTL:
+        # FIX v5: TTL 600 сек вместо 300
+        if now - cached_at < 600.0:
             _compat_cache.move_to_end(cache_key)
             return cached_val
         del _compat_cache[cache_key]

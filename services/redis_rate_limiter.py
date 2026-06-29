@@ -4,6 +4,9 @@ Uses a Lua script for atomicity: maintain a sorted set per user with timestamps
 and trim entries outside the window. Returns (allowed: bool, wait_seconds: int).
 
 Requires REDIS_URL in config.
+
+FIX v5: добавлены health_check_interval и socket_keepalive — предотвращают
+        отвал соединения после простоя.
 """
 import time
 import logging
@@ -18,7 +21,19 @@ log = logging.getLogger("iskra.redis_rate_limiter")
 redis_client = None
 if REDIS_URL:
     try:
-        redis_client = aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+        redis_client = aioredis.from_url(
+            REDIS_URL,
+            encoding="utf-8",
+            decode_responses=True,
+            # FIX v5: keepalive для предотвращения отвала после простоя
+            health_check_interval=30,
+            socket_keepalive=True,
+            socket_keepalive_options={
+                1: 1,   # TCP_KEEPIDLE
+                2: 1,   # TCP_KEEPINTVL
+                3: 5,   # TCP_KEEPCNT
+            },
+        )
     except Exception as e:
         log.warning("Не удалось подключиться к Redis: %s", e)
 

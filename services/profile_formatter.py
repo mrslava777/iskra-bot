@@ -3,6 +3,7 @@
 format_profile        — синхронная версия (без значков/совместимости),
                         для финала регистрации.
 format_profile_async  — асинхронная версия со значками и совместимостью.
+FIX v5: принимает предзагруженные badges — убирает лишний запрос.
 """
 from services.badge_formatter import format_user_badges_inline
 from services.badge_service import get_user_badges
@@ -30,14 +31,18 @@ def _base_lines(user: dict) -> str:
 
     interests = interests_text(user["interests"])
     if interests != "—":
-        lines.append(f"\n🏷 {interests}")
+        lines.append(f"
+🏷 {interests}")
 
     if user["bio"]:
-        lines.append(f"\n📝 {user['bio']}")
+        lines.append(f"
+📝 {user['bio']}")
 
     fire = fire_level(user["rating"] or 0)
-    lines.append(f"\n{fire}  Симпатий: {user['rating'] or 0}")
-    return "\n".join(lines)
+    lines.append(f"
+{fire}  Симпатий: {user['rating'] or 0}")
+    return "
+".join(lines)
 
 
 async def format_profile_async(
@@ -45,8 +50,12 @@ async def format_profile_async(
     viewer: dict | None = None,
     show_compat: bool = False,
     show_badges: bool = False,
+    badges: list[dict] | None = None,  # FIX v5: предзагруженные значки
 ) -> str:
-    """Карточка анкеты со значками и (опционально) совместимостью."""
+    """Карточка анкеты со значками и (опционально) совместимостью.
+
+    FIX v5: если badges переданы — не делает запрос к БД.
+    """
     name = user["name"] or "Без имени"
     age = user["age"]
     city = user["city"] or "—"
@@ -54,27 +63,34 @@ async def format_profile_async(
     lines = [f"<b>{name}</b>{verified}, {age} {gender_emoji(user['gender'])}  •  📍 {city}"]
 
     if show_badges:
-        badges = await get_user_badges(user["tg_id"])
+        if badges is None:
+            badges = await get_user_badges(user["tg_id"])
         badge_line = format_user_badges_inline(badges)
         if badge_line:
             lines.append(badge_line)
 
     interests = interests_text(user["interests"])
     if interests != "—":
-        lines.append(f"\n🏷 {interests}")
+        lines.append(f"
+🏷 {interests}")
 
     if user["bio"]:
-        lines.append(f"\n📝 {user['bio']}")
+        lines.append(f"
+📝 {user['bio']}")
 
     fire = fire_level(user["rating"] or 0)
-    lines.append(f"\n{fire}  Симпатий: {user['rating'] or 0}")
+    lines.append(f"
+{fire}  Симпатий: {user['rating'] or 0}")
 
     if show_compat and viewer is not None:
         pct = compatibility(viewer["interests"], user["interests"])
         common = common_interests(viewer["interests"], user["interests"])
         bar = compat_bar(pct)
-        lines.append(f"\n💞 Совместимость: <b>{pct}%</b>\n{bar}")
+        lines.append(f"
+💞 Совместимость: <b>{pct}%</b>
+{bar}")
         if common:
             lines.append("🏷 Общее: " + ", ".join(common))
 
-    return "\n".join(lines)
+    return "
+".join(lines)

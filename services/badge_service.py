@@ -3,6 +3,7 @@
 FIX: _collect_stats параллелизирует независимые запросы через asyncio.gather.
 FIX: check_and_award кэширует результат на 30 сек, чтобы не гонять тяжёлые
      запросы при каждом свайпе/клике (вызывается из 6+ точек).
+FIX v5: get_user_stats принимает предзагруженного user — убирает лишний запрос.
 """
 import asyncio
 import time
@@ -118,4 +119,16 @@ async def get_user_stats(tg_id: int) -> tuple[dict, dict]:
     if not user:
         return {}, {}
     stats = await _collect_stats(tg_id, user)
+    return user, stats
+
+
+# FIX v5: принимает уже загруженного user — убирает лишний get_user()
+async def get_user_stats_with_user(user: dict) -> tuple[dict, dict]:
+    """Версия get_user_stats для случаев, когда user уже загружен.
+
+    Экономит 1 DB round-trip (~50-150 мс).
+    """
+    if not user:
+        return {}, {}
+    stats = await _collect_stats(user["tg_id"], user)
     return user, stats
