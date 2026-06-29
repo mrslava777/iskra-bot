@@ -9,6 +9,13 @@
 
 Ожидаемый эффект: снижение latency на 100-300мс за счёт
 убранного aiohttp request pipeline.
+
+FIX v5: health-check теперь делает реальный DB ping — раннее обнаружение
+        проблем с соединениями.
+FIX v5: polling_timeout увеличен до 30 сек — меньше запросов к Telegram API,
+        ниже нагрузка на CPU и сеть.
+FIX v5: tasks_concurrency_limit=50 — предотвращает перегрузку при всплесках
+        трафика (Railway free tier имеет ограничения).
 """
 import asyncio
 import logging
@@ -20,7 +27,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN, SENTRY_DSN
-from database.connection import close_db_pool, _get_pool, _ensure_schema, wait_until_db_ready
+from database.connection import close_db_pool, wait_until_db_ready, ping_db
 from handlers import setup_routers
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
@@ -31,8 +38,26 @@ PORT = int(os.getenv("PORT", "8080"))
 
 
 async def _health_handler(request: web.Request) -> web.Response:
-    """Простой health-check для Railway."""
-    return web.json_response({"status": "ok"})
+    """Health-check с реальным DB ping.
+
+    FIX v5: вместо статичного JSON делаем acquire + SELECT 1 из пула.
+    Если соединение "мертвое", пул создаст новое — это прогревает БД
+    и предотвращает 2000+ мс холодных стартов.
+    """
+    try:
+        db_ok = await ping_db()
+        if db_ok:
+            return web.json_response({"status": "ok", "db": "connected"})
+        else:
+            return web.json_response(
+                {"status": "degraded", "db": "unreachable"},
+                status=503
+            )
+    except Exception as e:
+        return web.json_response(
+            {"status": "error", "detail": str(e)},
+            status=503
+        )
 
 
 async def _metrics_handler(request: web.Request) -> web.Response:
@@ -127,10 +152,14 @@ async def main() -> None:
     try:
         # Запускаем polling — основной цикл
         log.info("Запускаю бота в режиме long polling...")
+        # FIX v5: polling_timeout=30 — меньше запросов к API, ниже latency
+        # FIX v5: tasks_concurrency_limit=50 — защита от перегрузки
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
             close_bot_session=True,
+            polling_timeout=30,
+            tasks_concurrency_limit=50,
         )
     finally:
         await health_runner.cleanup()
