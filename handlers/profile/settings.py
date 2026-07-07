@@ -3,6 +3,7 @@
 FIX: добавлен обработчик callback set:support — раньше кнопка не работала.
 FIX: единая логика меню — при входе в раздел показывается HIDE_MENU.
 FIX: unterminated f-string literals (line 112).
+FIX: "Моя анкета" перенесена в настройки.
 """
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -11,7 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 import repositories.user_repo as user_repo
 from data.constants import Age, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SettingsAction
-from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU
+from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU, HIDE_MENU
 from services.profile_formatter import format_profile_async
 from states import Edit
 
@@ -26,7 +27,10 @@ async def show_settings(message: Message) -> None:
         await message.answer(Message.CREATE_PROFILE_FIRST)
         return
     active = bool(user.get("active"))
-    await message.answer(f"{EMOJI.SETTINGS} Настройки", reply_markup=settings_kb(active))
+    # FIX: показываем HIDE_MENU вместо полного меню
+    await message.answer(f"{EMOJI.SETTINGS} Настройки", reply_markup=HIDE_MENU)
+    # Отправляем inline-клавиатуру настроек отдельным сообщением
+    await message.answer("Выбери действие:", reply_markup=settings_kb(active))
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:back")
@@ -39,6 +43,15 @@ async def on_settings_back(call: CallbackQuery) -> None:
         await call.message.edit_text(caption, reply_markup=profile_kb())
     except Exception:
         await call.message.answer(caption, reply_markup=profile_kb())
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:profile")
+async def on_settings_profile(call: CallbackQuery) -> None:
+    """Показывает анкету пользователя из настроек (бывшая кнопка 'Моя анкета')."""
+    from handlers.profile.view import show_my_profile
+    # Симулируем message для совместимости
+    await show_my_profile(call.message)
     await call.answer()
 
 
