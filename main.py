@@ -7,24 +7,21 @@
 - Проще деплоить (не нужен WEBHOOK_HOST, сертификаты, etc.)
 - Health-check поднимается отдельным легковесным сервером
 
-Ожидаемый эффект: снижение latency на 100-300мс за счёт
-убранного aiohttp request pipeline.
-
-FIX v5: health-check теперь делает реальный DB ping — раннее обнаружение
-        проблем с соединениями.
-FIX v5: polling_timeout увеличен до 30 сек — меньше запросов к Telegram API,
-        ниже нагрузка на CPU и сеть.
-FIX v5: tasks_concurrency_limit=50 — предотвращает перегрузку при всплесках
-        трафика (Railway free tier имеет ограничения).
+FIX v6: TelegramUnauthorizedError теперь ловится и выводит понятное сообщение
+        вместо километрового traceback — помогает диагностировать невалидный токен.
+FIX v6: cleanup_shown_profiles обёрнут в try/except — не блокирует старт при
+        проблемах с параметрами aiosqlite.
 """
 import asyncio
 import logging
 import os
+import sys
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramUnauthorizedError
 
 from config import BOT_TOKEN, SENTRY_DSN
 from database.connection import close_db_pool, wait_until_db_ready, ping_db
@@ -38,12 +35,7 @@ PORT = int(os.getenv("PORT", "8080"))
 
 
 async def _health_handler(request: web.Request) -> web.Response:
-    """Health-check с реальным DB ping.
-
-    FIX v5: вместо статичного JSON делаем acquire + SELECT 1 из пула.
-    Если соединение "мертвое", пул создаст новое — это прогревает БД
-    и предотвращает 2000+ мс холодных стартов.
-    """
+    """Health-check с реальным DB ping."""
     try:
         db_ok = await ping_db()
         if db_ok:
@@ -70,11 +62,7 @@ async def _metrics_handler(request: web.Request) -> web.Response:
 
 
 async def _start_health_server() -> web.AppRunner:
-    """Запускает минимальный HTTP-сервер только для health-check.
-
-    Railway требует открытый порт для проверки жизнеспособности.
-    Больше ничего этот сервер не делает.
-    """
+    """Запускает минимальный HTTP-сервер только для health-check."""
     app = web.Application()
     app.router.add_get("/health", _health_handler)
     app.router.add_get("/ready", _health_handler)
@@ -90,9 +78,7 @@ async def _start_health_server() -> web.AppRunner:
 
 async def on_startup(bot: Bot) -> None:
     """Действия при запуске: прогрев пула, очистка, удаление старого webhook."""
-    # Инициализация Sentry уже выполняется в main() при старте процесса
-
-    # Ждём, пока схема прогреется (retry/backoff handled in connection.wait_until_db_ready)
+    # Ждём, пока схема прогреется
     try:
         await wait_until_db_ready(timeout=60)
         log.info("DB ready (wait_until_db_ready succeeded)")
@@ -103,13 +89,15 @@ async def on_startup(bot: Bot) -> None:
     try:
         await bot.delete_webhook(drop_pending_updates=False)
         log.info("Webhook удалён (polling mode)")
+    except TelegramUnauthorizedError:
+        log.error("Невозможно удалить webhook: токен невалиден. Проверь BOT_TOKEN.")
+        raise
     except Exception as e:
         log.warning("Failed to delete webhook: %s", e)
 
     # Очистка shown_profiles
     try:
         from repositories.profile_repo import cleanup_shown_profiles
-
         deleted = await cleanup_shown_profiles(max_age_days=30)
         if deleted:
             log.info("Очищено %d старых записей shown_profiles", deleted)
@@ -129,11 +117,15 @@ async def main() -> None:
     if SENTRY_DSN:
         try:
             import sentry_sdk
-
             sentry_sdk.init(SENTRY_DSN, traces_sample_rate=0.0)
             log.info("Sentry initialized")
         except Exception as e:
             log.warning("Failed to init Sentry: %s", e)
+
+    # Проверяем токен до создания Bot
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        log.error("BOT_TOKEN не задан или слишком короткий! Проверь переменные окружения.")
+        sys.exit(1)
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
@@ -152,8 +144,6 @@ async def main() -> None:
     try:
         # Запускаем polling — основной цикл
         log.info("Запускаю бота в режиме long polling...")
-        # FIX v5: polling_timeout=30 — меньше запросов к API, ниже latency
-        # FIX v5: tasks_concurrency_limit=50 — защита от перегрузки
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
@@ -161,10 +151,27 @@ async def main() -> None:
             polling_timeout=30,
             tasks_concurrency_limit=50,
         )
+    except TelegramUnauthorizedError:
+        log.error("=" * 60)
+        log.error("ОШИБКА: Telegram токен невалиден (Unauthorized)")
+        log.error("Проверь BOT_TOKEN в переменных окружения Railway.")
+        log.error("Возможные причины:")
+        log.error("  1. Токен скопирован не полностью")
+        log.error("  2. Бот был удалён через @BotFather")
+        log.error("  3. Токен содержит лишние пробелы или символы")
+        log.error("=" * 60)
+        sys.exit(1)
     finally:
         await health_runner.cleanup()
         log.info("Health-check сервер остановлен")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("Прервано пользователем (KeyboardInterrupt)")
+    except TelegramUnauthorizedError:
+        # Дополнительная защита — если ошибка вылетела за пределами main()
+        log.error("TelegramUnauthorizedError: проверь BOT_TOKEN")
+        sys.exit(1)
