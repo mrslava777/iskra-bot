@@ -1,49 +1,36 @@
-"""Подключение к БД (PostgreSQL через asyncpg) и инициализация схемы.
+"""Подключение к БД (SQLite через aiosqlite) и инициализация схемы.
 
 Модель доступа:
     db()             — асинхронный контекстный менеджер для работы с БД.
-                       Автоматически берёт соединение из пула и возвращает.
-    get_single_db()  — НОВОЕ соединение из пула для транзакций.
+    get_single_db()  — НОВОЕ соединение для транзакций.
                        Вызывающий обязан вернуть через await release_db(conn).
-    close_db_pool()  — закрывает пул (graceful shutdown).
+    close_db_pool()  — закрывает соединение (graceful shutdown).
 
 Схема создаётся один раз при первом вызове db().
-
-Этот модуль дополнительно содержит более устойчивую логику инициализации
-с retry/backoff и утилитой wait_until_db_ready(), чтобы процесс старта
-мог корректно прогреть БД в условиях rolling/deploy и transient ошибок.
-
-FIX v5: добавлен max_queries=5000 для принудительного пересоздания соединений
-        — предотвращает "замерзание" после долгого простоя.
-        Добавлен DB ping в health-check для раннего обнаружения проблем.
 """
 import asyncio
 import logging
 import os
+import time as _time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
-import asyncpg
+import aiosqlite
 
-from config import DATABASE_URL
+from config import DB_PATH
 
 log = logging.getLogger("iskra.db")
 
-_pool: Optional[asyncpg.Pool] = None
-_pool_lock = asyncio.Lock()
+_conn: Optional[aiosqlite.Connection] = None
+_conn_lock = asyncio.Lock()
 _schema_ready = False
 _schema_lock = asyncio.Lock()
-
-# Retry/backoff параметры для инициализации схемы
-_SCHEMA_INIT_RETRIES = int(os.getenv("SCHEMA_INIT_RETRIES", "5"))
-_SCHEMA_BACKOFF_BASE = float(os.getenv("SCHEMA_BACKOFF_BASE", "0.5"))
-_SCHEMA_BACKOFF_MULT = float(os.getenv("SCHEMA_BACKOFF_MULT", "2"))
 
 
 # ---------------- SCHEMA (inline) ----------------
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
-    tg_id               BIGINT PRIMARY KEY,
+    tg_id               INTEGER PRIMARY KEY,
     username            TEXT,
     name                TEXT,
     age                 INTEGER,
@@ -69,17 +56,17 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS photos (
-    id        SERIAL PRIMARY KEY,
-    tg_id     BIGINT NOT NULL,
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id     INTEGER NOT NULL,
     photo_id  TEXT NOT NULL,
     position  INTEGER NOT NULL DEFAULT 0,
     UNIQUE (tg_id, position)
 );
 
 CREATE TABLE IF NOT EXISTS likes (
-    id         SERIAL PRIMARY KEY,
-    from_id    BIGINT NOT NULL,
-    to_id      BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id    INTEGER NOT NULL,
+    to_id      INTEGER NOT NULL,
     is_like    INTEGER DEFAULT 1,
     message    TEXT,
     created_at INTEGER DEFAULT 0,
@@ -87,36 +74,36 @@ CREATE TABLE IF NOT EXISTS likes (
 );
 
 CREATE TABLE IF NOT EXISTS matches (
-    id         SERIAL PRIMARY KEY,
-    a_id       BIGINT NOT NULL,
-    b_id       BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    a_id       INTEGER NOT NULL,
+    b_id       INTEGER NOT NULL,
     created_at INTEGER DEFAULT 0,
     UNIQUE (a_id, b_id)
 );
 
 CREATE TABLE IF NOT EXISTS shown_profiles (
-    from_id  BIGINT NOT NULL,
-    to_id    BIGINT NOT NULL,
+    from_id  INTEGER NOT NULL,
+    to_id    INTEGER NOT NULL,
     shown_at INTEGER DEFAULT 0,
     PRIMARY KEY (from_id, to_id)
 );
 
 CREATE TABLE IF NOT EXISTS reports (
-    id         SERIAL PRIMARY KEY,
-    from_id    BIGINT NOT NULL,
-    to_id      BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id    INTEGER NOT NULL,
+    to_id      INTEGER NOT NULL,
     created_at INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS anon_queue (
-    tg_id     BIGINT PRIMARY KEY,
+    tg_id     INTEGER PRIMARY KEY,
     queued_at INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS anon_sessions (
-    id         SERIAL PRIMARY KEY,
-    a_id       BIGINT NOT NULL,
-    b_id       BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    a_id       INTEGER NOT NULL,
+    b_id       INTEGER NOT NULL,
     a_reveal   INTEGER DEFAULT 0,
     b_reveal   INTEGER DEFAULT 0,
     started_at INTEGER DEFAULT 0,
@@ -124,9 +111,9 @@ CREATE TABLE IF NOT EXISTS anon_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS relationships (
-    id         SERIAL PRIMARY KEY,
-    user1_id   BIGINT NOT NULL,
-    user2_id   BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user1_id   INTEGER NOT NULL,
+    user2_id   INTEGER NOT NULL,
     points     INTEGER DEFAULT 0,
     level      INTEGER DEFAULT 0,
     created_at INTEGER DEFAULT 0,
@@ -134,8 +121,8 @@ CREATE TABLE IF NOT EXISTS relationships (
 );
 
 CREATE TABLE IF NOT EXISTS tickets (
-    id         SERIAL PRIMARY KEY,
-    tg_id      BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id      INTEGER NOT NULL,
     category   TEXT NOT NULL,
     text       TEXT NOT NULL,
     photo_id   TEXT,
@@ -145,7 +132,7 @@ CREATE TABLE IF NOT EXISTS tickets (
 );
 
 CREATE TABLE IF NOT EXISTS user_badges (
-    tg_id      BIGINT NOT NULL,
+    tg_id      INTEGER NOT NULL,
     badge_id   TEXT NOT NULL,
     awarded_at INTEGER NOT NULL,
     PRIMARY KEY (tg_id, badge_id)
@@ -164,8 +151,6 @@ CREATE INDEX IF NOT EXISTS idx_shown_from_to       ON shown_profiles(from_id, to
 CREATE INDEX IF NOT EXISTS idx_reports_to          ON reports(to_id);
 CREATE INDEX IF NOT EXISTS idx_reports_from        ON reports(from_id);
 CREATE INDEX IF NOT EXISTS idx_anon_sessions_active ON anon_sessions(ended_at);
-CREATE INDEX IF NOT EXISTS idx_anon_sessions_a     ON anon_sessions(a_id) WHERE ended_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_anon_sessions_b     ON anon_sessions(b_id) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_relationships_pair  ON relationships(user1_id, user2_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status      ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
@@ -174,362 +159,104 @@ CREATE INDEX IF NOT EXISTS idx_users_gender        ON users(gender);
 CREATE INDEX IF NOT EXISTS idx_users_seeking       ON users(seeking);
 """
 
-MISSING_COLUMNS = {
-    "users": [
-        ("tg_id", "BIGINT", "0"),
-        ("username", "TEXT", "NULL"),
-        ("name", "TEXT", "NULL"),
-        ("age", "INTEGER", "NULL"),
-        ("gender", "TEXT", "NULL"),
-        ("seeking", "TEXT", "NULL"),
-        ("city", "TEXT", "NULL"),
-        ("bio", "TEXT", "NULL"),
-        ("interests", "TEXT", "''"),
-        ("photo_id", "TEXT", "NULL"),
-        ("active", "INTEGER", "1"),
-        ("verified", "INTEGER", "0"),
-        ("is_banned", "INTEGER", "0"),
-        ("streak", "INTEGER", "0"),
-        ("rating", "INTEGER", "0"),
-        ("daily_q", "INTEGER", "0"),
-        ("daily_a", "TEXT", "''"),
-        ("anon_messages_count", "INTEGER", "0"),
-        ("min_age", "INTEGER", "18"),
-        ("max_age", "INTEGER", "99"),
-        ("max_compat", "INTEGER", "0"),
-        ("created_at", "INTEGER", "0"),
-        ("last_active", "INTEGER", "0"),
-    ],
-    "photos": [
-        ("id", "SERIAL", None),
-        ("tg_id", "BIGINT", "0"),
-        ("photo_id", "TEXT", "''"),
-        ("position", "INTEGER", "0"),
-    ],
-    "likes": [
-        ("id", "SERIAL", None),
-        ("from_id", "BIGINT", "0"),
-        ("to_id", "BIGINT", "0"),
-        ("is_like", "INTEGER", "1"),
-        ("message", "TEXT", "NULL"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "matches": [
-        ("id", "SERIAL", None),
-        ("a_id", "BIGINT", "0"),
-        ("b_id", "BIGINT", "0"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "shown_profiles": [
-        ("from_id", "BIGINT", "0"),
-        ("to_id", "BIGINT", "0"),
-        ("shown_at", "INTEGER", "0"),
-    ],
-    "reports": [
-        ("id", "SERIAL", None),
-        ("from_id", "BIGINT", "0"),
-        ("to_id", "BIGINT", "0"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "anon_queue": [
-        ("tg_id", "BIGINT", "0"),
-        ("queued_at", "INTEGER", "0"),
-    ],
-    "anon_sessions": [
-        ("id", "SERIAL", None),
-        ("a_id", "BIGINT", "0"),
-        ("b_id", "BIGINT", "0"),
-        ("a_reveal", "INTEGER", "0"),
-        ("b_reveal", "INTEGER", "0"),
-        ("started_at", "INTEGER", "0"),
-        ("ended_at", "INTEGER", "NULL"),
-    ],
-    "relationships": [
-        ("id", "SERIAL", None),
-        ("user1_id", "BIGINT", "0"),
-        ("user2_id", "BIGINT", "0"),
-        ("points", "INTEGER", "0"),
-        ("level", "INTEGER", "0"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "tickets": [
-        ("id", "SERIAL", None),
-        ("tg_id", "BIGINT", "0"),
-        ("category", "TEXT", "'other'"),
-        ("text", "TEXT", "''"),
-        ("photo_id", "TEXT", "NULL"),
-        ("reply", "TEXT", "NULL"),
-        ("status", "TEXT", "'open'"),
-        ("created_at", "INTEGER", "0"),
-    ],
-    "user_badges": [
-        ("tg_id", "BIGINT", "0"),
-        ("badge_id", "TEXT", "''"),
-        ("awarded_at", "INTEGER", "0"),
-    ],
-}
 
-
-async def _ensure_columns(conn: asyncpg.Connection) -> None:
-    """Добавляет недостающие колонки в существующие таблицы.
-
-    FIX: уровень логирования снижен с INFO до DEBUG — иначе при каждом
-    запуске в лог попадают десятки строк «колонка проверена».
-    """
-    for table, columns in MISSING_COLUMNS.items():
-        for col_name, col_type, default in columns:
-            try:
-                if default is None:
-                    await conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
-                    )
-                else:
-                    await conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type} DEFAULT {default}"
-                    )
-                log.debug("Колонка %s.%s проверена/добавлена", table, col_name)
-            except Exception as e:
-                log.warning("Не удалось добавить колонку %s.%s: %s", table, col_name, e)
-
-
-async def _migrate_types(conn: asyncpg.Connection) -> None:
-    """Мигрирует типы колонок с timestamp на INTEGER (unix timestamp).
-
-    FIX: сначала проверяем, есть ли вообще колонки с типом timestamp,
-    чтобы не делать N запросов к information_schema при каждом запуске.
-    """
-    type_migrations = [
-        ("users", "created_at", "INTEGER", "0"),
-        ("users", "last_active", "INTEGER", "0"),
-        ("likes", "created_at", "INTEGER", "0"),
-        ("matches", "created_at", "INTEGER", "0"),
-        ("shown_profiles", "shown_at", "INTEGER", "0"),
-        ("reports", "created_at", "INTEGER", "0"),
-        ("anon_queue", "queued_at", "INTEGER", "0"),
-        ("anon_sessions", "started_at", "INTEGER", "0"),
-        ("anon_sessions", "ended_at", "INTEGER", "NULL"),
-        ("relationships", "created_at", "INTEGER", "0"),
-        ("tickets", "created_at", "INTEGER", "0"),
-    ]
-
-    # Проверяем все колонки одним batch-запросом вместо N отдельных.
-    tables = list({t for t, _, _, _ in type_migrations})
-    placeholders = ",".join(f"${i+1}" for i in range(len(tables)))
-    timestamp_cols = await conn.fetch(
-        f"""SELECT table_name, column_name FROM information_schema.columns
-        WHERE table_name IN ({placeholders})
-          AND data_type IN ('timestamp without time zone', 'timestamp with time zone', 'timestamp')""",
-        *tables,
-    )
-    needs_migration = {(r["table_name"], r["column_name"]) for r in timestamp_cols}
-
-    if not needs_migration:
-        log.debug("Миграция типов не требуется")
-        return
-
-    for table, col_name, new_type, default_val in type_migrations:
-        if (table, col_name) not in needs_migration:
-            continue
-        try:
-            await conn.execute(
-                f"ALTER TABLE {table} ALTER COLUMN {col_name} DROP DEFAULT"
-            )
-            await conn.execute(
-                f"ALTER TABLE {table} ALTER COLUMN {col_name} TYPE {new_type} "
-                f"USING EXTRACT(EPOCH FROM {col_name})::INTEGER"
-            )
-            if default_val != "NULL":
-                await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT {default_val}"
-                )
-            else:
-                await conn.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {col_name} SET DEFAULT NULL"
-                )
-            log.info("Тип колонки %s.%s мигрирован на %s", table, col_name, new_type)
-        except Exception as e:
-            log.warning("Не удалось мигрировать тип %s.%s: %s", table, col_name, e)
-
-
-async def _clear_statement_cache(conn: asyncpg.Connection) -> None:
-    """Сбрасывает кэш prepared statements после изменения схемы."""
-    try:
-        await conn.execute("DEALLOCATE ALL")
-        log.debug("Кэш prepared statements сброшен")
-    except Exception as e:
-        log.warning("Не удалось сбросить кэш prepared statements: %s", e)
-        try:
-            await conn.execute("DISCARD ALL")
-        except Exception as e2:
-            log.warning("DISCARD ALL тоже не сработал: %s", e2)
-
-
-async def init_schema(conn: asyncpg.Connection) -> None:
+async def init_schema(conn: aiosqlite.Connection) -> None:
     """Создаёт все таблицы и индексы (идемпотентно)."""
     log.info("Инициализация схемы БД...")
-
-    await conn.execute(SCHEMA_SQL)
-    await _ensure_columns(conn)
-    await _migrate_types(conn)
-    await _clear_statement_cache(conn)
-    await conn.execute(INDEX_SQL)
-
+    await conn.executescript(SCHEMA_SQL)
+    await conn.executescript(INDEX_SQL)
+    await conn.commit()
     log.info("Схема БД готова")
 
 
-async def _ensure_schema(pool: asyncpg.Pool) -> None:
-    """Гарантирует инициализацию схемы ровно один раз.
-
-    Добавлены retry/backoff и подробный логинг с traceback
-    чтобы rolling deploy/частичные обновления не приводили к падению
-    процесса при transient ошибках.
-    """
+async def _ensure_schema() -> None:
+    """Гарантирует инициализацию схемы ровно один раз."""
     global _schema_ready
     if _schema_ready:
         return
     async with _schema_lock:
         if _schema_ready:
             return
-
-        last_exc = None
-        for attempt in range(1, _SCHEMA_INIT_RETRIES + 1):
-            try:
-                async with pool.acquire() as conn:
-                    schema_fn = globals().get("init_schema")
-                    if schema_fn is None:
-                        log.warning("init_schema not found in module, falling back to minimal schema creation")
-                        await conn.execute(SCHEMA_SQL)
-                        try:
-                            await conn.execute(INDEX_SQL)
-                        except Exception:
-                            log.debug("INDEX_SQL execution failed in fallback (ignored)")
-                    else:
-                        await schema_fn(conn)
-
-                _schema_ready = True
-                log.info("Схема БД инициализирована")
-                return
-            except Exception as e:
-                last_exc = e
-                log.exception("Ошибка инициализации схемы (попытка %d/%d): %s", attempt, _SCHEMA_INIT_RETRIES, e)
-                if attempt < _SCHEMA_INIT_RETRIES:
-                    backoff = _SCHEMA_BACKOFF_BASE * (_SCHEMA_BACKOFF_MULT ** (attempt - 1))
-                    log.info("Повтор через %.1f сек...", backoff)
-                    await asyncio.sleep(backoff)
-
-        log.error("Не удалось инициализировать схему после %d попыток", _SCHEMA_INIT_RETRIES)
-        # raise the last exception so caller can handle/retry/shutdown
-        raise last_exc
+        conn = await _get_conn()
+        await init_schema(conn)
+        _schema_ready = True
+        log.info("Схема БД инициализирована")
 
 
 @asynccontextmanager
-async def db() -> AsyncGenerator[asyncpg.Connection, None]:
+async def db() -> AsyncGenerator[aiosqlite.Connection, None]:
     """Контекстный менеджер для работы с БД.
 
-    Берёт соединение из пула, выполняет запросы, автоматически возвращает.
+    Берёт соединение, выполняет запросы, автоматически коммитит.
     При первом использовании инициализирует схему.
     """
-    pool = await _get_pool()
-    await _ensure_schema(pool)
-    async with pool.acquire() as conn:
+    await _ensure_schema()
+    conn = await _get_conn()
+    try:
         yield conn
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
 
 
-async def get_single_db() -> asyncpg.Connection:
-    pool = await _get_pool()
-    await _ensure_schema(pool)
-    return await pool.acquire()
+async def get_single_db() -> aiosqlite.Connection:
+    """Возвращает текущее соединение (для совместимости)."""
+    await _ensure_schema()
+    return await _get_conn()
 
 
-async def release_db(conn: asyncpg.Connection) -> None:
-    pool = await _get_pool()
-    await pool.release(conn)
+async def release_db(conn: aiosqlite.Connection) -> None:
+    """Ничего не делает — соединение shared (для совместимости)."""
+    pass
 
 
 async def close_db_pool() -> None:
-    global _pool, _schema_ready
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
+    """Закрывает соединение с SQLite."""
+    global _conn, _schema_ready
+    if _conn is not None:
+        await _conn.close()
+        _conn = None
         _schema_ready = False
-        log.info("Пул соединений с PostgreSQL закрыт")
+        log.info("Соединение с SQLite закрыто")
 
 
 async def wait_until_db_ready(timeout: float = 60.0) -> None:
-    """Вспомогательная утилита для блокировки старта приложения до прогрева БД.
-
-    Вызывает _ensure_schema с retry и ожидает, пока схема будет инициализирована
-    или пока не истечёт timeout.
-    """
+    """Вспомогательная утилита для блокировки старта приложения до прогрева БД."""
     deadline = asyncio.get_event_loop().time() + timeout
     while True:
         try:
-            pool = await _get_pool()
-            await _ensure_schema(pool)
+            await _ensure_schema()
             return
         except Exception as e:
             if asyncio.get_event_loop().time() > deadline:
                 log.exception("wait_until_db_ready: timeout waiting for DB ready: %s", e)
                 raise
-            # небольшой пауза перед повторной попыткой
             await asyncio.sleep(0.5)
 
 
-def _build_dsn() -> str:
-    """Возвращает чистый DSN без лишних параметров."""
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL не задан! Добавь переменную окружения DATABASE_URL")
-    return DATABASE_URL
+async def _get_conn() -> aiosqlite.Connection:
+    """Возвращает (или создаёт) единственное соединение с SQLite."""
+    global _conn
+    if _conn is not None:
+        return _conn
+    async with _conn_lock:
+        if _conn is not None:
+            return _conn
+        _conn = await aiosqlite.connect(DB_PATH)
+        _conn.row_factory = aiosqlite.Row
+        await _conn.execute("PRAGMA journal_mode=WAL")
+        await _conn.execute("PRAGMA synchronous=NORMAL")
+        await _conn.execute("PRAGMA foreign_keys=ON")
+        log.info("Соединение с SQLite создано: %s", DB_PATH)
+        return _conn
 
 
-async def _conn_init(conn: asyncpg.Connection) -> None:
-    """Инициализирует каждое новое соединение в пуле."""
-    await conn.execute("SET application_name = 'iskra_bot'")
-
-
-async def _init_pool() -> asyncpg.Pool:
-    dsn = _build_dsn()
-    log.info("Создаю пул соединений с PostgreSQL...")
-    pool = await asyncpg.create_pool(
-        dsn=dsn,
-        min_size=2,
-        max_size=10,
-        command_timeout=30,
-        server_settings={"jit": "off"},
-        init=_conn_init,
-        # FIX v5: max_queries — принудительно пересоздаём соединение после 5000 запросов.
-        # Это надёжнее max_inactive_connection_lifetime (который не всегда работает
-        # корректно в asyncpg) — предотвращает "замерзание" после долгого простоя.
-        max_queries=5000,
-        # max_inactive_connection_lifetime оставлен как доп. защита
-        max_inactive_connection_lifetime=300.0,
-    )
-    log.info("Пул создан (min=2, max=10, max_queries=5000)")
-    return pool
-
-
-async def _get_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is not None:
-        return _pool
-    async with _pool_lock:
-        if _pool is not None:
-            return _pool
-        _pool = await _init_pool()
-        return _pool
-
-
-# FIX v5: экспортируем для health-check с реальным DB ping
 async def ping_db() -> bool:
-    """Проверяет живость соединения с БД.
-
-    В отличие от простого "SELECT 1", делает acquire из пула —
-    если соединение "мертвое", пул создаст новое.
-    """
+    """Проверяет живость соединения с БД."""
     try:
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
+        conn = await _get_conn()
+        await conn.execute("SELECT 1")
         return True
     except Exception as e:
         log.warning("DB ping failed: %s", e)
