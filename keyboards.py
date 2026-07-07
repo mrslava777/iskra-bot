@@ -29,13 +29,13 @@ from data.enums import (
 )
 
 # Главное меню (reply-клавиатура)
+# FIX: "Моя анкета" перенесена в Настройки
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=MenuText.SEARCH)],
         [KeyboardButton(text=MenuText.BLIND_DATE)],
         [KeyboardButton(text=MenuText.LIKES_INBOX), KeyboardButton(text=MenuText.MATCHES)],
-        [KeyboardButton(text=MenuText.MY_PROFILE), KeyboardButton(text=MenuText.BADGES)],
-        [KeyboardButton(text=MenuText.SETTINGS)],
+        [KeyboardButton(text=MenuText.BADGES), KeyboardButton(text=MenuText.SETTINGS)],
     ],
     resize_keyboard=True,
 )
@@ -216,9 +216,14 @@ def verify_kb(tg_id: int) -> InlineKeyboardMarkup:
 
 @lru_cache(maxsize=128)
 def settings_kb(active: bool) -> InlineKeyboardMarkup:
+    """Клавиатура настроек — теперь включает "Моя анкета".
+
+    FIX: "Моя анкета" перенесена из главного меню в настройки.
+    """
     toggle = f"{EMOJI.ACTIVE} Анкета активна (скрыть)" if active else f"{EMOJI.INACTIVE} Анкета скрыта (показать)"
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text=f"{EMOJI.PROFILE} Моя анкета", callback_data=CallbackPrefix.EDIT.with_param("profile"))],
             [InlineKeyboardButton(text=toggle, callback_data=CallbackPrefix.SETTINGS.with_param(SettingsAction.TOGGLE.value))],
             [InlineKeyboardButton(text="🎚 Фильтр по возрасту", callback_data=CallbackPrefix.SETTINGS.with_param(SettingsAction.AGE_FILTER.value))],
             [InlineKeyboardButton(text="👁 Кого показывать", callback_data=CallbackPrefix.SETTINGS.with_param(SettingsAction.SEEKING.value))],
