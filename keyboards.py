@@ -46,15 +46,21 @@ HIDE_MENU = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-# Клавиатура поиска собеседника — кнопка отмены в reply keyboard
+# Клавиатура поиска собеседника — кнопка отмены И меню
 ANON_SEARCH_MENU = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=MenuText.CANCEL_SEARCH)]],
+    keyboard=[
+        [KeyboardButton(text=MenuText.CANCEL_SEARCH)],
+        [KeyboardButton(text=MenuText.MENU)],
+    ],
     resize_keyboard=True,
 )
 
-# Клавиатура внутри анонимного свидания — только выход
+# Клавиатура внутри анонимного свидания — выход и меню
 ANON_CHAT_MENU = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=MenuText.STOP_BLIND_DATE)]],
+    keyboard=[
+        [KeyboardButton(text=MenuText.STOP_BLIND_DATE)],
+        [KeyboardButton(text=MenuText.MENU)],
+    ],
     resize_keyboard=True,
 )
 
