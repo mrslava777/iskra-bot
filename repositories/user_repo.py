@@ -37,9 +37,10 @@ async def get_user(tg_id: int) -> Optional[dict]:
             return data
 
     async with db() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM users WHERE tg_id = $1", tg_id,
+        cursor = await conn.execute(
+            "SELECT * FROM users WHERE tg_id = ?", (tg_id,)
         )
+        row = await cursor.fetchone()
         result = dict(row) if row else None
 
     _user_cache[tg_id] = (result, now)
@@ -53,11 +54,12 @@ async def get_user_names_batch(tg_ids: list[int]) -> dict[int, str]:
     if not tg_ids:
         return {}
     async with db() as conn:
-        placeholders = ",".join(f"${i+1}" for i in range(len(tg_ids)))
-        rows = await conn.fetch(
+        placeholders = ",".join("?" for _ in tg_ids)
+        cursor = await conn.execute(
             f"SELECT tg_id, name FROM users WHERE tg_id IN ({placeholders})",
-            *tg_ids,
+            tuple(tg_ids),
         )
+        rows = await cursor.fetchall()
         return {r["tg_id"]: r["name"] or f"ID:{r['tg_id']}" for r in rows}
 
 
@@ -78,37 +80,83 @@ async def upsert_user(
     max_age: Optional[int] = None,
 ) -> None:
     _invalidate_user(tg_id)
+    import time as _time
+    now = int(_time.time())
     async with db() as conn:
-        await conn.execute(
-            """
-            INSERT INTO users (tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, daily_q, daily_a, min_age, max_age, created_at, last_active, streak, rating, anon_messages_count)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, 1), COALESCE($12, 0), 0, '', COALESCE($13, 18), COALESCE($14, 99), EXTRACT(EPOCH FROM NOW())::INTEGER, EXTRACT(EPOCH FROM NOW())::INTEGER, 0, 0, 0)
-            ON CONFLICT (tg_id) DO UPDATE SET
-                username = COALESCE($2, users.username),
-                name = COALESCE($3, users.name),
-                age = COALESCE($4, users.age),
-                gender = COALESCE($5, users.gender),
-                seeking = COALESCE($6, users.seeking),
-                city = COALESCE($7, users.city),
-                bio = COALESCE($8, users.bio),
-                interests = COALESCE($9, users.interests),
-                photo_id = COALESCE($10, users.photo_id),
-                active = COALESCE($11, users.active),
-                verified = COALESCE($12, users.verified),
-                min_age = COALESCE($13, users.min_age),
-                max_age = COALESCE($14, users.max_age),
-                last_active = EXTRACT(EPOCH FROM NOW())::INTEGER
-            """,
-            tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, min_age, max_age,
-        )
+        # Check if user exists
+        cur = await conn.execute("SELECT 1 FROM users WHERE tg_id = ?", (tg_id,))
+        exists = await cur.fetchone()
+
+        if exists:
+            # Update existing user
+            fields = []
+            params = []
+            if username is not None:
+                fields.append("username = ?")
+                params.append(username)
+            if name is not None:
+                fields.append("name = ?")
+                params.append(name)
+            if age is not None:
+                fields.append("age = ?")
+                params.append(age)
+            if gender is not None:
+                fields.append("gender = ?")
+                params.append(gender)
+            if seeking is not None:
+                fields.append("seeking = ?")
+                params.append(seeking)
+            if city is not None:
+                fields.append("city = ?")
+                params.append(city)
+            if bio is not None:
+                fields.append("bio = ?")
+                params.append(bio)
+            if interests is not None:
+                fields.append("interests = ?")
+                params.append(interests)
+            if photo_id is not None:
+                fields.append("photo_id = ?")
+                params.append(photo_id)
+            if active is not None:
+                fields.append("active = ?")
+                params.append(active)
+            if verified is not None:
+                fields.append("verified = ?")
+                params.append(verified)
+            if min_age is not None:
+                fields.append("min_age = ?")
+                params.append(min_age)
+            if max_age is not None:
+                fields.append("max_age = ?")
+                params.append(max_age)
+
+            fields.append("last_active = ?")
+            params.append(now)
+            params.append(tg_id)
+
+            if fields:
+                sql = f"UPDATE users SET {', '.join(fields)} WHERE tg_id = ?"
+                await conn.execute(sql, tuple(params))
+        else:
+            # Insert new user
+            await conn.execute(
+                """
+                INSERT INTO users (tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, daily_q, daily_a, min_age, max_age, created_at, last_active, streak, rating, anon_messages_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1), COALESCE(?, 0), 0, '', COALESCE(?, 18), COALESCE(?, 99), ?, ?, 0, 0, 0)
+                """,
+                (tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, min_age, max_age, now, now),
+            )
 
 
 async def touch_activity(tg_id: int) -> None:
     """Обновляет last_active. Не инвалидирует кэш — last_active не критичен."""
+    import time as _time
+    now = int(_time.time())
     async with db() as conn:
         await conn.execute(
-            "UPDATE users SET last_active = EXTRACT(EPOCH FROM NOW())::INTEGER WHERE tg_id = $1",
-            tg_id,
+            "UPDATE users SET last_active = ? WHERE tg_id = ?",
+            (now, tg_id),
         )
 
 
@@ -116,17 +164,24 @@ async def increment_anon_messages(tg_id: int) -> None:
     _invalidate_user(tg_id)
     async with db() as conn:
         await conn.execute(
-            "UPDATE users SET anon_messages_count = anon_messages_count + 1 WHERE tg_id = $1",
-            tg_id,
+            "UPDATE users SET anon_messages_count = anon_messages_count + 1 WHERE tg_id = ?",
+            (tg_id,),
         )
 
 
 async def update_max_compat(tg_id: int, pct: int) -> None:
     """Запоминает максимальную совместимость, которую видел пользователь."""
     async with db() as conn:
+        cur = await conn.execute(
+            "SELECT COALESCE(max_compat, 0) FROM users WHERE tg_id = ?",
+            (tg_id,),
+        )
+        row = await cur.fetchone()
+        current = row[0] if row else 0
+        new_max = max(current, pct)
         await conn.execute(
-            "UPDATE users SET max_compat = GREATEST(COALESCE(max_compat, 0), $1) WHERE tg_id = $2",
-            pct, tg_id,
+            "UPDATE users SET max_compat = ? WHERE tg_id = ?",
+            (new_max, tg_id),
         )
 
 
@@ -138,19 +193,18 @@ async def delete_user(tg_id: int) -> None:
     """
     _invalidate_user(tg_id)
     async with db() as conn:
-        async with conn.transaction():
-            statements = [
-                ("DELETE FROM users WHERE tg_id = $1", (tg_id,)),
-                ("DELETE FROM photos WHERE tg_id = $1", (tg_id,)),
-                ("DELETE FROM likes WHERE from_id = $1 OR to_id = $1", (tg_id,)),
-                ("DELETE FROM matches WHERE a_id = $1 OR b_id = $1", (tg_id,)),
-                ("DELETE FROM reports WHERE from_id = $1 OR to_id = $1", (tg_id,)),
-                ("DELETE FROM shown_profiles WHERE from_id = $1 OR to_id = $1", (tg_id,)),
-                ("DELETE FROM anon_queue WHERE tg_id = $1", (tg_id,)),
-                ("DELETE FROM anon_sessions WHERE a_id = $1 OR b_id = $1", (tg_id,)),
-                ("DELETE FROM relationships WHERE user1_id = $1 OR user2_id = $1", (tg_id,)),
-                ("DELETE FROM tickets WHERE tg_id = $1", (tg_id,)),
-                ("DELETE FROM user_badges WHERE tg_id = $1", (tg_id,)),
-            ]
-            for sql, params in statements:
-                await conn.execute(sql, *params)
+        statements = [
+            ("DELETE FROM users WHERE tg_id = ?", (tg_id,)),
+            ("DELETE FROM photos WHERE tg_id = ?", (tg_id,)),
+            ("DELETE FROM likes WHERE from_id = ? OR to_id = ?", (tg_id, tg_id)),
+            ("DELETE FROM matches WHERE a_id = ? OR b_id = ?", (tg_id, tg_id)),
+            ("DELETE FROM reports WHERE from_id = ? OR to_id = ?", (tg_id, tg_id)),
+            ("DELETE FROM shown_profiles WHERE from_id = ? OR to_id = ?", (tg_id, tg_id)),
+            ("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,)),
+            ("DELETE FROM anon_sessions WHERE a_id = ? OR b_id = ?", (tg_id, tg_id)),
+            ("DELETE FROM relationships WHERE user1_id = ? OR user2_id = ?", (tg_id, tg_id)),
+            ("DELETE FROM tickets WHERE tg_id = ?", (tg_id,)),
+            ("DELETE FROM user_badges WHERE tg_id = ?", (tg_id,)),
+        ]
+        for sql, params in statements:
+            await conn.execute(sql, params)

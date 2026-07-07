@@ -26,34 +26,42 @@ async def next_candidate_and_mark(viewer_id: int, viewer: dict | None = None) ->
     max_age = viewer.get("max_age") or 99
 
     async with db() as conn:
-        row = await conn.fetchrow(
+        # SQLite doesn't support CTEs with INSERT in the same way, so we do it in two steps
+        # but within the same transaction (handled by db() context manager)
+        cursor = await conn.execute(
             """
-            WITH cand AS (
-                SELECT u.* FROM users u
-                LEFT JOIN shown_profiles sp ON sp.from_id = $1 AND sp.to_id = u.tg_id
-                LEFT JOIN likes l ON l.from_id = $1 AND l.to_id = u.tg_id
-                WHERE u.tg_id != $1
-                  AND u.active = 1
-                  AND u.is_banned = 0
-                  AND u.photo_id IS NOT NULL
-                  AND u.name IS NOT NULL
-                  AND sp.to_id IS NULL
-                  AND l.to_id IS NULL
-                  AND ($2 = 'any' OR u.gender = $2)
-                  AND ($3 = '' OR u.seeking = $3 OR u.seeking = 'any')
-                  AND u.age BETWEEN $4 AND $5
-                ORDER BY u.last_active DESC
-                LIMIT 1
-            ), mark AS (
-                INSERT INTO shown_profiles (from_id, to_id, shown_at)
-                SELECT $1, tg_id, EXTRACT(EPOCH FROM NOW())::INTEGER FROM cand
-                ON CONFLICT (from_id, to_id) DO NOTHING
-            )
-            SELECT * FROM cand
+            SELECT u.* FROM users u
+            LEFT JOIN shown_profiles sp ON sp.from_id = ? AND sp.to_id = u.tg_id
+            LEFT JOIN likes l ON l.from_id = ? AND l.to_id = u.tg_id
+            WHERE u.tg_id != ?
+              AND u.active = 1
+              AND u.is_banned = 0
+              AND u.photo_id IS NOT NULL
+              AND u.name IS NOT NULL
+              AND sp.to_id IS NULL
+              AND l.to_id IS NULL
+              AND (? = 'any' OR u.gender = ?)
+              AND (? = '' OR u.seeking = ? OR u.seeking = 'any')
+              AND u.age BETWEEN ? AND ?
+            ORDER BY u.last_active DESC
+            LIMIT 1
             """,
-            viewer_id, seeking, gender, min_age, max_age,
+            (viewer_id, viewer_id, viewer_id, seeking, seeking, gender, gender, min_age, max_age),
         )
-        return dict(row) if row else None
+        row = await cursor.fetchone()
+
+        if row:
+            # Mark as shown
+            now = int(__import__('time').time())
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO shown_profiles (from_id, to_id, shown_at)
+                VALUES (?, ?, ?)
+                """,
+                (viewer_id, row["tg_id"], now),
+            )
+            return dict(row)
+        return None
 
 
 async def next_candidate_full(viewer_id: int, viewer: dict | None = None) -> Optional[dict]:
@@ -71,41 +79,47 @@ async def next_candidate_full(viewer_id: int, viewer: dict | None = None) -> Opt
     max_age = viewer.get("max_age") or 99
 
     async with db() as conn:
-        row = await conn.fetchrow(
+        cursor = await conn.execute(
             """
-            WITH cand AS (
-                SELECT u.*,
-                       (SELECT COUNT(*) FROM photos p WHERE p.tg_id = u.tg_id) as photo_count,
-                       (SELECT array_agg(badge_id) FROM user_badges ub WHERE ub.tg_id = u.tg_id) as badge_ids
-                FROM users u
-                LEFT JOIN shown_profiles sp ON sp.from_id = $1 AND sp.to_id = u.tg_id
-                LEFT JOIN likes l ON l.from_id = $1 AND l.to_id = u.tg_id
-                WHERE u.tg_id != $1
-                  AND u.active = 1
-                  AND u.is_banned = 0
-                  AND u.photo_id IS NOT NULL
-                  AND u.name IS NOT NULL
-                  AND sp.to_id IS NULL
-                  AND l.to_id IS NULL
-                  AND ($2 = 'any' OR u.gender = $2)
-                  AND ($3 = '' OR u.seeking = $3 OR u.seeking = 'any')
-                  AND u.age BETWEEN $4 AND $5
-                ORDER BY u.last_active DESC
-                LIMIT 1
-            ), mark AS (
-                INSERT INTO shown_profiles (from_id, to_id, shown_at)
-                SELECT $1, tg_id, EXTRACT(EPOCH FROM NOW())::INTEGER FROM cand
-                ON CONFLICT (from_id, to_id) DO NOTHING
-            )
-            SELECT * FROM cand
+            SELECT u.*,
+                   (SELECT COUNT(*) FROM photos p WHERE p.tg_id = u.tg_id) as photo_count,
+                   (SELECT GROUP_CONCAT(badge_id) FROM user_badges ub WHERE ub.tg_id = u.tg_id) as badge_ids_str
+            FROM users u
+            LEFT JOIN shown_profiles sp ON sp.from_id = ? AND sp.to_id = u.tg_id
+            LEFT JOIN likes l ON l.from_id = ? AND l.to_id = u.tg_id
+            WHERE u.tg_id != ?
+              AND u.active = 1
+              AND u.is_banned = 0
+              AND u.photo_id IS NOT NULL
+              AND u.name IS NOT NULL
+              AND sp.to_id IS NULL
+              AND l.to_id IS NULL
+              AND (? = 'any' OR u.gender = ?)
+              AND (? = '' OR u.seeking = ? OR u.seeking = 'any')
+              AND u.age BETWEEN ? AND ?
+            ORDER BY u.last_active DESC
+            LIMIT 1
             """,
-            viewer_id, seeking, gender, min_age, max_age,
+            (viewer_id, viewer_id, viewer_id, seeking, seeking, gender, gender, min_age, max_age),
         )
+        row = await cursor.fetchone()
         if not row:
             return None
         result = dict(row)
         result["photo_count"] = row["photo_count"] or 0
-        result["badge_ids"] = row["badge_ids"] or []
+        # Parse comma-separated badge_ids
+        badge_str = row["badge_ids_str"]
+        result["badge_ids"] = badge_str.split(",") if badge_str else []
+
+        # Mark as shown
+        now = int(__import__('time').time())
+        await conn.execute(
+            """
+            INSERT OR IGNORE INTO shown_profiles (from_id, to_id, shown_at)
+            VALUES (?, ?, ?)
+            """,
+            (viewer_id, result["tg_id"], now),
+        )
         return result
 
 
@@ -124,39 +138,40 @@ async def next_candidate(viewer_id: int, viewer: dict | None = None) -> Optional
     max_age = viewer.get("max_age") or 99
 
     async with db() as conn:
-        row = await conn.fetchrow(
+        cursor = await conn.execute(
             """
             SELECT u.* FROM users u
-            LEFT JOIN shown_profiles sp ON sp.from_id = $1 AND sp.to_id = u.tg_id
-            LEFT JOIN likes l ON l.from_id = $1 AND l.to_id = u.tg_id
-            WHERE u.tg_id != $1
+            LEFT JOIN shown_profiles sp ON sp.from_id = ? AND sp.to_id = u.tg_id
+            LEFT JOIN likes l ON l.from_id = ? AND l.to_id = u.tg_id
+            WHERE u.tg_id != ?
               AND u.active = 1
               AND u.is_banned = 0
               AND u.photo_id IS NOT NULL
               AND u.name IS NOT NULL
               AND sp.to_id IS NULL
               AND l.to_id IS NULL
-              AND ($2 = 'any' OR u.gender = $2)
-              AND ($3 = '' OR u.seeking = $3 OR u.seeking = 'any')
-              AND u.age BETWEEN $4 AND $5
+              AND (? = 'any' OR u.gender = ?)
+              AND (? = '' OR u.seeking = ? OR u.seeking = 'any')
+              AND u.age BETWEEN ? AND ?
             ORDER BY u.last_active DESC
             LIMIT 1
             """,
-            viewer_id, seeking, gender, min_age, max_age,
+            (viewer_id, viewer_id, viewer_id, seeking, seeking, gender, gender, min_age, max_age),
         )
+        row = await cursor.fetchone()
         return dict(row) if row else None
 
 
 async def mark_shown(from_id: int, to_id: int) -> None:
     """Отмечает профиль как показанный."""
+    now = int(__import__('time').time())
     async with db() as conn:
         await conn.execute(
             """
-            INSERT INTO shown_profiles (from_id, to_id, shown_at)
-            VALUES ($1, $2, EXTRACT(EPOCH FROM NOW())::INTEGER)
-            ON CONFLICT (from_id, to_id) DO NOTHING
+            INSERT OR IGNORE INTO shown_profiles (from_id, to_id, shown_at)
+            VALUES (?, ?, ?)
             """,
-            from_id, to_id,
+            (from_id, to_id, now),
         )
 
 
@@ -165,9 +180,8 @@ async def cleanup_shown_profiles(max_age_days: int = 30) -> int:
     import time
     cutoff = int(time.time()) - max_age_days * 86400
     async with db() as conn:
-        result = await conn.execute(
-            "DELETE FROM shown_profiles WHERE shown_at < $1 AND shown_at > 0",
-            cutoff,
+        cursor = await conn.execute(
+            "DELETE FROM shown_profiles WHERE shown_at < ? AND shown_at > 0",
+            (cutoff,),
         )
-        count = int(result.split()[-1]) if result else 0
-        return count
+        return cursor.rowcount

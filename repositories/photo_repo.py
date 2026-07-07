@@ -26,30 +26,32 @@ async def add_photo(tg_id: int, photo_id: str) -> None:
     """Добавляет дополнительное фото в следующую свободную позицию."""
     _invalidate_photo_count(tg_id)
     async with db() as conn:
-        row = await conn.fetchrow(
-            "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM photos WHERE tg_id = $1",
-            tg_id,
+        cursor = await conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM photos WHERE tg_id = ?",
+            (tg_id,),
         )
+        row = await cursor.fetchone()
         pos = row["pos"] if row else 0
         if pos > Photo.MAX_EXTRA:
             return
         await conn.execute(
             """
             INSERT INTO photos (tg_id, photo_id, position)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (tg_id, position) DO UPDATE SET photo_id = EXCLUDED.photo_id
+            VALUES (?, ?, ?)
+            ON CONFLICT (tg_id, position) DO UPDATE SET photo_id = excluded.photo_id
             """,
-            tg_id, photo_id, pos,
+            (tg_id, photo_id, pos),
         )
 
 
 async def get_photos(tg_id: int) -> list[dict]:
     """Все фото пользователя по возрастанию позиции (0 — главное)."""
     async with db() as conn:
-        rows = await conn.fetch(
-            "SELECT id, tg_id, photo_id, position FROM photos WHERE tg_id = $1 ORDER BY position ASC",
-            tg_id,
+        cursor = await conn.execute(
+            "SELECT id, tg_id, photo_id, position FROM photos WHERE tg_id = ? ORDER BY position ASC",
+            (tg_id,),
         )
+        rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
 
@@ -64,10 +66,11 @@ async def photo_count(tg_id: int) -> int:
             return count
 
     async with db() as conn:
-        row = await conn.fetchrow(
-            "SELECT COUNT(*) AS c FROM photos WHERE tg_id = $1",
-            tg_id,
+        cursor = await conn.execute(
+            "SELECT COUNT(*) AS c FROM photos WHERE tg_id = ?",
+            (tg_id,),
         )
+        row = await cursor.fetchone()
         result = row["c"] if row else 0
 
     _photo_count_cache[tg_id] = (result, now)
@@ -80,33 +83,33 @@ async def remove_photo(tg_id: int, position: int) -> None:
     """Удаляет фото по позиции и переиндексирует оставшиеся."""
     _invalidate_photo_count(tg_id)
     async with db() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "DELETE FROM photos WHERE tg_id = $1 AND position = $2",
-                tg_id, position,
-            )
-            await conn.execute(
-                "UPDATE photos SET position = position - 1 WHERE tg_id = $1 AND position > $2",
-                tg_id, position,
-            )
+        await conn.execute(
+            "DELETE FROM photos WHERE tg_id = ? AND position = ?",
+            (tg_id, position),
+        )
+        await conn.execute(
+            "UPDATE photos SET position = position - 1 WHERE tg_id = ? AND position > ?",
+            (tg_id, position),
+        )
 
 
 async def sync_photos_to_gallery(tg_id: int) -> None:
     """Гарантирует, что главное фото из users.photo_id лежит в galleries как position 0."""
     _invalidate_photo_count(tg_id)
     async with db() as conn:
-        row = await conn.fetchrow(
-            "SELECT photo_id FROM users WHERE tg_id = $1",
-            tg_id,
+        cursor = await conn.execute(
+            "SELECT photo_id FROM users WHERE tg_id = ?",
+            (tg_id,),
         )
+        row = await cursor.fetchone()
         main_photo = row["photo_id"] if row else None
         if not main_photo:
             return
         await conn.execute(
             """
             INSERT INTO photos (tg_id, photo_id, position)
-            VALUES ($1, $2, 0)
-            ON CONFLICT (tg_id, position) DO UPDATE SET photo_id = EXCLUDED.photo_id
+            VALUES (?, ?, 0)
+            ON CONFLICT (tg_id, position) DO UPDATE SET photo_id = excluded.photo_id
             """,
-            tg_id, main_photo,
+            (tg_id, main_photo),
         )

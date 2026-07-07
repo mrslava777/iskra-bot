@@ -11,22 +11,22 @@ async def create_ticket(
     photo_id: Optional[str] = None,
 ) -> int:
     """Создаёт тикет и возвращает его id."""
+    now = int(__import__('time').time())
     async with db() as conn:
-        row = await conn.fetchrow(
+        cursor = await conn.execute(
             """
             INSERT INTO tickets (tg_id, category, text, photo_id, status, created_at)
-            VALUES ($1, $2, $3, $4, 'open', EXTRACT(EPOCH FROM NOW())::INTEGER)
-            RETURNING id
+            VALUES (?, ?, ?, ?, 'open', ?)
             """,
-            tg_id, category, text, photo_id,
+            (tg_id, category, text, photo_id, now),
         )
-        return row["id"] if row else 0
+        return cursor.lastrowid
 
 
 async def reply_ticket(ticket_id: int, reply_text: str) -> None:
     """Сохраняет ответ администратора и помечает тикет отвеченным."""
     async with db() as conn:
         await conn.execute(
-            "UPDATE tickets SET reply = $1, status = 'replied' WHERE id = $2",
-            reply_text, ticket_id,
+            "UPDATE tickets SET reply = ?, status = 'replied' WHERE id = ?",
+            (reply_text, ticket_id),
         )

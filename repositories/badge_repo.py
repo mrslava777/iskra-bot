@@ -30,10 +30,11 @@ async def get_user_badge_ids(tg_id: int) -> set[str]:
             return ids
 
     async with db() as conn:
-        rows = await conn.fetch(
-            "SELECT badge_id FROM user_badges WHERE tg_id = $1",
-            tg_id,
+        cursor = await conn.execute(
+            "SELECT badge_id FROM user_badges WHERE tg_id = ?",
+            (tg_id,),
         )
+        rows = await cursor.fetchall()
         result = {r["badge_id"] for r in rows}
 
     _badge_cache[tg_id] = (result, now)
@@ -64,11 +65,12 @@ async def get_user_badge_ids_batch(tg_ids: list[int]) -> dict[int, set[str]]:
         return result
 
     async with db() as conn:
-        placeholders = ",".join(f"${i+1}" for i in range(len(missing)))
-        rows = await conn.fetch(
+        placeholders = ",".join("?" for _ in missing)
+        cursor = await conn.execute(
             f"SELECT tg_id, badge_id FROM user_badges WHERE tg_id IN ({placeholders})",
-            *missing,
+            tuple(missing),
         )
+        rows = await cursor.fetchall()
         fetched: dict[int, set[str]] = {}
         for r in rows:
             uid = r["tg_id"]
@@ -96,23 +98,23 @@ async def award_badge(tg_id: int, badge_id: str, awarded_at: int) -> None:
     async with db() as conn:
         await conn.execute(
             """
-            INSERT INTO user_badges (tg_id, badge_id, awarded_at) VALUES ($1, $2, $3)
-            ON CONFLICT (tg_id, badge_id) DO NOTHING
+            INSERT OR IGNORE INTO user_badges (tg_id, badge_id, awarded_at) VALUES (?, ?, ?)
             """,
-            tg_id, badge_id, awarded_at,
+            (tg_id, badge_id, awarded_at),
         )
 
 
 async def get_user_stats(tg_id: int) -> dict:
     """Возвращает все статистики пользователя одним запросом."""
     async with db() as conn:
-        row = await conn.fetchrow("""
+        cursor = await conn.execute("""
             SELECT
-                (SELECT COUNT(*) FROM matches WHERE a_id = $1 OR b_id = $1) as matches,
-                (SELECT COUNT(*) FROM likes WHERE from_id = $2 AND is_like = 1) as likes_sent,
-                (SELECT COUNT(*) FROM reports WHERE from_id = $3) as reports_sent,
-                (SELECT COUNT(*) FROM likes WHERE from_id = $4 AND is_like = 1 AND message IS NOT NULL) as msglikes
-        """, tg_id, tg_id, tg_id, tg_id)
+                (SELECT COUNT(*) FROM matches WHERE a_id = ? OR b_id = ?) as matches,
+                (SELECT COUNT(*) FROM likes WHERE from_id = ? AND is_like = 1) as likes_sent,
+                (SELECT COUNT(*) FROM reports WHERE from_id = ?) as reports_sent,
+                (SELECT COUNT(*) FROM likes WHERE from_id = ? AND is_like = 1 AND message IS NOT NULL) as msglikes
+        """, (tg_id, tg_id, tg_id, tg_id, tg_id))
+        row = await cursor.fetchone()
         return {
             "matches": row["matches"] if row else 0,
             "likes_sent": row["likes_sent"] if row else 0,
