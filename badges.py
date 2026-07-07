@@ -1,150 +1,293 @@
-"""Раздел «Артефакты» — коллекция значков и прогресс.
+"""Система достижений (Артефакты) Искры.
 
-FIX: при входе в раздел показывается HIDE_MENU (только кнопка "Меню"),
-     как при поиске анкет и свидании вслепую.
+Каждый значок имеет:
+  - id: уникальный ключ
+  - name: название для пользователя
+  - description: описание как получить
+  - icon: emoji или текстовая иконка
+  - rarity: common / rare / epic / legendary
+  - condition: функция-проверка (user_row, stats) -> bool
+  - color: hex-цвет для оформления
+  - progress_info: (label, current_key, target) для отображения прогресса
 """
-from aiogram import F, Router
-from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from typing import Callable
 
-import repositories.badge_repo as badge_repo
-import repositories.user_repo as user_repo
-from badges import BADGES, RARITY_EMOJI, RARITY_ORDER, get_badge_progress, rarity_label
-from data.constants import EMOJI, MenuText, Message as Msg, ProgressBar
-from data.enums import BadgeAction, CallbackPrefix, Command as Cmd
-from keyboards import HIDE_MENU, MAIN_MENU, badges_kb, badge_progress_kb
-from services.badge_formatter import format_badge_card
-from services.badge_service import check_and_award, get_user_badges, get_user_stats, get_user_stats_with_user
-
-router = Router()
-
-TOTAL_BADGES = len(BADGES)
-_BADGE_PAGE_SIZE = 10
+BadgeDef = dict
 
 
-def _mini_bar(pct: int) -> str:
-    """Компактный прогресс-бар."""
-    filled = min(10, pct // 10)
-    return ProgressBar.FILLED * filled + ProgressBar.EMPTY * (10 - filled)
+def _check_first_match(user, stats):
+    return stats.get("matches", 0) >= 1
 
 
-def _format_collection(badges: list[dict]) -> str:
-    """Текст коллекции значков пользователя."""
-    if not badges:
-        return Msg.NO_BADGES
-    ordered = sorted(badges, key=lambda b: RARITY_ORDER.get(b["rarity"], 0), reverse=True)
-    lines = [Msg.BADGE_COLLECTION_TITLE.format(len(badges)), ""]
-    for b in ordered:
-        emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
-        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji}\n<i>{b['description']}</i>")
-
-    # Прогресс-бар в коллекции
-    pct = int(len(badges) / TOTAL_BADGES * 100)
-    bar = _mini_bar(pct)
-    lines.append(f"\n📊 Собрано: <b>{len(badges)}</b> / {TOTAL_BADGES} ({pct}%)")
-    lines.append(f"{bar}")
-    return "\n".join(lines)
+def _check_ten_matches(user, stats):
+    return stats.get("matches", 0) >= 10
 
 
-def _format_progress(locked: list[dict], user: dict, stats: dict, page: int = 0) -> str:
-    """Форматирует страницу прогресса (недостающих артефактов) с прогрессом под каждым."""
-    if not locked:
-        return "🎉 <b>Все артефакты собраны!</b>\n\nТы настоящий легенда Искры!"
-
-    start = page * _BADGE_PAGE_SIZE
-    end = start + _BADGE_PAGE_SIZE
-    page_badges = locked[start:end]
-    total_pages = (len(locked) + _BADGE_PAGE_SIZE - 1) // _BADGE_PAGE_SIZE
-
-    lines = ["📈 <b>Прогресс Артефактов</b>", ""]
-    lines.append(f"🔒 Осталось собрать: <b>{len(locked)}</b> / {TOTAL_BADGES}")
-    lines.append("")
-
-    for b in page_badges:
-        emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
-        lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji} ({rarity_label(b['rarity'])})")
-        lines.append(f"<i>├ {b['description']}</i>")
-
-        # Прогресс под каждым артефактом
-        progress_line = get_badge_progress(b, user, stats)
-        if progress_line:
-            lines.append(f"<code>  {progress_line}</code>")
-        else:
-            # Бинарные (да/нет) — показываем статус
-            if b["condition"](user, stats):
-                lines.append(f"<code>  ✅ Условие выполнено!</code>")
-            else:
-                lines.append(f"<code>  ⏳ Ещё не выполнено</code>")
-        lines.append("")  # отступ между артефактами
-
-    if total_pages > 1:
-        lines.append(f"📄 Страница {page + 1} / {total_pages}")
-
-    return "\n".join(lines)
+def _check_fifty_matches(user, stats):
+    return stats.get("matches", 0) >= 50
 
 
-@router.message(Command(Cmd.BADGES.value[1:]))
-@router.message(F.text == MenuText.BADGES)
-async def cmd_badges(message: Message) -> None:
-    """Показывает коллекцию артефактов. Скрывает меню (HIDE_MENU)."""
-    user = await user_repo.get_user(message.from_user.id)
-    if not user or not user["name"]:
-        await message.answer(Msg.CREATE_PROFILE_FIRST)
-        return
-
-    new_badges = await check_and_award(message.from_user.id)
-    for badge in new_badges:
-        await message.answer(format_badge_card(badge, is_new=True))
-
-    badges = await get_user_badges(message.from_user.id)
-    # FIX: показываем HIDE_MENU вместо полного меню
-    await message.answer(_format_collection(badges), reply_markup=HIDE_MENU)
+def _check_first_like(user, stats):
+    return stats.get("likes_sent", 0) >= 1
 
 
-@router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.COLLECTION.value}")
-async def cb_collection(call: CallbackQuery) -> None:
-    """Обновляет коллекцию."""
-    await check_and_award(call.from_user.id)
-    badges = await get_user_badges(call.from_user.id)
-    try:
-        await call.message.edit_text(_format_collection(badges), reply_markup=badges_kb(len(badges)))
-    except Exception:
-        pass
-    await call.answer()
+def _check_hundred_likes(user, stats):
+    return stats.get("likes_sent", 0) >= 100
 
 
-@router.callback_query(F.data.startswith(f"{CallbackPrefix.BADGE.value}:{BadgeAction.PROGRESS.value}"))
-async def cb_progress(call: CallbackQuery) -> None:
-    """Показывает прогресс (недостающие значки) с пагинацией."""
-    earned = await badge_repo.get_user_badge_ids(call.from_user.id)
-    locked = [b for b in BADGES if b["id"] not in earned]
-
-    # Определяем страницу из callback_data
-    parts = call.data.split(":")
-    page = int(parts[2]) if len(parts) > 2 else 0
-
-    total_pages = max(1, (len(locked) + _BADGE_PAGE_SIZE - 1) // _BADGE_PAGE_SIZE) if locked else 1
-    page = max(0, min(page, total_pages - 1))
-
-    # FIX v5: используем get_user_stats (user не загружен в этом контексте)
-    user, stats = await get_user_stats(call.from_user.id)
-
-    text = _format_progress(locked, user, stats, page)
-    kb = badge_progress_kb(page=page, total_pages=total_pages)
-
-    try:
-        await call.message.edit_text(text, reply_markup=kb)
-    except Exception:
-        pass
-    await call.answer()
+def _check_streak_7(user, stats):
+    return (user["streak"] or 0) >= 7
 
 
-@router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.BACK.value}")
-async def cb_back_to_menu(call: CallbackQuery) -> None:
-    """Возврат в главное меню из артефактов."""
-    await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    await call.answer()
+def _check_streak_30(user, stats):
+    return (user["streak"] or 0) >= 30
+
+
+def _check_high_compat(user, stats):
+    return stats.get("max_compat", 0) >= 95
+
+
+def _check_revealer(user, stats):
+    return stats.get("anon_reveals", 0) >= 10
+
+
+def _check_chatter(user, stats):
+    return stats.get("anon_messages", 0) >= 100
+
+
+def _check_popular(user, stats):
+    return (user["rating"] or 0) >= 50
+
+
+def _check_verified(user, stats):
+    return bool(user["verified"])
+
+
+def _check_profile_complete(user, stats):
+    checks = [
+        user["name"],
+        user["age"],
+        user["city"],
+        user["bio"],
+        user["interests"],
+        user["daily_a"],
+    ]
+    return sum(1 for c in checks if c) >= 5
+
+
+def _check_photographer(user, stats):
+    return stats.get("photo_count", 0) >= 5
+
+
+def _check_reporter(user, stats):
+    return stats.get("reports_sent", 0) >= 1
+
+
+def _check_icebreaker(user, stats):
+    return stats.get("msglikes", 0) >= 5
+
+
+BADGES: list[BadgeDef] = [
+    # --- Обычные (common) ---
+    {
+        "id": "first_like",
+        "name": "Первая симпатия",
+        "description": "Поставь свой первый лайк",
+        "icon": "💝",
+        "rarity": "common",
+        "condition": _check_first_like,
+        "color": "#95a5a6",
+        "progress": ("лайков", "likes_sent", 1),
+    },
+    {
+        "id": "profile_complete",
+        "name": "Открытая книга",
+        "description": "Заполни 5 из 6 полей анкеты",
+        "icon": "📖",
+        "rarity": "common",
+        "condition": _check_profile_complete,
+        "color": "#95a5a6",
+        "progress": None,  # бинарный (да/нет)
+    },
+    {
+        "id": "first_match",
+        "name": "Первая Искра",
+        "description": "Получи первый мэтч",
+        "icon": "🔥",
+        "rarity": "common",
+        "condition": _check_first_match,
+        "color": "#e67e22",
+        "progress": ("мэтчей", "matches", 1),
+    },
+    {
+        "id": "reporter",
+        "name": "Страж порядка",
+        "description": "Отправь жалобу на нарушителя",
+        "icon": "🛡️",
+        "rarity": "common",
+        "condition": _check_reporter,
+        "color": "#95a5a6",
+        "progress": ("жалоб", "reports_sent", 1),
+    },
+    # --- Редкие (rare) ---
+    {
+        "id": "streak_7",
+        "name": "Неделя в огне",
+        "description": "7 дней активности подряд",
+        "icon": "📅",
+        "rarity": "rare",
+        "condition": _check_streak_7,
+        "color": "#3498db",
+        "progress": ("дней подряд", "streak", 7),
+    },
+    {
+        "id": "ten_matches",
+        "name": "Сердцеед",
+        "description": "10 мэтчей",
+        "icon": "💘",
+        "rarity": "rare",
+        "condition": _check_ten_matches,
+        "color": "#e74c3c",
+        "progress": ("мэтчей", "matches", 10),
+    },
+    {
+        "id": "icebreaker",
+        "name": "Мастер знакомств",
+        "description": "5 лайков с сообщением",
+        "icon": "💬",
+        "rarity": "rare",
+        "condition": _check_icebreaker,
+        "color": "#3498db",
+        "progress": ("лайков с сообщением", "msglikes", 5),
+    },
+    {
+        "id": "photographer",
+        "name": "Фотограф",
+        "description": "Загрузи 5 фото в анкету",
+        "icon": "📸",
+        "rarity": "rare",
+        "condition": _check_photographer,
+        "color": "#3498db",
+        "progress": ("фото", "photo_count", 5),
+    },
+    {
+        "id": "verified",
+        "name": "Проверенный",
+        "description": "Пройди верификацию профиля",
+        "icon": "✅",
+        "rarity": "rare",
+        "condition": _check_verified,
+        "color": "#2ecc71",
+        "progress": None,  # бинарный
+    },
+    # --- Эпические (epic) ---
+    {
+        "id": "popular",
+        "name": "Звезда",
+        "description": "Получи 50 лайков",
+        "icon": "⭐",
+        "rarity": "epic",
+        "condition": _check_popular,
+        "color": "#9b59b6",
+        "progress": ("лайков получено", "rating", 50),
+    },
+    {
+        "id": "high_compat",
+        "name": "Идеальная Пара",
+        "description": "Найди анкету с 95%+ совместимостью",
+        "icon": "💎",
+        "rarity": "epic",
+        "condition": _check_high_compat,
+        "color": "#9b59b6",
+        "progress": ("% совместимости", "max_compat", 95),
+    },
+    {
+        "id": "revealer",
+        "name": "Открывашка",
+        "description": "10 раз открылся на свидании вслепую",
+        "icon": "🎭",
+        "rarity": "epic",
+        "condition": _check_revealer,
+        "color": "#9b59b6",
+        "progress": ("открытий", "anon_reveals", 10),
+    },
+    {
+        "id": "chatter",
+        "name": "Болтун",
+        "description": "100 сообщений в анонимном чате",
+        "icon": "🗣️",
+        "rarity": "epic",
+        "condition": _check_chatter,
+        "color": "#9b59b6",
+        "progress": ("сообщений", "anon_messages", 100),
+    },
+    # --- Легендарные (legendary) ---
+    {
+        "id": "streak_30",
+        "name": "Легенда Искры",
+        "description": "30 дней активности подряд",
+        "icon": "👑",
+        "rarity": "legendary",
+        "condition": _check_streak_30,
+        "color": "#f1c40f",
+        "progress": ("дней подряд", "streak", 30),
+    },
+    {
+        "id": "fifty_matches",
+        "name": "Король/Королева мэтчей",
+        "description": "50 мэтчей",
+        "icon": "🏆",
+        "rarity": "legendary",
+        "condition": _check_fifty_matches,
+        "color": "#f1c40f",
+        "progress": ("мэтчей", "matches", 50),
+    },
+    {
+        "id": "hundred_likes",
+        "name": "Щедрая душа",
+        "description": "Поставь 100 лайков",
+        "icon": "💯",
+        "rarity": "legendary",
+        "condition": _check_hundred_likes,
+        "color": "#f1c40f",
+        "progress": ("лайков", "likes_sent", 100),
+    },
+]
+
+# Индекс для быстрого доступа
+BADGE_BY_ID: dict[str, BadgeDef] = {b["id"]: b for b in BADGES}
+
+RARITY_ORDER = {"common": 0, "rare": 1, "epic": 2, "legendary": 3}
+RARITY_EMOJI = {
+    "common": "⚪",
+    "rare": "🔵",
+    "epic": "🟣",
+    "legendary": "🟡",
+}
+
+
+def rarity_label(rarity: str) -> str:
+    labels = {
+        "common": "Обычный",
+        "rare": "Редкий",
+        "epic": "Эпический",
+        "legendary": "Легендарный",
+    }
+    return labels.get(rarity, rarity)
+
+
+def get_badge_progress(badge: dict, user: dict, stats: dict) -> str | None:
+    """Возвращает строку прогресса для значка или None если бинарный."""
+    progress = badge.get("progress")
+    if not progress:
+        return None
+    label, key, target = progress
+    # user поля берутся из user, stats — из stats
+    current = user.get(key) if key in user else stats.get(key, 0)
+    if current is None:
+        current = 0
+    current = int(current)
+    remaining = max(0, target - current)
+    pct = min(100, int(current / target * 100))
+    bar = "▰" * (pct // 10) + "▱" * (10 - pct // 10)
+    return f"{bar} {current}/{target} ({remaining} {label} осталось)"
