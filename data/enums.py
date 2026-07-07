@@ -122,12 +122,12 @@ class Command(Enum):
 
 
 class RelationshipLevel(Enum):
-    """Уровни отношений между мэтчами."""
-    STRANGERS = 0
-    FRIENDS = 1
-    CLOSE_FRIENDS = 2
-    BEST_FRIENDS = 3
-    SOULMATES = 4
+    """Уровни отношений между мэтчами — от общения до пары."""
+    TALKING = 0
+    LIKING = 1
+    INTEREST = 2
+    CLOSENESS = 3
+    COUPLE = 4
 
     @property
     def name_ru(self) -> str:
