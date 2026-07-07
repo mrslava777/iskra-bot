@@ -4,6 +4,9 @@ PERF: next_candidate_and_mark — CTE объединяет поиск канди
      в один SQL-запрос (было 2 запроса → 2 round-trip к БД, стало 1).
 PERF v5: next_candidate_full — batch-загружает photo_count + badge_ids
      в том же CTE, убирая 2 дополнительных запроса.
+FIX v6: cleanup_shown_profiles — убран параметризованный запрос, используется
+     f-string с int (безопасно), т.к. aiosqlite в некоторых окружениях
+     выдаёт "parameters are of unsupported type" для int параметров.
 """
 from typing import Optional
 
@@ -176,12 +179,18 @@ async def mark_shown(from_id: int, to_id: int) -> None:
 
 
 async def cleanup_shown_profiles(max_age_days: int = 30) -> int:
-    """Удаляет записи shown_profiles старше max_age_days дней."""
+    """Удаляет записи shown_profiles старше max_age_days дней.
+
+    FIX v6: используем f-string для cutoff вместо параметризованного запроса,
+    т.к. aiosqlite в некоторых окружениях (Railway) выдаёт
+    "parameters are of unsupported type" для int параметров в DELETE.
+    cutoff — чистый int, вычисленный из time.time(), безопасен для f-string.
+    """
     import time
     cutoff = int(time.time()) - max_age_days * 86400
     async with db() as conn:
+        # FIX v6: f-string вместо параметров — обход бага aiosqlite
         cursor = await conn.execute(
-            "DELETE FROM shown_profiles WHERE shown_at < ? AND shown_at > 0",
-            (cutoff,),
+            f"DELETE FROM shown_profiles WHERE shown_at < {cutoff} AND shown_at > 0"
         )
         return cursor.rowcount
