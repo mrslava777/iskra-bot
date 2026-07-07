@@ -4,17 +4,24 @@ FIX: добавлен обработчик callback set:support — раньше
 FIX: единая логика меню — при входе в раздел показывается HIDE_MENU.
 FIX: unterminated f-string literals (line 112).
 FIX: "Моя анкета" перенесена в настройки.
+FIX: "Моя анкета" из настроек теперь корректно показывает профиль пользователя
+     (использует call.from_user.id вместо call.message.from_user.id, т.к.
+     call.message — это сообщение бота, а не пользователя).
 """
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.user_repo as user_repo
+import repositories.photo_repo as photo_repo
 from data.constants import Age, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SettingsAction
-from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU, HIDE_MENU
+from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU, HIDE_MENU, profile_kb
 from services.profile_formatter import format_profile_async
+from services.badge_service import check_and_award
+from services.badge_formatter import format_badge_card
 from states import Edit
+import asyncio
 
 router = Router()
 
@@ -48,10 +55,41 @@ async def on_settings_back(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:profile")
 async def on_settings_profile(call: CallbackQuery) -> None:
-    """Показывает анкету пользователя из настроек (бывшая кнопка 'Моя анкета')."""
-    from handlers.profile.view import show_my_profile
-    # Симулируем message для совместимости
-    await show_my_profile(call.message)
+    """Показывает анкету пользователя из настроек (бывшая кнопка 'Моя анкета').
+
+    FIX: используем call.from_user.id вместо call.message.from_user.id,
+    т.к. call.message — это сообщение бота с inline-клавиатурой,
+    и message.from_user.id = id бота, а не пользователя.
+    """
+    user = await user_repo.get_user(call.from_user.id)
+    if not user or not user["name"]:
+        await call.message.answer(Message.CREATE_PROFILE_FIRST)
+        await call.answer()
+        return
+
+    # Параллельно: форматирование + счётчик фото + проверка значков
+    caption, n_photos, new_badges = await asyncio.gather(
+        format_profile_async(user, show_compat=False, show_badges=True),
+        photo_repo.photo_count(call.from_user.id),
+        check_and_award(call.from_user.id),
+    )
+
+    photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
+    caption += photo_note
+    kb = profile_kb()
+
+    try:
+        await call.message.answer_photo(photo=user["photo_id"], caption=caption, reply_markup=kb)
+    except Exception:
+        await call.message.answer(caption, reply_markup=kb)
+
+    # Отправляем уведомления о новых значках
+    for badge in new_badges:
+        try:
+            await call.message.answer(format_badge_card(badge, is_new=True))
+        except Exception:
+            pass
+
     await call.answer()
 
 
