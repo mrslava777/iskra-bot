@@ -1,4 +1,8 @@
-"""Раздел «Артефакты» — коллекция значков и прогресс."""
+"""Раздел «Артефакты» — коллекция значков и прогресс.
+
+FIX: при входе в раздел показывается HIDE_MENU (только кнопка "Меню"),
+     как при поиске анкет и свидании вслепую.
+"""
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
@@ -31,13 +35,13 @@ def _format_collection(badges: list[dict]) -> str:
     ordered = sorted(badges, key=lambda b: RARITY_ORDER.get(b["rarity"], 0), reverse=True)
     lines = [Msg.BADGE_COLLECTION_TITLE.format(len(badges)), ""]
     for b in ordered:
-        emoji = RARITY_EMOJI.get(b["rarity"], "\u26aa")
+        emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
         lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji}\n<i>{b['description']}</i>")
 
     # Прогресс-бар в коллекции
     pct = int(len(badges) / TOTAL_BADGES * 100)
     bar = _mini_bar(pct)
-    lines.append(f"\n\U0001f4ca Собрано: <b>{len(badges)}</b> / {TOTAL_BADGES} ({pct}%)")
+    lines.append(f"\n📊 Собрано: <b>{len(badges)}</b> / {TOTAL_BADGES} ({pct}%)")
     lines.append(f"{bar}")
     return "\n".join(lines)
 
@@ -45,21 +49,21 @@ def _format_collection(badges: list[dict]) -> str:
 def _format_progress(locked: list[dict], user: dict, stats: dict, page: int = 0) -> str:
     """Форматирует страницу прогресса (недостающих артефактов) с прогрессом под каждым."""
     if not locked:
-        return "\U0001f389 <b>Все артефакты собраны!</b>\n\nТы настоящий легенда Искры!"
+        return "🎉 <b>Все артефакты собраны!</b>\n\nТы настоящий легенда Искры!"
 
     start = page * _BADGE_PAGE_SIZE
     end = start + _BADGE_PAGE_SIZE
     page_badges = locked[start:end]
     total_pages = (len(locked) + _BADGE_PAGE_SIZE - 1) // _BADGE_PAGE_SIZE
 
-    lines = ["\U0001f4c8 <b>Прогресс Артефактов</b>", ""]
-    lines.append(f"\U0001f512 Осталось собрать: <b>{len(locked)}</b> / {TOTAL_BADGES}")
+    lines = ["📈 <b>Прогресс Артефактов</b>", ""]
+    lines.append(f"🔒 Осталось собрать: <b>{len(locked)}</b> / {TOTAL_BADGES}")
     lines.append("")
 
     for b in page_badges:
-        emoji = RARITY_EMOJI.get(b["rarity"], "\u26aa")
+        emoji = RARITY_EMOJI.get(b["rarity"], "⚪")
         lines.append(f"{b['icon']} <b>{b['name']}</b> {emoji} ({rarity_label(b['rarity'])})")
-        lines.append(f"<i>\u251c {b['description']}</i>")
+        lines.append(f"<i>├ {b['description']}</i>")
 
         # Прогресс под каждым артефактом
         progress_line = get_badge_progress(b, user, stats)
@@ -68,13 +72,13 @@ def _format_progress(locked: list[dict], user: dict, stats: dict, page: int = 0)
         else:
             # Бинарные (да/нет) — показываем статус
             if b["condition"](user, stats):
-                lines.append(f"<code>  \u2705 Условие выполнено!</code>")
+                lines.append(f"<code>  ✅ Условие выполнено!</code>")
             else:
-                lines.append(f"<code>  \u23f3 Ещё не выполнено</code>")
+                lines.append(f"<code>  ⏳ Ещё не выполнено</code>")
         lines.append("")  # отступ между артефактами
 
     if total_pages > 1:
-        lines.append(f"\U0001f4c4 Страница {page + 1} / {total_pages}")
+        lines.append(f"📄 Страница {page + 1} / {total_pages}")
 
     return "\n".join(lines)
 
@@ -82,7 +86,7 @@ def _format_progress(locked: list[dict], user: dict, stats: dict, page: int = 0)
 @router.message(Command(Cmd.BADGES.value[1:]))
 @router.message(F.text == MenuText.BADGES)
 async def cmd_badges(message: Message) -> None:
-    """Показывает коллекцию артефактов. Скрывает меню."""
+    """Показывает коллекцию артефактов. Скрывает меню (HIDE_MENU)."""
     user = await user_repo.get_user(message.from_user.id)
     if not user or not user["name"]:
         await message.answer(Msg.CREATE_PROFILE_FIRST)
@@ -93,8 +97,8 @@ async def cmd_badges(message: Message) -> None:
         await message.answer(format_badge_card(badge, is_new=True))
 
     badges = await get_user_badges(message.from_user.id)
-    await message.answer(_format_collection(badges), reply_markup=badges_kb(len(badges)))
-    # Скрываем полное меню
+    # FIX: показываем HIDE_MENU вместо полного меню
+    await message.answer(_format_collection(badges), reply_markup=HIDE_MENU)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.COLLECTION.value}")
@@ -111,10 +115,7 @@ async def cb_collection(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.BADGE.value}:{BadgeAction.PROGRESS.value}"))
 async def cb_progress(call: CallbackQuery) -> None:
-    """Показывает прогресс (недостающие значки) с пагинацией.
-
-    Фикс: используем startswith вместо == чтобы ловить bdg:progress:0, bdg:progress:1 и т.д.
-    """
+    """Показывает прогресс (недостающие значки) с пагинацией."""
     earned = await badge_repo.get_user_badge_ids(call.from_user.id)
     locked = [b for b in BADGES if b["id"] not in earned]
 
