@@ -10,12 +10,9 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан! Добавь переменную окружения BOT_TOKEN")
 
 # ── Database ──────────────────────────────────────────────────────
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-PGBOUNCER_URL = os.getenv("PGBOUNCER_URL", "")
-DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "2"))
-DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "10"))
+DB_PATH = os.getenv("DB_PATH", "database.db")
 
-# Redis
+# Redis (опционально)
 REDIS_URL = os.getenv("REDIS_URL", "")
 
 # ── Admin ─────────────────────────────────────────────────────────
