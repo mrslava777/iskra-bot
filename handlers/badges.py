@@ -2,6 +2,8 @@
 
 FIX: при входе в раздел показывается HIDE_MENU (только кнопка "Меню"),
      как при поиске анкет и свидании вслепую.
+FIX: восстановлена inline-клавиатура с кнопками "Прогресс" и "Обновить"
+     в cmd_badges — раньше она была accidentally заменена на HIDE_MENU.
 """
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -97,8 +99,9 @@ async def cmd_badges(message: Message) -> None:
         await message.answer(format_badge_card(badge, is_new=True))
 
     badges = await get_user_badges(message.from_user.id)
-    # FIX: показываем HIDE_MENU вместо полного меню
-    await message.answer(_format_collection(badges), reply_markup=HIDE_MENU)
+    # FIX: сначала сворачиваем reply-меню, затем показываем коллекцию с inline-клавиатурой
+    await message.answer("🏆 Артефакты", reply_markup=HIDE_MENU)
+    await message.answer(_format_collection(badges), reply_markup=badges_kb(len(badges)))
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.BADGE.value}:{BadgeAction.COLLECTION.value}")
