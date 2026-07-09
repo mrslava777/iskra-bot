@@ -1,10 +1,10 @@
-"""Регистрация анкеты (FSM) и /start.
+"""Registration (FSM) and /start handler.
 
-PERF: _finish_registration параллелизирует загрузку user + photo_count + badges.
+PERF: _finish_registration parallelizes user + photo_count + badges loading.
 
-FIX v7: безопасный доступ к полям user (user.get() вместо прямой индексации).
-        Исправлены bare except — CancelledError пробрасывается.
-        Добавлена обработка TelegramRetryAfter и TelegramForbiddenError.
+FIX v7: safe dict access (user.get() instead of direct indexing).
+        Fixed bare except -- CancelledError is now re-raised.
+        FIX v7.1: removed emoji from f-strings (Unicode BMP copy issue).
 """
 import asyncio
 import logging
@@ -30,7 +30,7 @@ log = logging.getLogger("iskra.start")
 
 
 async def _safe_touch(tg_id: int) -> None:
-    """Fire-and-forget touch_activity с перехватом ошибок."""
+    """Fire-and-forget touch_activity with error handling."""
     try:
         await user_repo.touch_activity(tg_id)
     except asyncio.CancelledError:
@@ -39,15 +39,12 @@ async def _safe_touch(tg_id: int) -> None:
         pass
 
 
+# FIX v7.1: use string concatenation instead of f-string with emoji
 WELCOME = (
-    f"{EMOJI.FIRE_MID} <b>Момент</b> — бот знакомств, где важно не только фото.
-
-"
-    "Здесь мы считаем <b>совместимость по интересам</b>, подсказываем, "
-    "с чего начать разговор, и даём уникальные артефакты за активность.
-
-"
-    "Давай создадим твою анкету за минуту. Как тебя зовут?"
+    EMOJI.FIRE_MID + " <b>Moment</b> - dating bot where looks are not everything.\n\n"
+    "Here we calculate <b>interest compatibility</b>, suggest "
+    "conversation starters, and give unique artifacts for activity.\n\n"
+    "Let's create your profile in a minute. What's your name?"
 )
 
 
@@ -55,7 +52,7 @@ WELCOME = (
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = await user_repo.get_user(message.from_user.id)
-    # FIX v7: безопасный доступ к полям
+    # FIX v7: safe field access
     if user is not None and user.get("name") and user.get("photo_id"):
         asyncio.create_task(_safe_touch(message.from_user.id))
         await message.answer(Message.WELCOME_BACK, reply_markup=MAIN_MENU)
@@ -71,7 +68,7 @@ async def reg_name(message: Message, state: FSMContext) -> None:
         await message.answer(Message.NAME_TOO_LONG)
         return
     await state.update_data(name=name)
-    await message.answer("Сколько тебе лет?")
+    await message.answer("How old are you?")
     await state.set_state(Reg.age)
 
 
@@ -82,7 +79,7 @@ async def reg_age(message: Message, state: FSMContext) -> None:
         await message.answer(Message.AGE_INVALID)
         return
     await state.update_data(age=int(txt))
-    await message.answer("Твой пол?", reply_markup=gender_kb(CallbackPrefix.REG_GENDER.value))
+    await message.answer("Your gender?", reply_markup=gender_kb(CallbackPrefix.REG_GENDER.value))
     await state.set_state(Reg.gender)
 
 
@@ -90,9 +87,9 @@ async def reg_age(message: Message, state: FSMContext) -> None:
 async def reg_gender(call: CallbackQuery, state: FSMContext) -> None:
     g = call.data.split(":")[1]
     await state.update_data(gender=g)
-    await call.message.edit_text("Кого хочешь видеть в ленте?")
+    await call.message.edit_text("Who do you want to see in the feed?")
     await call.message.answer(
-        "Выбери:", reply_markup=seeking_kb(CallbackPrefix.REG_SEEKING.value)
+        "Choose:", reply_markup=seeking_kb(CallbackPrefix.REG_SEEKING.value)
     )
     await state.set_state(Reg.seeking)
     await call.answer()
@@ -102,7 +99,7 @@ async def reg_gender(call: CallbackQuery, state: FSMContext) -> None:
 async def reg_seeking(call: CallbackQuery, state: FSMContext) -> None:
     s = call.data.split(":")[1]
     await state.update_data(seeking=s)
-    await call.message.edit_text("Из какого ты города?")
+    await call.message.edit_text("What city are you from?")
     await state.set_state(Reg.city)
     await call.answer()
 
@@ -112,7 +109,7 @@ async def reg_city(message: Message, state: FSMContext) -> None:
     await state.update_data(city=message.text.strip()[: Length.CITY])
     await state.update_data(sel_interests=[])
     await message.answer(
-        f"Выбери интересы (до {Interest.MAX_SELECTED}) — по ним считается совместимость {EMOJI.COMPAT}",
+        "Choose interests (up to " + str(Interest.MAX_SELECTED) + ") - compatibility is calculated by them " + EMOJI.COMPAT,
         reply_markup=interests_kb([], CallbackPrefix.REG_INTEREST.value),
     )
     await state.set_state(Reg.interests)
@@ -126,7 +123,7 @@ async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
 
     if payload == "done":
         await call.message.edit_text(
-            "📝 Напиши пару слов о себе (или отправь «-», чтобы пропустить)."
+            "Write a few words about yourself (or send '-' to skip)."
         )
         await state.set_state(Reg.bio)
         await call.answer()
@@ -151,7 +148,7 @@ async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
 async def reg_bio(message: Message, state: FSMContext) -> None:
     bio = "" if message.text.strip() == "-" else message.text.strip()[: Length.BIO]
     await state.update_data(bio=bio)
-    await message.answer("📷 Последний шаг — пришли своё фото.")
+    await message.answer("Last step - send your photo.")
     await state.set_state(Reg.photo)
 
 
@@ -179,9 +176,8 @@ async def reg_photo(message: Message, state: FSMContext) -> None:
     await state.update_data(extra_count=0)
     await state.set_state(Reg.extra_photos)
     await message.answer(
-        f"📸 Хочешь добавить ещё фото? (до {Photo.MAX_EXTRA} дополнительных)
-"
-        "Просто отправь фото или нажми «Пропустить».",
+        "Want to add more photos? (up to " + str(Photo.MAX_EXTRA) + " extra)\n"
+        "Just send a photo or click 'Skip'.",
         reply_markup=extra_photos_kb(),
     )
 
@@ -189,7 +185,7 @@ async def reg_photo(message: Message, state: FSMContext) -> None:
 @router.callback_query(Reg.extra_photos, F.data == f"{CallbackPrefix.REG_PHOTO.value}:skip")
 async def reg_skip_extra(call: CallbackQuery, state: FSMContext) -> None:
     await _finish_registration(call.message, call.from_user.id, state)
-    await call.answer("✅ Анкета готова!", show_alert=True)
+    await call.answer("Profile ready!", show_alert=True)
 
 
 @router.message(Reg.extra_photos, F.photo)
@@ -197,7 +193,7 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     count = data.get("extra_count", 0)
     if count >= Photo.MAX_EXTRA:
-        await message.answer(Message.MAX_PHOTOS + " Сохраняю анкету!")
+        await message.answer(Message.MAX_PHOTOS + " Saving profile!")
         await _finish_registration(message, message.from_user.id, state)
         return
     photo_id = message.photo[-1].file_id
@@ -208,29 +204,28 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
     if remaining > 0:
         await message.answer(
             Format.PHOTO_ADDED.format(count + 1, Photo.MAX_TOTAL)
-            + f"
-{Format.PHOTOS_REMAINING.format(remaining)}",
+            + "\n" + Format.PHOTOS_REMAINING.format(remaining),
             reply_markup=extra_photos_kb(),
         )
     else:
-        await message.answer("✅ Все 5 фото загружены!")
+        await message.answer("All 5 photos uploaded!")
         await _finish_registration(message, message.from_user.id, state)
 
 
 async def _finish_registration(message: Message, user_id: int, state: FSMContext) -> None:
     await state.clear()
 
-    # Параллельно: user + photo_count + badges
+    # Parallel: user + photo_count + badges
     user, n_photos, new_badges = await asyncio.gather(
         user_repo.get_user(user_id),
         photo_repo.photo_count(user_id),
         check_and_award(user_id),
     )
 
-    # FIX v7: безопасный доступ
+    # FIX v7: safe access
     if user is None:
         log.error("User %s not found after registration", user_id)
-        await message.answer("Ошибка регистрации. Попробуй /start", reply_markup=MAIN_MENU)
+        await message.answer("Registration error. Try /start", reply_markup=MAIN_MENU)
         return
 
     photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
@@ -238,13 +233,13 @@ async def _finish_registration(message: Message, user_id: int, state: FSMContext
     try:
         await message.answer_photo(
             photo=user.get("photo_id"),
-            caption=f"{Message.PROFILE_COMPLETE}{format_profile(user)}{photo_note}",
+            caption=Message.PROFILE_COMPLETE + format_profile(user) + photo_note,
         )
     except TelegramRetryAfter as e:
         await asyncio.sleep(e.retry_after)
         await message.answer_photo(
             photo=user.get("photo_id"),
-            caption=f"{Message.PROFILE_COMPLETE}{format_profile(user)}{photo_note}",
+            caption=Message.PROFILE_COMPLETE + format_profile(user) + photo_note,
         )
     except TelegramForbiddenError:
         log.debug("User %s blocked bot during registration", user_id)
@@ -252,7 +247,7 @@ async def _finish_registration(message: Message, user_id: int, state: FSMContext
         log.exception("Failed to send profile photo to %s", user_id)
         # Fallback to text
         await message.answer(
-            f"{Message.PROFILE_COMPLETE}{format_profile(user)}{photo_note}"
+            Message.PROFILE_COMPLETE + format_profile(user) + photo_note
         )
 
     for badge in new_badges:
