@@ -26,7 +26,7 @@ router = Router()
 async def show_incoming(message: Message) -> None:
     """Показывает входящие лайки."""
     user = await user_repo.get_user(message.from_user.id)
-    if not user or not user["name"]:
+    if not user or not user.get("name"):
         await message.answer(Message.CREATE_PROFILE_FIRST)
         return
     rows = await like_repo.incoming_likes(message.from_user.id)
@@ -35,8 +35,6 @@ async def show_incoming(message: Message) -> None:
         return
     try:
         await message.answer(Format.INCOMING_LIKES.format(len(rows)))
-    except asyncio.CancelledError:
-        raise
     except Exception:
         pass
     await _show_incoming(message, rows[0], user)
@@ -51,8 +49,6 @@ async def _show_incoming(message: Message, candidate: dict, viewer: dict) -> Non
             caption=caption,
             reply_markup=like_response_kb(candidate["tg_id"]),
         )
-    except asyncio.CancelledError:
-        raise
     except Exception:
         await message.answer(caption, reply_markup=like_response_kb(candidate["tg_id"]))
 
@@ -67,8 +63,6 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
     # FIX: await directly
     try:
         await call.message.edit_reply_markup(reply_markup=None)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         pass
 
@@ -78,8 +72,6 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
             # FIX: create_task for actual coroutine
             try:
                 asyncio.create_task(announce_match(bot, viewer_id, target_id))
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 pass
             await call.answer(Message.MATCH_ACHIEVED)
@@ -98,8 +90,6 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
     for badge in new_badges:
         try:
             await call.message.answer(format_badge_card(badge, is_new=True))
-        except asyncio.CancelledError:
-            raise
         except Exception:
             pass
 
