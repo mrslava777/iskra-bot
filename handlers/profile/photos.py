@@ -11,6 +11,7 @@ from keyboards import photos_manage_kb, profile_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
 from services.message_utils import edit_or_caption
 from states import Edit
+import asyncio
 
 router = Router()
 
@@ -61,6 +62,8 @@ async def on_photos_back(call: CallbackQuery, state: FSMContext) -> None:
     caption = await format_profile_async(user, show_compat=False, show_badges=True)
     try:
         await call.message.edit_text(caption, reply_markup=profile_kb())
+    except asyncio.CancelledError:
+        raise
     except Exception:
         await call.message.answer(caption, reply_markup=profile_kb())
     await call.answer()

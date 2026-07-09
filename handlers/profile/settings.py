@@ -48,6 +48,8 @@ async def on_settings_back(call: CallbackQuery) -> None:
     from keyboards import profile_kb
     try:
         await call.message.edit_text(caption, reply_markup=profile_kb())
+    except asyncio.CancelledError:
+        raise
     except Exception:
         await call.message.answer(caption, reply_markup=profile_kb())
     await call.answer()
@@ -80,6 +82,8 @@ async def on_settings_profile(call: CallbackQuery) -> None:
 
     try:
         await call.message.answer_photo(photo=user["photo_id"], caption=caption, reply_markup=kb)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         await call.message.answer(caption, reply_markup=kb)
 
@@ -87,6 +91,8 @@ async def on_settings_profile(call: CallbackQuery) -> None:
     for badge in new_badges:
         try:
             await call.message.answer(format_badge_card(badge, is_new=True))
+        except asyncio.CancelledError:
+            raise
         except Exception:
             pass
 
