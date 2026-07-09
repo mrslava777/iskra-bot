@@ -9,6 +9,7 @@ from config import ADMIN_IDS
 from data.constants import Message, Format
 from data.enums import CallbackPrefix, Command as Cmd
 from states import Support
+import asyncio
 
 router = Router()
 
@@ -55,5 +56,7 @@ async def admin_reply_send(message: Message, state: FSMContext) -> None:
         if ticket_id:
             await support_repo.reply_ticket(ticket_id, reply_text)
         await message.answer(Format.REPLY_SENT.format(tg_id))
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         await message.answer(Format.REPLY_FAILED.format(e))

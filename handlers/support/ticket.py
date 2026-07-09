@@ -17,6 +17,7 @@ from data.constants import Length, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SupportCategory, Command as Cmd
 from keyboards import MAIN_MENU
 from states import Support
+import asyncio
 
 router = Router()
 log = logging.getLogger("iskra.support")
@@ -45,6 +46,8 @@ async def on_support_back(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     try:
         await call.message.edit_reply_markup(reply_markup=None)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass
     await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
@@ -131,6 +134,8 @@ async def _process_ticket(
                     admin_id, text=ticket_text,
                     reply_markup=support_reply_kb(uid, ticket_id),
                 )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log.warning("Не удалось отправить тикет #%s → admin %d: %s", ticket_id, admin_id, e)
 
