@@ -2,6 +2,7 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.user_repo as user_repo
 from data.constants import Length, Age, Interest, EMOJI, Message
@@ -10,6 +11,29 @@ from keyboards import interests_kb, profile_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
 from states import Edit
 import asyncio
+
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
 
 router = Router()
 
@@ -63,8 +87,6 @@ async def on_edit_back(call: CallbackQuery, state: FSMContext) -> None:
     caption = await format_profile_async(user, show_compat=False, show_badges=True)
     try:
         await call.message.edit_text(caption, reply_markup=profile_kb())
-    except asyncio.CancelledError:
-        raise
     except Exception:
         await call.message.answer(caption, reply_markup=profile_kb())
     await call.answer()

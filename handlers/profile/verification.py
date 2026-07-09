@@ -8,6 +8,7 @@ import random
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.user_repo as user_repo
 from config import ADMIN_IDS
@@ -17,6 +18,29 @@ from keyboards import profile_kb, verify_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
 from states import Verify
 import asyncio
+
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
 
 router = Router()
 log = logging.getLogger("iskra.verify")
@@ -48,8 +72,6 @@ async def on_verify_back(call: CallbackQuery, state: FSMContext) -> None:
     caption = await format_profile_async(user, show_compat=False, show_badges=True)
     try:
         await call.message.edit_text(caption, reply_markup=profile_kb())
-    except asyncio.CancelledError:
-        raise
     except Exception:
         await call.message.answer(caption, reply_markup=profile_kb())
     await call.answer()
@@ -78,8 +100,6 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
                 "Проверь, что жест виден в кадре и лицо совпадает с анкетой.",
                 reply_markup=verify_kb(message.from_user.id),
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as e:
             log.warning("Не удалось отправить запрос верификации → admin %d: %s", admin_id, e)
 
@@ -111,8 +131,6 @@ async def on_approve_verify(call: CallbackQuery) -> None:
         )
     try:
         await call.bot.send_message(tg_id, Message.VERIFICATION_APPROVED)
-    except asyncio.CancelledError:
-        raise
     except Exception as e:
         log.warning("Не удалось уведомить об одобрении верификации → %d: %s", tg_id, e)
 
@@ -135,7 +153,5 @@ async def on_reject_verify(call: CallbackQuery) -> None:
         )
     try:
         await call.bot.send_message(tg_id, Message.VERIFICATION_REJECTED)
-    except asyncio.CancelledError:
-        raise
     except Exception as e:
         log.warning("Не удалось уведомить об отклонении верификации → %d: %s", tg_id, e)
