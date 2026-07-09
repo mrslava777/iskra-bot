@@ -6,15 +6,11 @@ PERF v4: check_and_award — fire-and-forget с авто-отправкой зн
 PERF v5: next_candidate_full — batch-загружает photo_count + badge_ids в 1 запросе.
 PERF v5: call.answer() ДО edit_reply_markup — убирает воспринимаемую задержку.
 PERF v5: badges отправляются параллельно.
-
-FIX v7: исправлены bare except — CancelledError теперь пробрасывается.
-        Добавлена обработка TelegramRetryAfter и TelegramForbiddenError.
 """
 import asyncio
 import logging
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InputMediaPhoto, Message
 
@@ -25,13 +21,14 @@ import repositories.user_repo as user_repo
 from badges import BADGE_BY_ID
 from data.constants import EMOJI, MenuText, Message as Msg
 from data.enums import CallbackPrefix, SwipeAction
-from keyboards import HIDE_MENU, browse_kb
+from keyboards import MAIN_MENU, HIDE_MENU, browse_kb
 from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award
 from services.compatibility import compatibility
 from services.notification import announce_match, notify_liked
 from services.profile_formatter import format_profile_async
 
+_background_tasks: set[asyncio.Task] = set()
 router = Router()
 log = logging.getLogger("iskra.browse")
 
@@ -42,25 +39,18 @@ async def _fire_badges(tg_id: int, message: Message) -> None:
         new_badges = await check_and_award(tg_id)
         if new_badges:
             # FIX v5: отправляем значки параллельно, а не последовательно
-            await asyncio.gather(
-                *[
-                    message.answer(format_badge_card(b, is_new=True))
-                    for b in new_badges
-                ],
-                return_exceptions=True,
-            )
-    except asyncio.CancelledError:
-        raise
+            await asyncio.gather(*[
+                message.answer(format_badge_card(b, is_new=True))
+                for b in new_badges
+            ], return_exceptions=True)
     except Exception:
-        log.exception("Failed to fire badges for %s", tg_id)
+        pass
 
 
 async def _safe_edit_markup(message: Message) -> None:
     """Fire-and-forget: убирает клавиатуру в фоне."""
     try:
         await message.edit_reply_markup(reply_markup=None)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         pass
 
@@ -70,21 +60,18 @@ async def start_browse(message: Message, state: FSMContext) -> None:
     """Начинает просмотр ленты анкет."""
     await state.clear()
     user = await user_repo.get_user(message.from_user.id)
-    if not user or not user.get("name"):
+    if not user or not user["name"]:
         await message.answer(Msg.CREATE_PROFILE_FIRST)
         return
+    # FIX: await touch_activity directly
     try:
         await user_repo.touch_activity(message.from_user.id)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         pass
     await _show_next(message, message.from_user.id, viewer=user)
 
 
-async def _show_next(
-    message: Message, viewer_id: int, viewer: dict | None = None
-) -> None:
+async def _show_next(message: Message, viewer_id: int, viewer: dict | None = None) -> None:
     """Показывает следующую анкету в ленте.
 
     PERF v5: next_candidate_full — 1 SQL-запрос вместо 3.
@@ -105,9 +92,9 @@ async def _show_next(
 
     # update_max_compat — fire-and-forget (не критично для ответа)
     try:
-        asyncio.create_task(user_repo.update_max_compat(viewer_id, pct))
-    except asyncio.CancelledError:
-        raise
+        _task = asyncio.create_task(user_repo.update_max_compat(viewer_id, pct))
+        _background_tasks.add(_task)
+        _task.add_done_callback(_background_tasks.discard)
     except Exception:
         pass
 
@@ -125,17 +112,7 @@ async def _show_next(
     kb = browse_kb(cand["tg_id"], has_extra_photos=extra)
 
     try:
-        await message.answer_photo(
-            photo=cand["photo_id"], caption=caption, reply_markup=kb
-        )
-    except TelegramRetryAfter as e:
-        log.warning("Rate limit showing profile, retry after %s", e.retry_after)
-        await asyncio.sleep(e.retry_after)
-        await message.answer_photo(
-            photo=cand["photo_id"], caption=caption, reply_markup=kb
-        )
-    except TelegramForbiddenError:
-        log.debug("User %s blocked bot, skipping", viewer_id)
+        await message.answer_photo(photo=cand["photo_id"], caption=caption, reply_markup=kb)
     except Exception as e:
         log.debug("Не удалось отправить фото кандидата %d: %s", cand["tg_id"], e)
         await message.answer(caption, reply_markup=kb)
@@ -153,8 +130,11 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     viewer_id = call.from_user.id
 
     if action == SwipeAction.STOP.value:
+        # FIX v5: answer первым — мгновенная реакция
         await call.answer()
-        asyncio.create_task(_safe_edit_markup(call.message))
+        _task = asyncio.create_task(_safe_edit_markup(call.message))
+        _background_tasks.add(_task)
+        _task.add_done_callback(_background_tasks.discard)
         await call.message.answer(Msg.SEARCH_STOPPED, reply_markup=HIDE_MENU)
         return
 
@@ -170,7 +150,9 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     else:
         await call.answer()
 
-    asyncio.create_task(_safe_edit_markup(call.message))
+    _task = asyncio.create_task(_safe_edit_markup(call.message))
+    _background_tasks.add(_task)
+    _task.add_done_callback(_background_tasks.discard)
 
     if action == SwipeAction.PHOTOS.value:
         await _handle_photos(call, target_id)
@@ -188,31 +170,24 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
     # === Все фоновые операции — fire-and-forget ===
     if is_like:
         try:
-            asyncio.create_task(
-                notify_liked(
-                    bot,
-                    viewer_id,
-                    target_id,
-                    with_message=(action == SwipeAction.MESSAGE_LIKE.value),
-                )
-            )
-        except asyncio.CancelledError:
-            raise
+            _task = asyncio.create_task(notify_liked(bot, viewer_id, target_id, with_message=(action == SwipeAction.MESSAGE_LIKE.value)))
+            _background_tasks.add(_task)
+            _task.add_done_callback(_background_tasks.discard)
         except Exception:
             pass
     if matched:
         try:
-            asyncio.create_task(announce_match(bot, viewer_id, target_id))
-        except asyncio.CancelledError:
-            raise
+            _task = asyncio.create_task(announce_match(bot, viewer_id, target_id))
+            _background_tasks.add(_task)
+            _task.add_done_callback(_background_tasks.discard)
         except Exception:
             pass
 
     # Значки — fire-and-forget с авто-отправкой
     try:
-        asyncio.create_task(_fire_badges(viewer_id, call.message))
-    except asyncio.CancelledError:
-        raise
+        _task = asyncio.create_task(_fire_badges(viewer_id, call.message))
+        _background_tasks.add(_task)
+        _task.add_done_callback(_background_tasks.discard)
     except Exception:
         pass
 
@@ -224,15 +199,12 @@ async def on_swipe(call: CallbackQuery, bot: Bot) -> None:
 async def _handle_photos(call: CallbackQuery, target_id: int) -> None:
     """Показывает дополнительные фото пользователя."""
     from repositories.photo_repo import get_photos
-
     photos = await get_photos(target_id)
     extras = [p for p in photos if p["position"] > 0]
     if extras:
         media = [InputMediaPhoto(media=p["photo_id"]) for p in extras]
         try:
             await call.message.answer_media_group(media)
-        except asyncio.CancelledError:
-            raise
         except Exception as e:
             log.debug("Не удалось отправить доп. фото %d: %s", target_id, e)
     else:
@@ -243,15 +215,15 @@ async def _handle_report(call: CallbackQuery, viewer_id: int, target_id: int) ->
     """Обрабатывает жалобу на пользователя."""
     await call.answer(Msg.REPORT_SENT)
     try:
-        asyncio.create_task(settings_repo.add_report(viewer_id, target_id))
-    except asyncio.CancelledError:
-        raise
+        _task = asyncio.create_task(settings_repo.add_report(viewer_id, target_id))
+        _background_tasks.add(_task)
+        _task.add_done_callback(_background_tasks.discard)
     except Exception:
         pass
     try:
-        asyncio.create_task(_fire_badges(viewer_id, call.message))
-    except asyncio.CancelledError:
-        raise
+        _task = asyncio.create_task(_fire_badges(viewer_id, call.message))
+        _background_tasks.add(_task)
+        _task.add_done_callback(_background_tasks.discard)
     except Exception:
         pass
     viewer = await user_repo.get_user(viewer_id)  # cached
