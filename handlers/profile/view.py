@@ -25,7 +25,7 @@ router = Router()
 async def show_my_profile(message: Message) -> None:
     """Показывает анкету текущего пользователя."""
     user = await user_repo.get_user(message.from_user.id)
-    if not user or not user["name"]:
+    if not user or not user.get("name"):
         await message.answer(Message.CREATE_PROFILE_FIRST)
         return
 
@@ -42,8 +42,6 @@ async def show_my_profile(message: Message) -> None:
 
     try:
         await message.answer_photo(photo=user["photo_id"], caption=caption, reply_markup=kb)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         await message.answer(caption, reply_markup=kb)
 
@@ -51,7 +49,5 @@ async def show_my_profile(message: Message) -> None:
     for badge in new_badges:
         try:
             await message.answer(format_badge_card(badge, is_new=True))
-        except asyncio.CancelledError:
-            raise
         except Exception:
             pass
