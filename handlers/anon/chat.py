@@ -22,6 +22,7 @@ from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award
 from services.notification import announce_match
 from services.relationship_service import RelationshipService, add_message_event
+import asyncio
 
 router = Router()
 log = logging.getLogger("iskra.anon")
@@ -68,6 +69,8 @@ async def reveal(call: CallbackQuery, bot: Bot) -> None:
                 Msg.BLIND_DATE_REVEAL_REQUEST,
                 reply_markup=anon_session_kb(),
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log.warning("Не удалось отправить запрос reveal → %d: %s", partner, e)
 
@@ -88,6 +91,8 @@ async def _handle_both_revealed(bot: Bot, session: dict) -> None:
                 Msg.BLIND_DATE_BOTH_REVEALED,
                 reply_markup=MAIN_MENU,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log.warning("Не удалось отправить both_revealed → %d: %s", who, e)
 
@@ -107,6 +112,8 @@ async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
     await user_repo.increment_anon_messages(message.from_user.id)
     try:
         await add_message_event(message.from_user.id, anon_partner_id)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass
 
@@ -116,6 +123,8 @@ async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
             from_chat_id=message.chat.id,
             message_id=message.message_id,
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.warning("Не удалось переслать сообщение %d → %d: %s", message.from_user.id, anon_partner_id, e)
         await message.answer(Msg.DELIVERY_FAILED)

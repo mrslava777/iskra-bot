@@ -27,6 +27,8 @@ async def _safe_touch(tg_id: int) -> None:
     """Fire-and-forget touch_activity с перехватом ошибок."""
     try:
         await user_repo.touch_activity(tg_id)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass
 
@@ -78,6 +80,8 @@ async def _notify_matched(bot: Bot, uid: int) -> None:
             Message.BLIND_DATE_REVEAL_PROMPT,
             reply_markup=anon_session_kb(),
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.warning("Не удалось уведомить о мэтче → %d: %s", uid, e)
 
@@ -107,6 +111,8 @@ async def stop_cb(call: CallbackQuery, bot: Bot) -> None:
     await call.answer()
     try:
         await call.message.edit_reply_markup(reply_markup=None)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass  # edit_reply_markup fails if message was already modified — OK
     await _end_session(call.from_user.id, bot)
@@ -124,6 +130,8 @@ async def _end_session(uid: int, bot: Bot, notifier: Message | None = None) -> N
         else:
             try:
                 await bot.send_message(uid, text, reply_markup=MAIN_MENU)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 log.warning("Не удалось отправить end_session → %d: %s", uid, e)
         return
@@ -135,5 +143,7 @@ async def _end_session(uid: int, bot: Bot, notifier: Message | None = None) -> N
                 Message.BLIND_DATE_ENDED,
                 reply_markup=MAIN_MENU,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log.warning("Не удалось отправить blind_date_ended → %d: %s", who, e)
