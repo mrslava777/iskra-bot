@@ -12,7 +12,8 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.settings_repo as settings_repo
-from data.constants import Broadcast, Message as Msg, Format
+from config import BROADCAST_BATCH_SIZE, BROADCAST_DELAY, BROADCAST_CONCURRENT
+from data.constants import Message as Msg, Format
 from data.enums import AdminAction, CallbackPrefix, Command as Cmd
 from keyboards import back_kb
 from services.admin_service import is_admin
@@ -77,7 +78,7 @@ async def cmd_broadcast(message: Message) -> None:
     failed = 0
 
     status = await message.answer(Format.BROADCAST_START.format(total))
-    semaphore = asyncio.Semaphore(Broadcast.CONCURRENT)
+    semaphore = asyncio.Semaphore(BROADCAST_CONCURRENT)
 
     async def send_one(uid: int) -> tuple[bool, int]:
         """Отправляет одному пользователю."""
@@ -87,12 +88,12 @@ async def cmd_broadcast(message: Message) -> None:
                 result = (True, uid)
             except Exception:
                 result = (False, uid)
-            await asyncio.sleep(Broadcast.DELAY)
+            await asyncio.sleep(BROADCAST_DELAY)
             return result
 
     try:
-        for i in range(0, total, Broadcast.BATCH_SIZE):
-            batch = all_users[i:i + Broadcast.BATCH_SIZE]
+        for i in range(0, total, BROADCAST_BATCH_SIZE):
+            batch = all_users[i:i + BROADCAST_BATCH_SIZE]
             results = await asyncio.gather(*[send_one(uid) for uid in batch], return_exceptions=True)
 
             for r in results:
@@ -105,7 +106,7 @@ async def cmd_broadcast(message: Message) -> None:
 
             try:
                 await status.edit_text(
-                    Format.BROADCAST_STATUS.format(min(i + Broadcast.BATCH_SIZE, total), total, sent, failed)
+                    Format.BROADCAST_STATUS.format(min(i + BROADCAST_BATCH_SIZE, total), total, sent, failed)
                 )
             except Exception:
                 pass
