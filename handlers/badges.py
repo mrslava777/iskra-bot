@@ -17,6 +17,7 @@ from data.enums import BadgeAction, CallbackPrefix, Command as Cmd
 from keyboards import HIDE_MENU, MAIN_MENU, badges_kb, badge_progress_kb
 from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award, get_user_badges, get_user_stats, get_user_stats_with_user
+import asyncio
 
 router = Router()
 
@@ -111,6 +112,8 @@ async def cb_collection(call: CallbackQuery) -> None:
     badges = await get_user_badges(call.from_user.id)
     try:
         await call.message.edit_text(_format_collection(badges), reply_markup=badges_kb(len(badges)))
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass
     await call.answer()
@@ -137,6 +140,8 @@ async def cb_progress(call: CallbackQuery) -> None:
 
     try:
         await call.message.edit_text(text, reply_markup=kb)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass
     await call.answer()
@@ -148,6 +153,8 @@ async def cb_back_to_menu(call: CallbackQuery) -> None:
     await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
     try:
         await call.message.delete()
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass
     await call.answer()
