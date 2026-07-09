@@ -61,6 +61,8 @@ async def cmd_broadcast(message: Message) -> None:
             try:
                 await message.bot.send_message(uid, f"{Format.BROADCAST_PREFIX}{text}")
                 result = (True, uid)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 result = (False, uid)
             await asyncio.sleep(Broadcast.DELAY)
@@ -83,6 +85,8 @@ async def cmd_broadcast(message: Message) -> None:
                 await status.edit_text(
                     Format.BROADCAST_STATUS.format(min(i + Broadcast.BATCH_SIZE, total), total, sent, failed)
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 pass
 

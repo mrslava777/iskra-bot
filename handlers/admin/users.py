@@ -14,6 +14,7 @@ from data.constants import EMOJI, Admin, Message, Format
 from data.enums import AdminAction, CallbackPrefix, Command as Cmd
 from keyboards import back_kb
 from services.admin_service import is_admin
+import asyncio
 
 router = Router()
 log = logging.getLogger("iskra.admin.users")
@@ -86,6 +87,8 @@ async def cb_do_unverify(call: CallbackQuery) -> None:
     await call.answer(f"{EMOJI.VERIFIED} Верификация снята у {user['name']}")
     try:
         await call.bot.send_message(tg_id, Message.VERIFICATION_REMOVED)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.warning("Не удалось уведомить о снятии верификации → %d: %s", tg_id, e)
     await cb_verified(call)
@@ -107,5 +110,7 @@ async def cmd_unverify(message: Message) -> None:
     await message.answer(Format.UNVERIFY_SUCCESS.format(user["name"], tg_id))
     try:
         await message.bot.send_message(tg_id, Message.VERIFICATION_REMOVED)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.warning("Не удалось уведомить о снятии верификации → %d: %s", tg_id, e)

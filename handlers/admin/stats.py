@@ -8,6 +8,7 @@ from data.constants import EMOJI, Message as Msg, Format
 from data.enums import AdminAction, CallbackPrefix, Command as Cmd
 from keyboards import admin_menu_kb, back_kb
 from services.admin_service import is_admin
+import asyncio
 
 router = Router()
 
@@ -29,6 +30,8 @@ async def cb_menu(call: CallbackQuery) -> None:
         return await call.answer(Msg.ADMIN_ONLY)
     try:
         await call.message.edit_text(ADMIN_TITLE, reply_markup=admin_menu_kb())
+    except asyncio.CancelledError:
+        raise
     except Exception:
         await call.message.answer(ADMIN_TITLE, reply_markup=admin_menu_kb())
     await call.answer()
