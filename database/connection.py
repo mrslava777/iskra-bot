@@ -7,12 +7,14 @@
     close_db_pool()  — закрывает соединение (graceful shutdown).
 
 Схема создаётся один раз при первом вызове db().
+Миграции применяются автоматически из database/migrations/.
 """
 import asyncio
 import logging
 import os
 import time as _time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import aiosqlite
@@ -26,146 +28,61 @@ _conn_lock = asyncio.Lock()
 _schema_ready = False
 _schema_lock = asyncio.Lock()
 
+# Путь к директории с миграциями
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
-# ---------------- SCHEMA (inline) ----------------
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS users (
-    tg_id               INTEGER PRIMARY KEY,
-    username            TEXT,
-    name                TEXT,
-    age                 INTEGER,
-    gender              TEXT,
-    seeking             TEXT,
-    city                TEXT,
-    bio                 TEXT,
-    interests           TEXT DEFAULT '',
-    photo_id            TEXT,
-    active              INTEGER DEFAULT 1,
-    verified            INTEGER DEFAULT 0,
-    is_banned           INTEGER DEFAULT 0,
-    streak              INTEGER DEFAULT 0,
-    rating              INTEGER DEFAULT 0,
-    daily_q             INTEGER DEFAULT 0,
-    daily_a             TEXT DEFAULT '',
-    anon_messages_count INTEGER DEFAULT 0,
-    min_age             INTEGER DEFAULT 18,
-    max_age             INTEGER DEFAULT 99,
-    max_compat          INTEGER DEFAULT 0,
-    created_at          INTEGER DEFAULT 0,
-    last_active         INTEGER DEFAULT 0
-);
 
-CREATE TABLE IF NOT EXISTS photos (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    tg_id     INTEGER NOT NULL,
-    photo_id  TEXT NOT NULL,
-    position  INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (tg_id, position)
-);
+async def _run_migrations(conn: aiosqlite.Connection) -> None:
+    """Применяет pending-миграции из database/migrations/."""
+    # Создаём таблицу миграций если ещё нет
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS _migrations (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename   TEXT NOT NULL UNIQUE,
+            applied_at INTEGER NOT NULL
+        )
+    """)
+    await conn.commit()
 
-CREATE TABLE IF NOT EXISTS likes (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_id    INTEGER NOT NULL,
-    to_id      INTEGER NOT NULL,
-    is_like    INTEGER DEFAULT 1,
-    message    TEXT,
-    created_at INTEGER DEFAULT 0,
-    UNIQUE (from_id, to_id)
-);
+    # Получаем уже применённые миграции
+    cursor = await conn.execute("SELECT filename FROM _migrations")
+    applied = {row[0] for row in await cursor.fetchall()}
 
-CREATE TABLE IF NOT EXISTS matches (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    a_id       INTEGER NOT NULL,
-    b_id       INTEGER NOT NULL,
-    created_at INTEGER DEFAULT 0,
-    UNIQUE (a_id, b_id)
-);
+    # Находим новые миграции
+    if MIGRATIONS_DIR.exists():
+        migration_files = sorted(
+            f for f in MIGRATIONS_DIR.iterdir()
+            if f.suffix == ".sql" and f.name not in applied
+        )
+    else:
+        migration_files = []
 
-CREATE TABLE IF NOT EXISTS shown_profiles (
-    from_id  INTEGER NOT NULL,
-    to_id    INTEGER NOT NULL,
-    shown_at INTEGER DEFAULT 0,
-    PRIMARY KEY (from_id, to_id)
-);
-
-CREATE TABLE IF NOT EXISTS reports (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_id    INTEGER NOT NULL,
-    to_id      INTEGER NOT NULL,
-    created_at INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS anon_queue (
-    tg_id     INTEGER PRIMARY KEY,
-    queued_at INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS anon_sessions (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    a_id       INTEGER NOT NULL,
-    b_id       INTEGER NOT NULL,
-    a_reveal   INTEGER DEFAULT 0,
-    b_reveal   INTEGER DEFAULT 0,
-    started_at INTEGER DEFAULT 0,
-    ended_at   INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS relationships (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    user1_id   INTEGER NOT NULL,
-    user2_id   INTEGER NOT NULL,
-    points     INTEGER DEFAULT 0,
-    level      INTEGER DEFAULT 0,
-    created_at INTEGER DEFAULT 0,
-    UNIQUE (user1_id, user2_id)
-);
-
-CREATE TABLE IF NOT EXISTS tickets (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    tg_id      INTEGER NOT NULL,
-    category   TEXT NOT NULL,
-    text       TEXT NOT NULL,
-    photo_id   TEXT,
-    reply      TEXT,
-    status     TEXT DEFAULT 'open',
-    created_at INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS user_badges (
-    tg_id      INTEGER NOT NULL,
-    badge_id   TEXT NOT NULL,
-    awarded_at INTEGER NOT NULL,
-    PRIMARY KEY (tg_id, badge_id)
-);
-"""
-
-INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS idx_users_active_banned ON users(active, is_banned);
-CREATE INDEX IF NOT EXISTS idx_users_last_active   ON users(last_active DESC);
-CREATE INDEX IF NOT EXISTS idx_photos_tg           ON photos(tg_id);
-CREATE INDEX IF NOT EXISTS idx_likes_from_to       ON likes(from_id, to_id);
-CREATE INDEX IF NOT EXISTS idx_likes_to            ON likes(to_id, is_like);
-CREATE INDEX IF NOT EXISTS idx_matches_a           ON matches(a_id);
-CREATE INDEX IF NOT EXISTS idx_matches_b           ON matches(b_id);
-CREATE INDEX IF NOT EXISTS idx_shown_from_to       ON shown_profiles(from_id, to_id);
-CREATE INDEX IF NOT EXISTS idx_reports_to          ON reports(to_id);
-CREATE INDEX IF NOT EXISTS idx_reports_from        ON reports(from_id);
-CREATE INDEX IF NOT EXISTS idx_anon_sessions_active ON anon_sessions(ended_at);
-CREATE INDEX IF NOT EXISTS idx_relationships_pair  ON relationships(user1_id, user2_id);
-CREATE INDEX IF NOT EXISTS idx_tickets_status      ON tickets(status);
-CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
-CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, age);
-CREATE INDEX IF NOT EXISTS idx_users_gender        ON users(gender);
-CREATE INDEX IF NOT EXISTS idx_users_seeking       ON users(seeking);
-"""
+    for mig_file in migration_files:
+        log.info("Applying migration: %s", mig_file.name)
+        sql = mig_file.read_text(encoding="utf-8")
+        await conn.executescript(sql)
+        await conn.execute(
+            "INSERT INTO _migrations (filename, applied_at) VALUES (?, ?)",
+            (mig_file.name, int(_time.time())),
+        )
+        await conn.commit()
+        log.info("Migration applied: %s", mig_file.name)
 
 
 async def init_schema(conn: aiosqlite.Connection) -> None:
-    """Создаёт все таблицы и индексы (идемпотентно)."""
+    """Создаёт все таблицы и индексы из schema.sql (идемпотентно)."""
     log.info("Инициализация схемы БД...")
-    await conn.executescript(SCHEMA_SQL)
-    await conn.executescript(INDEX_SQL)
-    await conn.commit()
+    if SCHEMA_FILE.exists():
+        schema_sql = SCHEMA_FILE.read_text(encoding="utf-8")
+        await conn.executescript(schema_sql)
+        await conn.commit()
+        log.info("Схема БД загружена из %s", SCHEMA_FILE)
+    else:
+        log.warning("schema.sql не найден: %s", SCHEMA_FILE)
+
+    # Применяем миграции
+    await _run_migrations(conn)
     log.info("Схема БД готова")
 
 
@@ -195,6 +112,9 @@ async def db() -> AsyncGenerator[aiosqlite.Connection, None]:
     try:
         yield conn
         await conn.commit()
+    except aiosqlite.Error:
+        await conn.rollback()
+        raise
     except Exception:
         await conn.rollback()
         raise
@@ -223,13 +143,13 @@ async def close_db_pool() -> None:
 
 async def wait_until_db_ready(timeout: float = 60.0) -> None:
     """Вспомогательная утилита для блокировки старта приложения до прогрева БД."""
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = _time.monotonic() + timeout
     while True:
         try:
             await _ensure_schema()
             return
         except Exception as e:
-            if asyncio.get_event_loop().time() > deadline:
+            if _time.monotonic() > deadline:
                 log.exception("wait_until_db_ready: timeout waiting for DB ready: %s", e)
                 raise
             await asyncio.sleep(0.5)
@@ -245,9 +165,12 @@ async def _get_conn() -> aiosqlite.Connection:
             return _conn
         _conn = await aiosqlite.connect(DB_PATH)
         _conn.row_factory = aiosqlite.Row
+
+        # SQLite optimizations for production
         await _conn.execute("PRAGMA journal_mode=WAL")
         await _conn.execute("PRAGMA synchronous=NORMAL")
         await _conn.execute("PRAGMA foreign_keys=ON")
+        await _conn.execute("PRAGMA busy_timeout=5000")  # 5 sec timeout
         log.info("Соединение с SQLite создано: %s", DB_PATH)
         return _conn
 
@@ -258,6 +181,9 @@ async def ping_db() -> bool:
         conn = await _get_conn()
         await conn.execute("SELECT 1")
         return True
+    except aiosqlite.Error as e:
+        log.warning("DB ping failed (aiosqlite): %s", e)
+        return False
     except Exception as e:
-        log.warning("DB ping failed: %s", e)
+        log.warning("DB ping failed (unexpected): %s", e)
         return False

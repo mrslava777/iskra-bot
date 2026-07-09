@@ -1,7 +1,11 @@
--- Схема базы данных PostgreSQL для бота Искра
+-- ============================================================
+-- Искра — Telegram Dating Bot
+-- Schema version: 1
+-- ============================================================
 
+-- Users
 CREATE TABLE IF NOT EXISTS users (
-    tg_id               BIGINT PRIMARY KEY,
+    tg_id               INTEGER PRIMARY KEY,
     username            TEXT,
     name                TEXT,
     age                 INTEGER,
@@ -26,74 +30,83 @@ CREATE TABLE IF NOT EXISTS users (
     last_active         INTEGER DEFAULT 0
 );
 
+-- Photos gallery
 CREATE TABLE IF NOT EXISTS photos (
-    id        SERIAL PRIMARY KEY,
-    tg_id     BIGINT NOT NULL,
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id     INTEGER NOT NULL,
     photo_id  TEXT NOT NULL,
     position  INTEGER NOT NULL DEFAULT 0,
     UNIQUE (tg_id, position)
 );
 
+-- Likes / dislikes
 CREATE TABLE IF NOT EXISTS likes (
-    id         SERIAL PRIMARY KEY,
-    from_id    BIGINT NOT NULL,
-    to_id      BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id    INTEGER NOT NULL,
+    to_id      INTEGER NOT NULL,
     is_like    INTEGER DEFAULT 1,
     message    TEXT,
     created_at INTEGER DEFAULT 0,
     UNIQUE (from_id, to_id)
 );
 
+-- Matches (mutual likes)
 CREATE TABLE IF NOT EXISTS matches (
-    id         SERIAL PRIMARY KEY,
-    a_id       BIGINT NOT NULL,
-    b_id       BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    a_id       INTEGER NOT NULL,
+    b_id       INTEGER NOT NULL,
     created_at INTEGER DEFAULT 0,
     UNIQUE (a_id, b_id)
 );
 
+-- Shown profiles (feed tracking)
 CREATE TABLE IF NOT EXISTS shown_profiles (
-    from_id  BIGINT NOT NULL,
-    to_id    BIGINT NOT NULL,
+    from_id  INTEGER NOT NULL,
+    to_id    INTEGER NOT NULL,
     shown_at INTEGER DEFAULT 0,
     PRIMARY KEY (from_id, to_id)
 );
 
+-- Reports
 CREATE TABLE IF NOT EXISTS reports (
-    id         SERIAL PRIMARY KEY,
-    from_id    BIGINT NOT NULL,
-    to_id      BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id    INTEGER NOT NULL,
+    to_id      INTEGER NOT NULL,
     created_at INTEGER DEFAULT 0
 );
 
+-- Anonymous chat queue
 CREATE TABLE IF NOT EXISTS anon_queue (
-    tg_id     BIGINT PRIMARY KEY,
+    tg_id     INTEGER PRIMARY KEY,
     queued_at INTEGER DEFAULT 0
 );
 
+-- Anonymous chat sessions
 CREATE TABLE IF NOT EXISTS anon_sessions (
-    id         SERIAL PRIMARY KEY,
-    a_id       BIGINT NOT NULL,
-    b_id       BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    a_id       INTEGER NOT NULL,
+    b_id       INTEGER NOT NULL,
     a_reveal   INTEGER DEFAULT 0,
     b_reveal   INTEGER DEFAULT 0,
     started_at INTEGER DEFAULT 0,
     ended_at   INTEGER
 );
 
+-- Relationship levels between matches
 CREATE TABLE IF NOT EXISTS relationships (
-    id         SERIAL PRIMARY KEY,
-    user1_id   BIGINT NOT NULL,
-    user2_id   BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user1_id   INTEGER NOT NULL,
+    user2_id   INTEGER NOT NULL,
     points     INTEGER DEFAULT 0,
     level      INTEGER DEFAULT 0,
     created_at INTEGER DEFAULT 0,
     UNIQUE (user1_id, user2_id)
 );
 
+-- Support tickets
 CREATE TABLE IF NOT EXISTS tickets (
-    id         SERIAL PRIMARY KEY,
-    tg_id      BIGINT NOT NULL,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id      INTEGER NOT NULL,
     category   TEXT NOT NULL,
     text       TEXT NOT NULL,
     photo_id   TEXT,
@@ -102,14 +115,18 @@ CREATE TABLE IF NOT EXISTS tickets (
     created_at INTEGER DEFAULT 0
 );
 
+-- Badges / achievements
 CREATE TABLE IF NOT EXISTS user_badges (
-    tg_id      BIGINT NOT NULL,
+    tg_id      INTEGER NOT NULL,
     badge_id   TEXT NOT NULL,
     awarded_at INTEGER NOT NULL,
     PRIMARY KEY (tg_id, badge_id)
 );
 
--- Индексы
+-- ============================================================
+-- Indexes
+-- ============================================================
+
 CREATE INDEX IF NOT EXISTS idx_users_active_banned ON users(active, is_banned);
 CREATE INDEX IF NOT EXISTS idx_users_last_active   ON users(last_active DESC);
 CREATE INDEX IF NOT EXISTS idx_photos_tg           ON photos(tg_id);
@@ -119,8 +136,11 @@ CREATE INDEX IF NOT EXISTS idx_matches_a           ON matches(a_id);
 CREATE INDEX IF NOT EXISTS idx_matches_b           ON matches(b_id);
 CREATE INDEX IF NOT EXISTS idx_shown_from_to       ON shown_profiles(from_id, to_id);
 CREATE INDEX IF NOT EXISTS idx_reports_to          ON reports(to_id);
+CREATE INDEX IF NOT EXISTS idx_reports_from        ON reports(from_id);
 CREATE INDEX IF NOT EXISTS idx_anon_sessions_active ON anon_sessions(ended_at);
 CREATE INDEX IF NOT EXISTS idx_relationships_pair  ON relationships(user1_id, user2_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status      ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_user_badges_tg      ON user_badges(tg_id);
 CREATE INDEX IF NOT EXISTS idx_users_age           ON users(active, is_banned, age);
+CREATE INDEX IF NOT EXISTS idx_users_gender        ON users(gender);
+CREATE INDEX IF NOT EXISTS idx_users_seeking       ON users(seeking);
