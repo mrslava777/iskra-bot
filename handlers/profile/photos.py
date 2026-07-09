@@ -15,6 +15,8 @@ from states import Edit
 import asyncio
 
 
+import logging
+
 log = logging.getLogger("iskra." + __name__.split(".")[-1])
 
 async def _safe_send(coro, fallback=None):
