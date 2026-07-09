@@ -10,7 +10,6 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message  # CallbackQuery needed for stop_cb
-from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.anon_repo as anon_repo
 import repositories.user_repo as user_repo
@@ -18,29 +17,7 @@ from data.constants import EMOJI, MenuText, Message
 from data.enums import CallbackPrefix, AnonAction
 from keyboards import ANON_CHAT_MENU, ANON_SEARCH_MENU, MAIN_MENU, anon_session_kb
 
-
-log = logging.getLogger("iskra." + __name__.split(".")[-1])
-
-async def _safe_send(coro, fallback=None):
-    """Safe wrapper for Telegram send operations."""
-    try:
-        return await coro
-    except TelegramRetryAfter as e:
-        await asyncio.sleep(e.retry_after)
-        try:
-            return await coro
-        except Exception:
-            pass
-    except TelegramForbiddenError:
-        pass
-    except Exception:
-        if fallback:
-            try:
-                return await fallback
-            except Exception:
-                pass
-    return None
-
+_background_tasks: set[asyncio.Task] = set()
 router = Router()
 log = logging.getLogger("iskra.anon.queue")
 
@@ -65,7 +42,9 @@ async def blind_date(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
     # touch_activity — fire-and-forget, не блокирует
     # FIX: create_task for actual coroutine
-    asyncio.create_task(_safe_touch(message.from_user.id))
+    _task = asyncio.create_task(_safe_touch(message.from_user.id))
+    _background_tasks.add(_task)
+    _task.add_done_callback(_background_tasks.discard)
 
     status, partner = await anon_repo.anon_find_or_queue(message.from_user.id)
 
