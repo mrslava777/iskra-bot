@@ -2,6 +2,7 @@
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.settings_repo as settings_repo
 from data.constants import EMOJI, Message as Msg, Format
@@ -9,6 +10,29 @@ from data.enums import AdminAction, CallbackPrefix, Command as Cmd
 from keyboards import admin_menu_kb, back_kb
 from services.admin_service import is_admin
 import asyncio
+
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
 
 router = Router()
 
@@ -30,8 +54,6 @@ async def cb_menu(call: CallbackQuery) -> None:
         return await call.answer(Msg.ADMIN_ONLY)
     try:
         await call.message.edit_text(ADMIN_TITLE, reply_markup=admin_menu_kb())
-    except asyncio.CancelledError:
-        raise
     except Exception:
         await call.message.answer(ADMIN_TITLE, reply_markup=admin_menu_kb())
     await call.answer()

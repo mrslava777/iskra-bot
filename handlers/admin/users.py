@@ -16,6 +16,29 @@ from keyboards import back_kb
 from services.admin_service import is_admin
 import asyncio
 
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
+
 router = Router()
 log = logging.getLogger("iskra.admin.users")
 
@@ -53,6 +76,7 @@ async def cb_verified(call: CallbackQuery) -> None:
         )
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
     tg_ids = [r["tg_id"] for r in rows]
     names_map = await user_repo.get_user_names_batch(tg_ids)
@@ -87,8 +111,6 @@ async def cb_do_unverify(call: CallbackQuery) -> None:
     await call.answer(f"{EMOJI.VERIFIED} Верификация снята у {user['name']}")
     try:
         await call.bot.send_message(tg_id, Message.VERIFICATION_REMOVED)
-    except asyncio.CancelledError:
-        raise
     except Exception as e:
         log.warning("Не удалось уведомить о снятии верификации → %d: %s", tg_id, e)
     await cb_verified(call)
@@ -110,7 +132,5 @@ async def cmd_unverify(message: Message) -> None:
     await message.answer(Format.UNVERIFY_SUCCESS.format(user["name"], tg_id))
     try:
         await message.bot.send_message(tg_id, Message.VERIFICATION_REMOVED)
-    except asyncio.CancelledError:
-        raise
     except Exception as e:
         log.warning("Не удалось уведомить о снятии верификации → %d: %s", tg_id, e)

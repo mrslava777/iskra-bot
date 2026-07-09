@@ -9,12 +9,36 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.settings_repo as settings_repo
 from data.constants import Broadcast, Message as Msg, Format
 from data.enums import AdminAction, CallbackPrefix, Command as Cmd
 from keyboards import back_kb
 from services.admin_service import is_admin
+
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
 
 router = Router()
 log = logging.getLogger("iskra.broadcast")
@@ -61,8 +85,6 @@ async def cmd_broadcast(message: Message) -> None:
             try:
                 await message.bot.send_message(uid, f"{Format.BROADCAST_PREFIX}{text}")
                 result = (True, uid)
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 result = (False, uid)
             await asyncio.sleep(Broadcast.DELAY)
@@ -85,8 +107,6 @@ async def cmd_broadcast(message: Message) -> None:
                 await status.edit_text(
                     Format.BROADCAST_STATUS.format(min(i + Broadcast.BATCH_SIZE, total), total, sent, failed)
                 )
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 pass
 
