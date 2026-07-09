@@ -9,6 +9,7 @@ import logging
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.match_repo as match_repo
 import repositories.user_repo as user_repo
@@ -21,6 +22,29 @@ from services.compatibility import common_interests, compatibility, compat_bar
 from services.profile_formatter import format_profile_async
 from services.relationship_service import get_relationship, format_status
 import asyncio
+
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
 
 router = Router()
 log = logging.getLogger("iskra.matches")
@@ -84,8 +108,6 @@ async def _show_match(
     )
     try:
         await message.answer_photo(photo=match["photo_id"], caption=caption, reply_markup=rel_kb)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         await message.answer(caption, reply_markup=rel_kb)
 

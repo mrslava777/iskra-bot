@@ -8,6 +8,7 @@ import asyncio
 
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.like_repo as like_repo
 import repositories.user_repo as user_repo
@@ -19,6 +20,29 @@ from services.badge_service import check_and_award
 from services.notification import announce_match
 from services.profile_formatter import format_profile_async
 
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
+
 router = Router()
 
 
@@ -26,7 +50,7 @@ router = Router()
 async def show_incoming(message: Message) -> None:
     """Показывает входящие лайки."""
     user = await user_repo.get_user(message.from_user.id)
-    if not user or not user.get("name"):
+    if not user or not user["name"]:
         await message.answer(Message.CREATE_PROFILE_FIRST)
         return
     rows = await like_repo.incoming_likes(message.from_user.id)
