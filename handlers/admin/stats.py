@@ -1,4 +1,5 @@
 """Админ-панель: вход /admin, главное меню и статистика."""
+import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message

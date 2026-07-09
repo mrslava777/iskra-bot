@@ -6,7 +6,7 @@ import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.user_list_repo as user_list_repo
 import repositories.user_repo as user_repo
@@ -75,8 +75,6 @@ async def cb_verified(call: CallbackQuery) -> None:
             f"{EMOJI.VERIFIED} Верифицированных пользователей пока нет.", reply_markup=back_kb()
         )
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
     tg_ids = [r["tg_id"] for r in rows]
     names_map = await user_repo.get_user_names_batch(tg_ids)
