@@ -11,6 +11,9 @@ FIX v6: TelegramUnauthorizedError теперь ловится и выводит 
         вместо километрового traceback — помогает диагностировать невалидный токен.
 FIX v6: cleanup_shown_profiles обёрнут в try/except — не блокирует старт при
         проблемах с параметрами aiosqlite.
+FIX v7: добавлен глобальный error handler для aiogram.
+        Исправлена обработка CancelledError — теперь не ловится bare except.
+        Добавлены импорты TelegramRetryAfter, TelegramForbiddenError.
 """
 import asyncio
 import logging
@@ -21,12 +24,18 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramUnauthorizedError
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+    TelegramUnauthorizedError,
+)
+from aiogram.types import ErrorEvent
 
 from config import BOT_TOKEN, SENTRY_DSN
-from database.connection import close_db_pool, wait_until_db_ready, ping_db
+from database.connection import close_db_pool, ping_db, wait_until_db_ready
 from handlers import setup_routers
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("iskra.main")
@@ -43,12 +52,12 @@ async def _health_handler(request: web.Request) -> web.Response:
         else:
             return web.json_response(
                 {"status": "degraded", "db": "unreachable"},
-                status=503
+                status=503,
             )
     except Exception as e:
         return web.json_response(
             {"status": "error", "detail": str(e)},
-            status=503
+            status=503,
         )
 
 
@@ -82,6 +91,8 @@ async def on_startup(bot: Bot) -> None:
     try:
         await wait_until_db_ready(timeout=60)
         log.info("DB ready (wait_until_db_ready succeeded)")
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.error("DB not ready after wait_until_db_ready: %s", e)
 
@@ -92,15 +103,20 @@ async def on_startup(bot: Bot) -> None:
     except TelegramUnauthorizedError:
         log.error("Невозможно удалить webhook: токен невалиден. Проверь BOT_TOKEN.")
         raise
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.warning("Failed to delete webhook: %s", e)
 
     # Очистка shown_profiles
     try:
         from repositories.profile_repo import cleanup_shown_profiles
+
         deleted = await cleanup_shown_profiles(max_age_days=30)
         if deleted:
             log.info("Очищено %d старых записей shown_profiles", deleted)
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log.warning("Не удалось очистить shown_profiles: %s", e)
 
@@ -112,11 +128,37 @@ async def on_shutdown(bot: Bot) -> None:
     log.info("Бот остановлен")
 
 
+async def _global_error_handler(event: ErrorEvent) -> None:
+    """Глобальный обработчик ошибок aiogram.
+
+    Ловит необработанные исключения из хендлеров, логирует их,
+    предотвращает падение бота.
+    """
+    exc = event.exception
+    update = event.update
+
+    if isinstance(exc, TelegramRetryAfter):
+        log.warning("Flood limit exceeded, retry after %s sec", exc.retry_after)
+        return
+    if isinstance(exc, TelegramForbiddenError):
+        log.warning("Forbidden for user, probably blocked bot: %s", exc)
+        return
+    if isinstance(exc, TelegramAPIError):
+        log.error("Telegram API error: %s", exc)
+        return
+    if isinstance(exc, asyncio.CancelledError):
+        # Не логируем CancelledError — это нормальное поведение при shutdown
+        raise
+
+    log.exception("Unhandled exception in handler for update %s: %s", update, exc)
+
+
 async def main() -> None:
     # Инициализируем Sentry (если задан SENTRY_DSN)
     if SENTRY_DSN:
         try:
             import sentry_sdk
+
             sentry_sdk.init(SENTRY_DSN, traces_sample_rate=0.0)
             log.info("Sentry initialized")
         except Exception as e:
@@ -124,15 +166,22 @@ async def main() -> None:
 
     # Проверяем токен до создания Bot
     if not BOT_TOKEN or len(BOT_TOKEN) < 20:
-        log.error("BOT_TOKEN не задан или слишком короткий! Проверь переменные окружения.")
+        log.error(
+            "BOT_TOKEN не задан или слишком короткий! Проверь переменные окружения."
+        )
         sys.exit(1)
 
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = Bot(
+        token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
 
     # Роутеры
     root_router = setup_routers()
     dp.include_router(root_router)
+
+    # Глобальный error handler
+    dp.errors.register(_global_error_handler)
 
     # Startup/Shutdown
     dp.startup.register(on_startup)
@@ -161,6 +210,9 @@ async def main() -> None:
         log.error("  3. Токен содержит лишние пробелы или символы")
         log.error("=" * 60)
         sys.exit(1)
+    except asyncio.CancelledError:
+        log.info("Polling cancelled (shutdown)")
+        raise
     finally:
         await health_runner.cleanup()
         log.info("Health-check сервер остановлен")
