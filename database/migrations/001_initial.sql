@@ -1,0 +1,4 @@
+-- Migration 001: initial schema
+-- Applied automatically by connection.py migration runner
+-- This file intentionally empty — schema is in schema.sql
+-- Future migrations go in 002_*.sql, 003_*.sql, etc.
