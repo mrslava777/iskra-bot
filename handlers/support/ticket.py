@@ -9,6 +9,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.support_repo as support_repo
 import repositories.user_repo as user_repo
@@ -18,6 +19,29 @@ from data.enums import CallbackPrefix, SupportCategory, Command as Cmd
 from keyboards import MAIN_MENU
 from states import Support
 import asyncio
+
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
 
 router = Router()
 log = logging.getLogger("iskra.support")
@@ -46,8 +70,6 @@ async def on_support_back(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     try:
         await call.message.edit_reply_markup(reply_markup=None)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         pass
     await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
@@ -134,8 +156,6 @@ async def _process_ticket(
                     admin_id, text=ticket_text,
                     reply_markup=support_reply_kb(uid, ticket_id),
                 )
-        except asyncio.CancelledError:
-            raise
         except Exception as e:
             log.warning("Не удалось отправить тикет #%s → admin %d: %s", ticket_id, admin_id, e)
 

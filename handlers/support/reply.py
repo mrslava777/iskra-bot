@@ -3,6 +3,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.support_repo as support_repo
 from config import ADMIN_IDS
@@ -10,6 +11,29 @@ from data.constants import Message, Format
 from data.enums import CallbackPrefix, Command as Cmd
 from states import Support
 import asyncio
+
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception:
+            pass
+    except TelegramForbiddenError:
+        pass
+    except Exception:
+        if fallback:
+            try:
+                return await fallback
+            except Exception:
+                pass
+    return None
 
 router = Router()
 
@@ -56,7 +80,5 @@ async def admin_reply_send(message: Message, state: FSMContext) -> None:
         if ticket_id:
             await support_repo.reply_ticket(ticket_id, reply_text)
         await message.answer(Format.REPLY_SENT.format(tg_id))
-    except asyncio.CancelledError:
-        raise
     except Exception as e:
         await message.answer(Format.REPLY_FAILED.format(e))
