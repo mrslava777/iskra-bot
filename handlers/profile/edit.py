@@ -1,4 +1,5 @@
 """Редактирование полей анкеты — имя, возраст, город, био, интересы."""
+import logging
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
