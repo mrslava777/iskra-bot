@@ -1,11 +1,14 @@
 """Репозиторий пользователей.
 
-PERF: добавлен in-memory TTL-кэш для get_user().
-Каждый handler-chain вызывает get_user() 2-5 раз для одного и того же tg_id.
-Кэш на 10 секунд убирает 50-80% запросов к users без риска для консистентности.
+PERF: in-memory TTL-кэш для get_user().
+FIX v8: SQL allowlist для upsert_user.
 
-FIX v8: SQL allowlist — предотвращает инъекцию через динамические поля upsert_user.
-        Только разрешённые поля могут быть использованы в UPDATE.
+FIX (#4 shown_profiles при деактивации): добавлен reset_feed(tg_id) —
+ очищает показанные анкеты, чтобы после реактивации/смены фильтров лента
+ обновлялась (иначе пользователь упирался в «анкет нет», хотя подходящие
+ кандидаты есть). Вызывается из настроек при включении анкеты и смене фильтров.
+FIX (#6 инвалидация кэша совместимости): при изменении interests чистим
+ связанные записи в кэше compatibility, чтобы не показывать устаревший %.
 """
 import time
 from collections import OrderedDict
@@ -14,13 +17,11 @@ from typing import Optional
 from database.connection import db
 
 # ── User cache ────────────────────────────────────────────────────
-# LRU + TTL кэш для get_user(). Безопасен в asyncio (single-threaded event loop).
 _user_cache: OrderedDict[int, tuple[Optional[dict], float]] = OrderedDict()
-_USER_CACHE_TTL = 10  # секунд
+_USER_CACHE_TTL = 10
 _USER_CACHE_MAX = 500
 
 # SQL allowlist: только эти поля могут быть обновлены через upsert_user
-# Предотвращает SQL-инъекцию через динамические поля
 _USER_FIELD_ALLOWLIST = {
     "username", "name", "age", "gender", "seeking", "city",
     "bio", "interests", "photo_id", "active", "verified",
@@ -34,10 +35,7 @@ def _invalidate_user(tg_id: int) -> None:
 
 
 async def get_user(tg_id: int) -> Optional[dict]:
-    """Возвращает данные пользователя с кэшированием.
-
-    TTL = 10 секунд. Кэш сбрасывается при upsert_user / delete_user.
-    """
+    """Возвращает данные пользователя с кэшированием (TTL = 10 сек)."""
     now = time.monotonic()
 
     cached = _user_cache.get(tg_id)
@@ -90,13 +88,22 @@ async def upsert_user(
     min_age: Optional[int] = None,
     max_age: Optional[int] = None,
 ) -> None:
-    """Обновляет или создаёт пользователя.
-
-    FIX v8: SQL allowlist — только разрешённые поля попадают в запрос.
-    """
+    """Обновляет или создаёт пользователя. SQL allowlist на поля."""
     _invalidate_user(tg_id)
-    import time as _time
-    now = int(_time.time())
+
+    # #6: если меняются интересы — чистим кэш совместимости для старой и новой строк.
+    if interests is not None:
+        try:
+            from services.compatibility import invalidate_compat_for
+            prev = _user_cache.get(tg_id)
+            old_interests = prev[0].get("interests") if prev and prev[0] else None
+            invalidate_compat_for(interests)
+            if old_interests is not None and old_interests != interests:
+                invalidate_compat_for(old_interests)
+        except Exception:
+            pass  # кэш — не критичный путь
+
+    now = int(time.time())
 
     # Собираем только разрешённые поля
     locals_dict = locals()
@@ -107,12 +114,10 @@ async def upsert_user(
             fields_to_update[field_name] = value
 
     async with db() as conn:
-        # Check if user exists
         cur = await conn.execute("SELECT 1 FROM users WHERE tg_id = ?", (tg_id,))
         exists = await cur.fetchone()
 
         if exists:
-            # Update existing user — только разрешённые поля
             fields = []
             params = []
             for field_name, value in fields_to_update.items():
@@ -123,11 +128,9 @@ async def upsert_user(
             params.append(now)
             params.append(tg_id)
 
-            if fields:
-                sql = f"UPDATE users SET {', '.join(fields)} WHERE tg_id = ?"
-                await conn.execute(sql, tuple(params))
+            sql = f"UPDATE users SET {', '.join(fields)} WHERE tg_id = ?"
+            await conn.execute(sql, tuple(params))
         else:
-            # Insert new user
             await conn.execute(
                 """
                 INSERT INTO users (tg_id, username, name, age, gender, seeking, city, bio, interests, photo_id, active, verified, daily_q, daily_a, min_age, max_age, created_at, last_active, streak, rating, anon_messages_count)
@@ -137,10 +140,23 @@ async def upsert_user(
             )
 
 
+async def reset_feed(tg_id: int) -> int:
+    """Очищает показанные анкеты пользователя (лента начинается заново).
+
+    #4: вызывается при реактивации анкеты и смене фильтров, чтобы подходящие
+    кандидаты снова появлялись в ленте. Возвращает число удалённых записей.
+    """
+    async with db() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM shown_profiles WHERE from_id = ?",
+            (tg_id,),
+        )
+        return cursor.rowcount
+
+
 async def touch_activity(tg_id: int) -> None:
     """Обновляет last_active. Не инвалидирует кэш — last_active не критичен."""
-    import time as _time
-    now = int(_time.time())
+    now = int(time.time())
     async with db() as conn:
         await conn.execute(
             "UPDATE users SET last_active = ? WHERE tg_id = ?",
@@ -174,11 +190,7 @@ async def update_max_compat(tg_id: int, pct: int) -> None:
 
 
 async def delete_user(tg_id: int) -> None:
-    """Полностью удаляет пользователя и все связанные данные.
-
-    Все DELETE-операции выполняются в одной транзакции —
-    либо пользователь удалён полностью, либо не удалён вообще.
-    """
+    """Полностью удаляет пользователя и все связанные данные (в одной транзакции)."""
     _invalidate_user(tg_id)
     async with db() as conn:
         statements = [
