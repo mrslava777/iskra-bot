@@ -6,12 +6,29 @@ from database.connection import db
 async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
     """Сохраняет лайк/дизлайк. Возвращает True, если возник взаимный мэтч.
 
-    Все операции (лайк, рейтинг, проверка встречного, создание мэтча)
-    выполняются в одной транзакции — атомарно.
+    FIX (#2 race condition): устранён TOCTOU при создании мэтча.
+    Раньше был check-then-insert (SELECT ... затем INSERT), из-за чего два
+    почти одновременных встречных лайка могли оба пройти проверку и либо
+    создать дубль, либо словить исключение на UNIQUE(a_id,b_id).
+    Теперь:
+      - мэтч создаётся через INSERT ... ON CONFLICT DO NOTHING, а факт
+        реальной вставки определяется по total_changes → matched выставляется
+        ровно один раз, без гонки;
+      - рейтинг цели поднимается ТОЛЬКО когда лайк реально новый или сменился
+        с дизлайка на лайк (сравниваем предыдущее состояние), чтобы повторный
+        лайк не накручивал счётчик.
     """
     now = int(_time.time())
     async with db() as conn:
-        # Upsert-like: insert or replace
+        # Предыдущее состояние лайка (для корректного инкремента рейтинга)
+        cur_prev = await conn.execute(
+            "SELECT is_like FROM likes WHERE from_id = ? AND to_id = ?",
+            (from_id, to_id),
+        )
+        prev = await cur_prev.fetchone()
+        prev_is_like = bool(prev[0]) if prev else None
+
+        # Upsert лайка/дизлайка
         await conn.execute(
             """
             INSERT INTO likes (from_id, to_id, is_like, created_at)
@@ -25,34 +42,33 @@ async def add_like(from_id: int, to_id: int, is_like: bool) -> bool:
 
         matched = False
         if is_like:
-            # Поднимаем рейтинг (число входящих симпатий) цели.
-            await conn.execute(
-                "UPDATE users SET rating = rating + 1 WHERE tg_id = ?",
-                (to_id,),
-            )
-            # Проверяем встречный лайк.
+            # Рейтинг поднимаем только если это НОВАЯ симпатия
+            # (не было записи вообще, либо раньше был дизлайк).
+            if prev_is_like is not True:
+                await conn.execute(
+                    "UPDATE users SET rating = rating + 1 WHERE tg_id = ?",
+                    (to_id,),
+                )
+
+            # Есть ли встречный лайк?
             cur = await conn.execute(
                 "SELECT 1 FROM likes WHERE from_id = ? AND to_id = ? AND is_like = 1",
                 (to_id, from_id),
             )
-            row = await cur.fetchone()
-            if row:
+            if await cur.fetchone():
                 a, b = sorted((from_id, to_id))
-                # Check if match already exists
-                cur2 = await conn.execute(
-                    "SELECT 1 FROM matches WHERE a_id = ? AND b_id = ?",
-                    (a, b),
+                # Атомарно: вставляем мэтч, если его ещё нет.
+                # matched = True только если строка реально добавилась.
+                before = conn.total_changes
+                await conn.execute(
+                    """
+                    INSERT INTO matches (a_id, b_id, created_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (a_id, b_id) DO NOTHING
+                    """,
+                    (a, b, now),
                 )
-                exists = await cur2.fetchone()
-                if not exists:
-                    await conn.execute(
-                        """
-                        INSERT INTO matches (a_id, b_id, created_at)
-                        VALUES (?, ?, ?)
-                        """,
-                        (a, b, now),
-                    )
-                    matched = True
+                matched = conn.total_changes > before
 
         return matched
 
