@@ -1,3 +1,5 @@
-"""Data package — content, badges, enums, constants."""
-from data.enums import *
-from data.constants import *
+"""Data package — content, enums, constants.
+
+FIX: убран импорт * из enums и constants — предотвращает циклические зависимости.
+Каждый модуль импортируется напрямую там, где нужен.
+"""

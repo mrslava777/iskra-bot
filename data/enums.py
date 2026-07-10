@@ -1,6 +1,61 @@
-"""Enums для бота Искра — замена магических строк на типизированные значения."""
+"""Enums для бота Искра — замена магических строк на типизированные значения.
+
+FIX: убраны runtime-импорты из data.constants — предотвращает циклические зависимости.
+Все строковые значения вынесены в inline-константы.
+"""
 from enum import Enum
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INLINE КОНСТАНТЫ (были импортированы из data.constants, вызывали циклы)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_EMOJI_MALE = "👨"
+_EMOJI_FEMALE = "👩"
+_EMOJI_UNKNOWN = "🧑"
+_EMOJI_FIRE_MID = "🔥"
+_EMOJI_COMPAT = "💞"
+_EMOJI_CROWN = "👑"
+
+_RARITY_ORDER = {"common": 0, "rare": 1, "epic": 2, "legendary": 3}
+_RARITY_EMOJI = {"common": "⚪", "rare": "🔵", "epic": "🟣", "legendary": "🟡"}
+_RARITY_LABELS = {
+    "common": "Обычный",
+    "rare": "Редкий",
+    "epic": "Эпический",
+    "legendary": "Легендарный",
+}
+_RARITY_COLORS = {
+    "common": "#95a5a6",
+    "rare": "#3498db",
+    "epic": "#9b59b6",
+    "legendary": "#f1c40f",
+}
+
+_SUPPORT_NAMES = {
+    "report": "🧧 Жалоба на пользователя",
+    "rights": "🗣 Нарушение моих прав",
+    "other": "❓ Другое",
+}
+_SUPPORT_DESCS = {
+    "report": "опасное поведение, нарушения",
+    "rights": "используют мои данные",
+    "other": "вопросы, лагает/не работает, верификация, юр. запросы",
+}
+
+_REL_NAMES = {
+    0: "💫 Общение",
+    1: "💌 Симпатия",
+    2: f"{_EMOJI_FIRE_MID} Интерес",
+    3: f"{_EMOJI_COMPAT} Близость",
+    4: f"{_EMOJI_CROWN} Пара",
+}
+_REL_THRESHOLDS = [0, 50, 150, 350, 750]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENUMS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class Gender(Enum):
     """Пол пользователя."""
@@ -10,11 +65,10 @@ class Gender(Enum):
 
     @property
     def emoji(self) -> str:
-        from data.constants import EMOJI
         return {
-            Gender.MALE: EMOJI.MALE,
-            Gender.FEMALE: EMOJI.FEMALE,
-            Gender.ANY: EMOJI.UNKNOWN_GENDER,
+            Gender.MALE: _EMOJI_MALE,
+            Gender.FEMALE: _EMOJI_FEMALE,
+            Gender.ANY: _EMOJI_UNKNOWN,
         }[self]
 
 
@@ -34,22 +88,19 @@ class Rarity(Enum):
 
     @property
     def order(self) -> int:
-        return RARITY_ORDER[self]
+        return _RARITY_ORDER[self.value]
 
     @property
     def emoji(self) -> str:
-        from data.constants import EMOJI
-        return RARITY_EMOJI[self]
+        return _RARITY_EMOJI[self.value]
 
     @property
     def label(self) -> str:
-        from data.constants import RARITY_LABELS
-        return RARITY_LABELS[self]
+        return _RARITY_LABELS[self.value]
 
     @property
     def color(self) -> str:
-        from data.constants import RARITY_COLORS
-        return RARITY_COLORS[self]
+        return _RARITY_COLORS[self.value]
 
 
 class TicketStatus(Enum):
@@ -67,13 +118,11 @@ class SupportCategory(Enum):
 
     @property
     def display_name(self) -> str:
-        from data.constants import SUPPORT_CATEGORY_NAMES
-        return SUPPORT_CATEGORY_NAMES.get(self.value)
+        return _SUPPORT_NAMES.get(self.value, "❓ Другое")
 
     @property
     def description(self) -> str:
-        from data.constants import SUPPORT_CATEGORY_DESCRIPTIONS
-        return SUPPORT_CATEGORY_DESCRIPTIONS.get(self.value)
+        return _SUPPORT_DESCS.get(self.value, "")
 
 
 class CallbackPrefix(Enum):
@@ -131,13 +180,11 @@ class RelationshipLevel(Enum):
 
     @property
     def name_ru(self) -> str:
-        from data.constants import RELATIONSHIP_LEVEL_NAMES
-        return RELATIONSHIP_LEVEL_NAMES[self]
+        return _REL_NAMES.get(self.value, _REL_NAMES[0])
 
     @property
     def threshold(self) -> int:
-        from data.constants import RELATIONSHIP_THRESHOLDS
-        return RELATIONSHIP_THRESHOLDS[self.value]
+        return _REL_THRESHOLDS[self.value]
 
 
 class UserStatus(Enum):
@@ -226,7 +273,10 @@ class EditField(Enum):
     VERIFY = "verify"
 
 
-# Обратные маппинги для быстрого доступа
+# ═══════════════════════════════════════════════════════════════════════════════
+# ОБРАТНЫЕ МАППИНГИ (для совместимости с существующим кодом)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 RARITY_ORDER: dict[Rarity, int] = {
     Rarity.COMMON: 0,
     Rarity.RARE: 1,
