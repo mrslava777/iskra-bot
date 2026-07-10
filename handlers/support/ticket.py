@@ -114,7 +114,7 @@ async def _process_ticket(
     await state.clear()
 
     # Валидация текста тикета
-    clean_text = sanitize_ticket_text(text)
+    clean_text = await sanitize_ticket_text(text)
     if clean_text is None:
         await message.answer("Текст содержит недопустимые символы.", reply_markup=MAIN_MENU)
         return
