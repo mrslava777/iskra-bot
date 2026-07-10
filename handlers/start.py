@@ -1,8 +1,10 @@
 """Регистрация анкеты (FSM) и /start.
 
 PERF: _finish_registration параллелизирует загрузку user + photo_count + badges.
+FIX v8: _background_tasks + логирование ошибок регистрации.
 """
 import asyncio
+import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
@@ -20,6 +22,8 @@ from services.badge_formatter import format_badge_card
 from states import Reg
 
 _background_tasks: set[asyncio.Task] = set()
+log = logging.getLogger("iskra.start")
+
 router = Router()
 
 
@@ -27,8 +31,8 @@ async def _safe_touch(tg_id: int) -> None:
     """Fire-and-forget touch_activity с перехватом ошибок."""
     try:
         await user_repo.touch_activity(tg_id)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to touch activity for %d: %s", tg_id, e)
 
 
 WELCOME = (
@@ -42,7 +46,12 @@ WELCOME = (
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    user = await user_repo.get_user(message.from_user.id)
+    try:
+        user = await user_repo.get_user(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to load user %d on start: %s", message.from_user.id, e)
+        user = None
+
     if user and user["name"] and user["photo_id"]:
         # touch_activity — fire-and-forget, не блокирует ответ
         # FIX: create_task for actual coroutine
@@ -147,21 +156,26 @@ async def reg_photo(message: Message, state: FSMContext) -> None:
     photo_id = message.photo[-1].file_id
     data = await state.get_data()
     interests = ",".join(str(i) for i in data.get("sel_interests", []))
-    await user_repo.upsert_user(
-        message.from_user.id,
-        username=message.from_user.username,
-        name=data["name"],
-        age=data["age"],
-        gender=data["gender"],
-        seeking=data["seeking"],
-        city=data["city"],
-        bio=data.get("bio", ""),
-        interests=interests,
-        photo_id=photo_id,
-        active=1,
-    )
-    await photo_repo.sync_photos_to_gallery(message.from_user.id)
-    await user_repo.touch_activity(message.from_user.id)
+    try:
+        await user_repo.upsert_user(
+            message.from_user.id,
+            username=message.from_user.username,
+            name=data["name"],
+            age=data["age"],
+            gender=data["gender"],
+            seeking=data["seeking"],
+            city=data["city"],
+            bio=data.get("bio", ""),
+            interests=interests,
+            photo_id=photo_id,
+            active=1,
+        )
+        await photo_repo.sync_photos_to_gallery(message.from_user.id)
+        await user_repo.touch_activity(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to save user %d during registration: %s", message.from_user.id, e)
+        await message.answer("Не удалось сохранить анкету 😕 Попробуй ещё раз /start")
+        return
 
     await state.update_data(extra_count=0)
     await state.set_state(Reg.extra_photos)
@@ -174,7 +188,11 @@ async def reg_photo(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(Reg.extra_photos, F.data == f"{CallbackPrefix.REG_PHOTO.value}:skip")
 async def reg_skip_extra(call: CallbackQuery, state: FSMContext) -> None:
-    await _finish_registration(call.message, call.from_user.id, state)
+    try:
+        await _finish_registration(call.message, call.from_user.id, state)
+    except Exception as e:
+        log.error("Failed to finish registration for %d: %s", call.from_user.id, e)
+        await call.message.answer("Ошибка завершения регистрации 😕", reply_markup=MAIN_MENU)
     await call.answer("✅ Анкета готова!", show_alert=True)
 
 
@@ -184,10 +202,20 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
     count = data.get("extra_count", 0)
     if count >= Photo.MAX_EXTRA:
         await message.answer(Message.MAX_PHOTOS + " Сохраняю анкету!")
-        await _finish_registration(message, message.from_user.id, state)
+        try:
+            await _finish_registration(message, message.from_user.id, state)
+        except Exception as e:
+            log.error("Failed to finish registration for %d: %s", message.from_user.id, e)
+            await message.answer("Ошибка завершения регистрации 😕", reply_markup=MAIN_MENU)
         return
     photo_id = message.photo[-1].file_id
-    await photo_repo.add_photo(message.from_user.id, photo_id)
+    try:
+        await photo_repo.add_photo(message.from_user.id, photo_id)
+    except Exception as e:
+        log.error("Failed to add extra photo for %d: %s", message.from_user.id, e)
+        await message.answer("Не удалось сохранить фото 😕", reply_markup=MAIN_MENU)
+        return
+
     count += 1
     await state.update_data(extra_count=count)
     remaining = Photo.MAX_EXTRA - count
@@ -198,27 +226,44 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
         )
     else:
         await message.answer("✅ Все 5 фото загружены!")
-        await _finish_registration(message, message.from_user.id, state)
+        try:
+            await _finish_registration(message, message.from_user.id, state)
+        except Exception as e:
+            log.error("Failed to finish registration for %d: %s", message.from_user.id, e)
+            await message.answer("Ошибка завершения регистрации 😕", reply_markup=MAIN_MENU)
 
 
 async def _finish_registration(message: Message, user_id: int, state: FSMContext) -> None:
     await state.clear()
 
     # Параллельно: user + photo_count + badges
-    user, n_photos, new_badges = await asyncio.gather(
-        user_repo.get_user(user_id),
-        photo_repo.photo_count(user_id),
-        check_and_award(user_id),
-    )
+    try:
+        user, n_photos, new_badges = await asyncio.gather(
+            user_repo.get_user(user_id),
+            photo_repo.photo_count(user_id),
+            check_and_award(user_id),
+        )
+    except Exception as e:
+        log.error("Failed to load registration data for %d: %s", user_id, e)
+        await message.answer("Ошибка загрузки профиля 😕", reply_markup=MAIN_MENU)
+        return
+
     photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
 
-    await message.answer_photo(
-        photo=user["photo_id"],
-        caption=f"{Message.PROFILE_COMPLETE}{format_profile(user)}{photo_note}",
-    )
+    try:
+        await message.answer_photo(
+            photo=user["photo_id"],
+            caption=f"{Message.PROFILE_COMPLETE}{format_profile(user)}{photo_note}",
+        )
+    except Exception as e:
+        log.warning("Failed to send registration photo for %d: %s", user_id, e)
+        await message.answer(f"{Message.PROFILE_COMPLETE}{format_profile(user)}{photo_note}")
 
     for badge in new_badges:
-        await message.answer(format_badge_card(badge, is_new=True))
+        try:
+            await message.answer(format_badge_card(badge, is_new=True))
+        except Exception as e:
+            log.warning("Failed to send badge notification to %d: %s", user_id, e)
 
     await message.answer(Message.LETS_GO, reply_markup=MAIN_MENU)
 
