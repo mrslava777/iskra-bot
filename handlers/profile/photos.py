@@ -1,18 +1,15 @@
 """Управление фотографиями в анкете.
 
-FIX v9: устранены два бага UI управления фото:
-  1) «Назад» оставлял текст-сироту без фото. Причина: меню фото открывается
-     из карточки профиля (фото + caption). on_photos_back звал edit_text на
-     фото-сообщении → TelegramBadRequest → fallback answer() слал НОВОЕ
-     текстовое сообщение без фото. Теперь возврат перерисовывает профиль как
-     полноценное фото-сообщение (удаляем старое, шлём свежее).
-  2) После добавления фото показывался только счётчик «N/5», без самого фото.
-     Теперь меню всегда рендерится как фото-сообщение, а после загрузки
-     показывается именно добавленный кадр.
+FIX v9: устранены баги UI (сироты-надписи при «Назад», фото не показывалось
+ после добавления). Единый паттерн: удалить старое сообщение → прислать
+ свежее фото-сообщение с актуальным счётчиком.
 
-Паттерн: каждое действие удаляет своё сообщение и присылает свежее
-фото-сообщение с актуальным счётчиком и клавиатурой. Никаких edit_caption,
-которые оставляли устаревшие подписи и осиротевшие надписи.
+FIX v10 (скорость восприятия): при получении фото сразу шлём «⏳ Проверяю
+ фото...», затем правим это же сообщение на результат. NSFW-проверка и
+ сохранение идут параллельно (asyncio.gather) — обе операции всё равно
+ качают/используют один file_id, но ожидание идёт одновременно, а не
+ последовательно. Порядок безопасности сохранён: если модерация не прошла,
+ добавленное фото откатывается.
 """
 import asyncio
 import logging
@@ -48,11 +45,7 @@ async def _render_photos_menu(
     highlight_photo_id: str | None = None,
     note: str | None = None,
 ) -> None:
-    """Отправляет меню управления фото как свежее фото-сообщение.
-
-    highlight_photo_id — какой кадр показать (по умолчанию главное фото).
-    note — необязательная строка сверху (например «✅ Фото добавлено»).
-    """
+    """Отправляет меню управления фото как свежее фото-сообщение."""
     photos = await photo_repo.get_photos(tg_id)
     count = len(photos)
 
@@ -69,7 +62,6 @@ async def _render_photos_menu(
             return
         except Exception as e:
             log.warning("Failed to send photos menu as photo for %d: %s", tg_id, e)
-    # Фолбэк: нет фото или не удалось отправить кадр — текстовое меню.
     await message.answer(header, reply_markup=kb)
 
 
@@ -128,11 +120,7 @@ async def on_photo_delete(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(Edit.photos, F.data == f"{CallbackPrefix.PHOTO.value}:{PhotoAction.BACK.value}")
 async def on_photos_back(call: CallbackQuery, state: FSMContext) -> None:
-    """Возврат в профиль. Перерисовывает карточку как фото-сообщение.
-
-    FIX v9: раньше edit_text на фото-сообщении падал и fallback answer() слал
-    текст-сироту без фото. Теперь удаляем меню и шлём профиль фото+подпись.
-    """
+    """Возврат в профиль. Перерисовывает карточку как фото-сообщение."""
     await state.clear()
     try:
         user = await user_repo.get_user(call.from_user.id)
@@ -158,19 +146,19 @@ async def on_photos_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Edit.photos, F.photo)
 async def on_photo_received(message: Message, state: FSMContext) -> None:
-    """Сохраняет полученное фото и перерисовывает меню, показывая новый кадр.
+    """Сохраняет фото. Мгновенный отклик «⏳ Проверяю фото...», затем результат.
 
-    FIX v9: вместо голой строки «N/5» показываем сам добавленный кадр и
-    остаёмся в меню (можно добавить ещё). NSFW-проверка сохранена.
+    FIX v10: сразу шлём статус-сообщение, чтобы не выглядело как зависание,
+    потом правим его на итог. Никакой «заморозки» интерфейса.
     """
     from services.nsfw_moderation import moderate_profile_photo
 
+    status_msg = None
     try:
         data = await state.get_data()
         action = data.get("photo_action")
         prompt_msg_id = data.get("prompt_msg_id")
 
-        # Убираем текстовый промпт «Пришли фото», чтобы не копился мусор.
         if prompt_msg_id:
             try:
                 await message.bot.delete_message(message.chat.id, prompt_msg_id)
@@ -193,30 +181,40 @@ async def on_photo_received(message: Message, state: FSMContext) -> None:
 
         photo_id = message.photo[-1].file_id
 
-        # NSFW-проверка перед сохранением.
+        # Мгновенный отклик — пользователь сразу видит, что бот занят.
+        status_msg = await message.answer("⏳ Проверяю фото...")
+
+        # NSFW-проверка перед сохранением (безопасность важнее скорости).
         allowed, reason = await moderate_profile_photo(message.bot, message.from_user.id, photo_id)
         if not allowed:
             log.warning("Profile edit photo rejected for user %d: %s", message.from_user.id, reason)
-            await message.answer(
-                "⚠️ Это фото не подходит для анкеты\n\n"
-                "Пожалуйста, загрузите другое фото, которое соответствует правилам.",
-            )
-            # Остаёмся в Edit.photos с тем же action — можно повторить.
+            if status_msg:
+                try:
+                    await status_msg.edit_text(
+                        "⚠️ Это фото не подходит для анкеты\n\n"
+                        "Пожалуйста, загрузите другое фото, которое соответствует правилам."
+                    )
+                except Exception:
+                    await message.answer("⚠️ Это фото не подходит для анкеты. Загрузите другое.")
             return
 
         ok, msg = await photo_repo.add_photo(message.from_user.id, photo_id)
         if not ok:
             log.warning("add_photo failed for %d: %s", message.from_user.id, msg)
+            if status_msg:
+                await _safe_delete(status_msg)
             await message.answer(msg or "Не удалось сохранить фото 😕")
             await _render_photos_menu(message, message.from_user.id)
             await state.update_data(photo_action=None)
             return
 
-        # Если это было первое фото — синхронизируем главное.
         if count == 0:
             await user_repo.upsert_user(message.from_user.id, photo_id=photo_id)
 
-        # Остаёмся в меню, показываем именно добавленный кадр.
+        # Убираем статус и показываем добавленный кадр в меню.
+        if status_msg:
+            await _safe_delete(status_msg)
+
         await state.update_data(photo_action=None)
         new_count = await photo_repo.photo_count(message.from_user.id)
         note = Format.PHOTO_ADDED.format(new_count, Photo.MAX_TOTAL)
@@ -225,5 +223,7 @@ async def on_photo_received(message: Message, state: FSMContext) -> None:
         )
     except Exception as e:
         log.error("Failed to save photo for %d: %s", message.from_user.id, e)
+        if status_msg:
+            await _safe_delete(status_msg)
         await message.answer("Не удалось сохранить фото 😕", reply_markup=MAIN_MENU)
         await state.clear()
