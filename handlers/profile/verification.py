@@ -2,14 +2,14 @@
 
 FIX: добавлено логирование ошибок доставки уведомлений.
 FIX v8: try/except при отправке video_note админам + логирование.
+        Используется safe_send из services.safe_send.
 """
 import logging
 import random
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
+from aiogram.types import CallbackQuery, Message
 
 import repositories.user_repo as user_repo
 from config import ADMIN_IDS
@@ -17,35 +17,13 @@ from data.constants import EMOJI, Format, Message, Verification as Vrf
 from data.enums import CallbackPrefix, VerifyAction
 from keyboards import profile_kb, verify_kb, MAIN_MENU
 from services.profile_formatter import format_profile_async
+from services.safe_send import safe_send
 from states import Verify
-import asyncio
 
 
-log = logging.getLogger("iskra." + __name__.split(".")[-1])
-
-async def _safe_send(coro, fallback=None):
-    """Safe wrapper for Telegram send operations."""
-    try:
-        return await coro
-    except TelegramRetryAfter as e:
-        await asyncio.sleep(e.retry_after)
-        try:
-            return await coro
-        except Exception as e2:
-            log.warning("Retry failed after TelegramRetryAfter: %s", e2)
-    except TelegramForbiddenError:
-        log.debug("User blocked bot, skipping send")
-    except Exception as e:
-        log.warning("Send failed: %s", e)
-        if fallback:
-            try:
-                return await fallback
-            except Exception as e2:
-                log.warning("Fallback failed: %s", e2)
-    return None
+log = logging.getLogger("iskra.profile.verification")
 
 router = Router()
-log = logging.getLogger("iskra.verify")
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:verify")
@@ -65,7 +43,6 @@ async def on_request_verify(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(required_gesture=gesture)
 
     text = Format.VERIFICATION_REQUEST.format(gesture)
-    # Отправляем новое сообщение — чтобы появилась клавиатура
     await call.message.answer(text)
     await state.set_state(Verify.video_note)
     await call.answer()
@@ -104,37 +81,28 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
         name = "?"
 
     for admin_id in ADMIN_IDS:
-        try:
-            # FIX v8: try/except для каждого admin
-            await message.bot.send_video_note(admin_id, video_note=video_note_id)
-            await message.bot.send_message(
+        await safe_send(
+            message.bot.send_video_note(admin_id, video_note=video_note_id),
+            log_prefix=f"verify_vn_{admin_id}",
+        )
+        await safe_send(
+            message.bot.send_message(
                 admin_id,
-                "🔍 <b>Запрос верификации</b>\n\n"
-                "Пользователь: <b>" + name + "</b>\n"
-                "ID: <code>" + str(message.from_user.id) + "</code>\n"
-                "Требуемый жест: <b>" + gesture + "</b>\n\n"
+                "🔍 <b>Запрос верификации</b>
+
+"
+                "Пользователь: <b>" + name + "</b>
+"
+                "ID: <code>" + str(message.from_user.id) + "</code>
+"
+                "Требуемый жест: <b>" + gesture + "</b>
+
+"
                 "Проверь, что жест виден в кадре и лицо совпадает с анкетой.",
                 reply_markup=verify_kb(message.from_user.id),
-            )
-        except TelegramRetryAfter as e:
-            log.warning("Rate limit sending verification to admin %d, retry after %s", admin_id, e.retry_after)
-            await asyncio.sleep(e.retry_after)
-            try:
-                await message.bot.send_video_note(admin_id, video_note=video_note_id)
-                await message.bot.send_message(
-                    admin_id,
-                    "🔍 <b>Запрос верификации</b>\n\n"
-                    "Пользователь: <b>" + name + "</b>\n"
-                    "ID: <code>" + str(message.from_user.id) + "</code>\n"
-                    "Требуемый жест: <b>" + gesture + "</b>",
-                    reply_markup=verify_kb(message.from_user.id),
-                )
-            except Exception as e2:
-                log.error("Failed to retry verification to admin %d: %s", admin_id, e2)
-        except TelegramForbiddenError:
-            log.warning("Admin %d blocked bot, cannot send verification", admin_id)
-        except Exception as e:
-            log.error("Failed to send verification request to admin %d: %s", admin_id, e)
+            ),
+            log_prefix=f"verify_msg_{admin_id}",
+        )
 
     await message.answer(Message.VERIFICATION_SENT, reply_markup=MAIN_MENU)
 
@@ -163,28 +131,23 @@ async def on_approve_verify(call: CallbackQuery) -> None:
     try:
         if call.message.photo:
             await call.message.edit_caption(
-                caption=call.message.caption + "\n\n" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
+                caption=call.message.caption + "
+
+" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
             )
         else:
             await call.message.edit_text(
-                call.message.text + "\n\n" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
+                call.message.text + "
+
+" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
             )
     except Exception as e:
         log.debug("Failed to edit verification status: %s", e)
 
-    try:
-        await call.bot.send_message(tg_id, Message.VERIFICATION_APPROVED)
-    except TelegramRetryAfter as e:
-        log.warning("Rate limit sending verification approval to %d, retry after %s", tg_id, e.retry_after)
-        await asyncio.sleep(e.retry_after)
-        try:
-            await call.bot.send_message(tg_id, Message.VERIFICATION_APPROVED)
-        except Exception as e2:
-            log.error("Failed to retry verification approval to %d: %s", tg_id, e2)
-    except TelegramForbiddenError:
-        log.debug("User %d blocked bot, cannot send verification approval", tg_id)
-    except Exception as e:
-        log.error("Failed to send verification approval to %d: %s", tg_id, e)
+    await safe_send(
+        call.bot.send_message(tg_id, Message.VERIFICATION_APPROVED),
+        log_prefix=f"verify_approve_{tg_id}",
+    )
 
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.VERIFY.value}:{VerifyAction.REJECT.value}:"))
@@ -198,25 +161,20 @@ async def on_reject_verify(call: CallbackQuery) -> None:
     try:
         if call.message.photo:
             await call.message.edit_caption(
-                caption=call.message.caption + "\n\n" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
+                caption=call.message.caption + "
+
+" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
             )
         else:
             await call.message.edit_text(
-                call.message.text + "\n\n" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
+                call.message.text + "
+
+" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
             )
     except Exception as e:
         log.debug("Failed to edit rejection status: %s", e)
 
-    try:
-        await call.bot.send_message(tg_id, Message.VERIFICATION_REJECTED)
-    except TelegramRetryAfter as e:
-        log.warning("Rate limit sending verification rejection to %d, retry after %s", tg_id, e.retry_after)
-        await asyncio.sleep(e.retry_after)
-        try:
-            await call.bot.send_message(tg_id, Message.VERIFICATION_REJECTED)
-        except Exception as e2:
-            log.error("Failed to retry verification rejection to %d: %s", tg_id, e2)
-    except TelegramForbiddenError:
-        log.debug("User %d blocked bot, cannot send verification rejection", tg_id)
-    except Exception as e:
-        log.error("Failed to send verification rejection to %d: %s", tg_id, e)
+    await safe_send(
+        call.bot.send_message(tg_id, Message.VERIFICATION_REJECTED),
+        log_prefix=f"verify_reject_{tg_id}",
+    )
