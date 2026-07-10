@@ -2,6 +2,7 @@
 
 FIX: добавлено логирование ошибок доставки тикетов админам.
 FIX: unterminated f-string literals (line 37).
+FIX v8: логирование ошибок доставки тикетов админам.
 """
 import logging
 
@@ -31,16 +32,17 @@ async def _safe_send(coro, fallback=None):
         await asyncio.sleep(e.retry_after)
         try:
             return await coro
-        except Exception:
-            pass
+        except Exception as e2:
+            log.warning("Retry failed after TelegramRetryAfter: %s", e2)
     except TelegramForbiddenError:
-        pass
-    except Exception:
+        log.debug("User blocked bot, skipping send")
+    except Exception as e:
+        log.warning("Send failed: %s", e)
         if fallback:
             try:
                 return await fallback
-            except Exception:
-                pass
+            except Exception as e2:
+                log.warning("Fallback failed: %s", e2)
     return None
 
 router = Router()
@@ -70,9 +72,12 @@ async def on_support_back(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     try:
         await call.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+    except Exception as e:
+        log.debug("edit_reply_markup failed: %s", e)
+    try:
+        await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+    except Exception as e:
+        log.error("Failed to send main menu to %d: %s", call.from_user.id, e)
     await call.answer()
 
 
@@ -134,12 +139,22 @@ async def _process_ticket(
     cat_key = data.get("support_cat", SupportCategory.OTHER.value)
     await state.clear()
 
-    user = await user_repo.get_user(message.from_user.id)
+    try:
+        user = await user_repo.get_user(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to load user %d for ticket: %s", message.from_user.id, e)
+        user = None
+
     name = user["name"] if user else "?"
     username = f"@{message.from_user.username}" if message.from_user.username else "—"
     uid = message.from_user.id
 
-    ticket_id = await support_repo.create_ticket(uid, cat_key, text[:Length.TICKET_TEXT], photo_id)
+    try:
+        ticket_id = await support_repo.create_ticket(uid, cat_key, text[:Length.TICKET_TEXT], photo_id)
+    except Exception as e:
+        log.error("Failed to create ticket for %d: %s", uid, e)
+        await message.answer("Не удалось создать обращение 😕", reply_markup=MAIN_MENU)
+        return
 
     ticket_text = Format.TICKET_CAPTION.format(ticket_id, cat_label, name, username, uid, text[:Length.TICKET_TEXT])
 
@@ -156,7 +171,25 @@ async def _process_ticket(
                     admin_id, text=ticket_text,
                     reply_markup=support_reply_kb(uid, ticket_id),
                 )
+        except TelegramRetryAfter as e:
+            log.warning("Rate limit sending ticket #%s to admin %d, retry after %s", ticket_id, admin_id, e.retry_after)
+            await asyncio.sleep(e.retry_after)
+            try:
+                if photo_id:
+                    await message.bot.send_photo(
+                        admin_id, photo=photo_id, caption=ticket_text,
+                        reply_markup=support_reply_kb(uid, ticket_id),
+                    )
+                else:
+                    await message.bot.send_message(
+                        admin_id, text=ticket_text,
+                        reply_markup=support_reply_kb(uid, ticket_id),
+                    )
+            except Exception as e2:
+                log.error("Failed to retry ticket #%s to admin %d: %s", ticket_id, admin_id, e2)
+        except TelegramForbiddenError:
+            log.warning("Admin %d blocked bot, cannot send ticket #%s", admin_id, ticket_id)
         except Exception as e:
-            log.warning("Не удалось отправить тикет #%s → admin %d: %s", ticket_id, admin_id, e)
+            log.error("Failed to send ticket #%s to admin %d: %s", ticket_id, admin_id, e)
 
     await message.answer(Message.TICKET_SENT, reply_markup=MAIN_MENU)

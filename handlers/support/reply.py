@@ -1,4 +1,7 @@
-"""Ответы администраторов на тикеты поддержки."""
+"""Ответы администраторов на тикеты поддержки.
+
+FIX v8: логирование ошибок отправки ответов.
+"""
 import logging
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -24,16 +27,17 @@ async def _safe_send(coro, fallback=None):
         await asyncio.sleep(e.retry_after)
         try:
             return await coro
-        except Exception:
-            pass
+        except Exception as e2:
+            log.warning("Retry failed after TelegramRetryAfter: %s", e2)
     except TelegramForbiddenError:
-        pass
-    except Exception:
+        log.debug("User blocked bot, skipping send")
+    except Exception as e:
+        log.warning("Send failed: %s", e)
         if fallback:
             try:
                 return await fallback
-            except Exception:
-                pass
+            except Exception as e2:
+                log.warning("Fallback failed: %s", e2)
     return None
 
 router = Router()
@@ -50,7 +54,10 @@ async def on_admin_reply(call: CallbackQuery, state: FSMContext) -> None:
     ticket_id = int(parts[2]) if len(parts) > 2 else None
     await state.update_data(reply_to_user=tg_id, reply_ticket_id=ticket_id)
     await state.set_state(Support.admin_reply)
-    await call.message.answer(Format.ADMIN_REPLY_PROMPT.format(tg_id))
+    try:
+        await call.message.answer(Format.ADMIN_REPLY_PROMPT.format(tg_id))
+    except Exception as e:
+        log.error("Failed to send reply prompt to admin %d: %s", call.from_user.id, e)
     await call.answer()
 
 
@@ -78,8 +85,31 @@ async def admin_reply_send(message: Message, state: FSMContext) -> None:
             tg_id,
             Format.SUPPORT_REPLY.format(reply_text),
         )
+    except TelegramRetryAfter as e:
+        log.warning("Rate limit sending reply to %d, retry after %s", tg_id, e.retry_after)
+        await asyncio.sleep(e.retry_after)
+        try:
+            await message.bot.send_message(
+                tg_id,
+                Format.SUPPORT_REPLY.format(reply_text),
+            )
+        except Exception as e2:
+            log.error("Failed to retry reply to %d: %s", tg_id, e2)
+            await message.answer(Format.REPLY_FAILED.format(e2))
+            return
+    except TelegramForbiddenError:
+        log.warning("User %d blocked bot, cannot send reply", tg_id)
+        await message.answer(f"❌ Пользователь {tg_id} заблокировал бота")
+        return
+    except Exception as e:
+        log.error("Failed to send reply to %d: %s", tg_id, e)
+        await message.answer(Format.REPLY_FAILED.format(e))
+        return
+
+    try:
         if ticket_id:
             await support_repo.reply_ticket(ticket_id, reply_text)
-        await message.answer(Format.REPLY_SENT.format(tg_id))
     except Exception as e:
-        await message.answer(Format.REPLY_FAILED.format(e))
+        log.error("Failed to save reply for ticket #%d: %s", ticket_id, e)
+
+    await message.answer(Format.REPLY_SENT.format(tg_id))
