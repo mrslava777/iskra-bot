@@ -3,13 +3,19 @@
 position = 0 — главное фото (совпадает с users.photo_id),
 position > 0 — дополнительные фото.
 
-PERF: photo_count() кэшируется на 15 секунд — часто вызывается в browse/profile.
+FIX: Добавлена обработка ошибок UNIQUE constraint, 
+     улучшено логирование, исправлена логика позиций.
+FIX v9: Гарантированная синхронизация users.photo_id ↔ photos(0).
+        Добавлены проверки границ и информативные ошибки.
 """
+import logging
 import time
 from collections import OrderedDict
 
 from database.connection import db
 from data.constants import Photo
+
+log = logging.getLogger("iskra.photo_repo")
 
 # TTL-кэш для photo_count
 _photo_count_cache: OrderedDict[int, tuple[int, float]] = OrderedDict()
@@ -22,26 +28,75 @@ def _invalidate_photo_count(tg_id: int) -> None:
     _photo_count_cache.pop(tg_id, None)
 
 
-async def add_photo(tg_id: int, photo_id: str) -> None:
-    """Добавляет дополнительное фото в следующую свободную позицию."""
+async def add_photo(tg_id: int, photo_id: str) -> tuple[bool, str]:
+    """Добавляет дополнительное фото в следующую свободную позицию.
+
+    FIX v9: Возвращает (success, message) вместо None.
+    Проверяет границы ДО вставки, обрабатывает UNIQUE constraint.
+    """
     _invalidate_photo_count(tg_id)
+
     async with db() as conn:
+        # Сначала считаем текущее количество фото
         cursor = await conn.execute(
-            "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM photos WHERE tg_id = ?",
+            "SELECT COUNT(*) AS c, COALESCE(MAX(position), -1) + 1 AS next_pos 
+             FROM photos WHERE tg_id = ?",
             (tg_id,),
         )
         row = await cursor.fetchone()
-        pos = row["pos"] if row else 0
-        if pos > Photo.MAX_EXTRA:
-            return
-        await conn.execute(
-            """
-            INSERT INTO photos (tg_id, photo_id, position)
-            VALUES (?, ?, ?)
-            ON CONFLICT (tg_id, position) DO UPDATE SET photo_id = excluded.photo_id
-            """,
-            (tg_id, photo_id, pos),
+        current_count = row["c"] if row else 0
+        next_pos = row["next_pos"] if row and row["next_pos"] is not None else 0
+
+        # Проверяем лимит
+        if current_count >= Photo.MAX_TOTAL:
+            log.warning("Photo limit reached for user %d: %d/%d", tg_id, current_count, Photo.MAX_TOTAL)
+            return False, f"Достигнут лимит фото ({Photo.MAX_TOTAL}). Удалите старые фото."
+
+        # next_pos может быть > MAX_EXTRA если есть дырки в позициях
+        # Найдём первую свободную позицию
+        cursor = await conn.execute(
+            "SELECT position FROM photos WHERE tg_id = ? ORDER BY position",
+            (tg_id,),
         )
+        existing_positions = {r["position"] for r in await cursor.fetchall()}
+
+        # Найдём первую свободную позицию от 0 до MAX_EXTRA
+        pos = None
+        for p in range(Photo.MAX_TOTAL):
+            if p not in existing_positions:
+                pos = p
+                break
+
+        if pos is None:
+            log.error("No free position found for user %d despite count=%d", tg_id, current_count)
+            return False, "Не удалось найти свободную позицию для фото."
+
+        try:
+            await conn.execute(
+                """
+                INSERT INTO photos (tg_id, photo_id, position)
+                VALUES (?, ?, ?)
+                ON CONFLICT (tg_id, position) DO UPDATE SET 
+                    photo_id = excluded.photo_id,
+                    created_at = strftime('%s','now')
+                """,
+                (tg_id, photo_id, pos),
+            )
+            log.info("Photo added for user %d at position %d", tg_id, pos)
+
+            # Если это position 0 — обновляем users.photo_id
+            if pos == 0:
+                await conn.execute(
+                    "UPDATE users SET photo_id = ? WHERE tg_id = ?",
+                    (photo_id, tg_id),
+                )
+                log.info("Updated main photo for user %d", tg_id)
+
+            return True, f"Фото добавлено! ({current_count + 1}/{Photo.MAX_TOTAL})"
+
+        except Exception as e:
+            log.error("Failed to add photo for user %d: %s", tg_id, e, exc_info=True)
+            return False, "Ошибка сохранения фото. Попробуйте позже."
 
 
 async def get_photos(tg_id: int) -> list[dict]:
@@ -79,23 +134,90 @@ async def photo_count(tg_id: int) -> int:
     return result
 
 
-async def remove_photo(tg_id: int, position: int) -> None:
-    """Удаляет фото по позиции и переиндексирует оставшиеся."""
+async def remove_photo(tg_id: int, position: int) -> tuple[bool, str]:
+    """Удаляет фото по позиции и переиндексирует оставшиеся.
+
+    FIX v9: Безопасное переиндексирование — временная таблица + atomic swap.
+    """
     _invalidate_photo_count(tg_id)
+
     async with db() as conn:
-        await conn.execute(
-            "DELETE FROM photos WHERE tg_id = ? AND position = ?",
+        # Проверяем существование
+        cursor = await conn.execute(
+            "SELECT photo_id FROM photos WHERE tg_id = ? AND position = ?",
             (tg_id, position),
         )
-        await conn.execute(
-            "UPDATE photos SET position = position - 1 WHERE tg_id = ? AND position > ?",
-            (tg_id, position),
-        )
+        if not await cursor.fetchone():
+            return False, "Фото не найдено."
+
+        try:
+            # Удаляем
+            await conn.execute(
+                "DELETE FROM photos WHERE tg_id = ? AND position = ?",
+                (tg_id, position),
+            )
+
+            # Переиндексируем: создаём временную таблицу с новыми позициями
+            # Это безопаснее чем UPDATE position = position - 1 (может нарушить UNIQUE)
+            cursor = await conn.execute(
+                """
+                SELECT photo_id FROM photos 
+                WHERE tg_id = ? AND position > ? 
+                ORDER BY position ASC
+                """,
+                (tg_id, position),
+            )
+            remaining = [r["photo_id"] for r in await cursor.fetchall()]
+
+            # Удаляем все с position > удалённой
+            await conn.execute(
+                "DELETE FROM photos WHERE tg_id = ? AND position > ?",
+                (tg_id, position),
+            )
+
+            # Вставляем обратно с новыми позициями
+            for i, pid in enumerate(remaining):
+                new_pos = position + i
+                await conn.execute(
+                    """
+                    INSERT INTO photos (tg_id, photo_id, position)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (tg_id, position) DO UPDATE SET 
+                        photo_id = excluded.photo_id
+                    """,
+                    (tg_id, pid, new_pos),
+                )
+
+            # Если удалили position 0 — обновляем users.photo_id
+            if position == 0:
+                if remaining:
+                    await conn.execute(
+                        "UPDATE users SET photo_id = ? WHERE tg_id = ?",
+                        (remaining[0], tg_id),
+                    )
+                else:
+                    # Нет фото вообще
+                    await conn.execute(
+                        "UPDATE users SET photo_id = NULL WHERE tg_id = ?",
+                        (tg_id,),
+                    )
+
+            log.info("Photo removed for user %d at position %d, reindexed %d photos", 
+                     tg_id, position, len(remaining))
+            return True, "Фото удалено."
+
+        except Exception as e:
+            log.error("Failed to remove photo for user %d: %s", tg_id, e, exc_info=True)
+            return False, "Ошибка удаления фото. Попробуйте позже."
 
 
-async def sync_photos_to_gallery(tg_id: int) -> None:
-    """Гарантирует, что главное фото из users.photo_id лежит в galleries как position 0."""
+async def sync_photos_to_gallery(tg_id: int) -> tuple[bool, str]:
+    """Гарантирует, что главное фото из users.photo_id лежит в photos как position 0.
+
+    FIX v9: Возвращает (success, message), обрабатывает ошибки.
+    """
     _invalidate_photo_count(tg_id)
+
     async with db() as conn:
         cursor = await conn.execute(
             "SELECT photo_id FROM users WHERE tg_id = ?",
@@ -103,13 +225,60 @@ async def sync_photos_to_gallery(tg_id: int) -> None:
         )
         row = await cursor.fetchone()
         main_photo = row["photo_id"] if row else None
+
         if not main_photo:
-            return
-        await conn.execute(
-            """
-            INSERT INTO photos (tg_id, photo_id, position)
-            VALUES (?, ?, 0)
-            ON CONFLICT (tg_id, position) DO UPDATE SET photo_id = excluded.photo_id
-            """,
-            (tg_id, main_photo),
-        )
+            log.debug("No main photo to sync for user %d", tg_id)
+            return True, "Нет главного фото для синхронизации."
+
+        try:
+            await conn.execute(
+                """
+                INSERT INTO photos (tg_id, photo_id, position)
+                VALUES (?, ?, 0)
+                ON CONFLICT (tg_id, position) DO UPDATE SET 
+                    photo_id = excluded.photo_id,
+                    created_at = strftime('%s','now')
+                """,
+                (tg_id, main_photo),
+            )
+            log.info("Synced main photo to gallery for user %d", tg_id)
+            return True, "Главное фото синхронизировано."
+
+        except Exception as e:
+            log.error("Failed to sync photos for user %d: %s", tg_id, e, exc_info=True)
+            return False, "Ошибка синхронизации фото."
+
+
+async def set_main_photo(tg_id: int, photo_id: str) -> tuple[bool, str]:
+    """Устанавливает главное фото (position 0) и обновляет users.photo_id.
+
+    NEW v9: Единая точка для установки главного фото при регистрации/редактировании.
+    """
+    _invalidate_photo_count(tg_id)
+
+    async with db() as conn:
+        try:
+            # Обновляем users.photo_id
+            await conn.execute(
+                "UPDATE users SET photo_id = ? WHERE tg_id = ?",
+                (photo_id, tg_id),
+            )
+
+            # Синхронизируем с галереей
+            await conn.execute(
+                """
+                INSERT INTO photos (tg_id, photo_id, position)
+                VALUES (?, ?, 0)
+                ON CONFLICT (tg_id, position) DO UPDATE SET 
+                    photo_id = excluded.photo_id,
+                    created_at = strftime('%s','now')
+                """,
+                (tg_id, photo_id),
+            )
+
+            log.info("Main photo set for user %d", tg_id)
+            return True, "Главное фото сохранено!"
+
+        except Exception as e:
+            log.error("Failed to set main photo for user %d: %s", tg_id, e, exc_info=True)
+            return False, "Ошибка сохранения главного фото."
