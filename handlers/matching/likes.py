@@ -3,8 +3,10 @@
 PERF: viewer загружается один раз и передаётся дальше.
 PERF: call.answer — fire-and-forget.
 PERF: badge check параллелизирован с загрузкой следующей анкеты.
+FIX v8: _background_tasks + логирование ошибок.
 """
 import asyncio
+import logging
 
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, Message
@@ -19,7 +21,9 @@ from services.badge_service import check_and_award
 from services.notification import announce_match
 from services.profile_formatter import format_profile_async
 
+_background_tasks: set[asyncio.Task] = set()
 router = Router()
+log = logging.getLogger("iskra.likes")
 
 
 @router.message(F.text == MenuText.LIKES_INBOX)
@@ -35,8 +39,8 @@ async def show_incoming(message: Message) -> None:
         return
     try:
         await message.answer(Format.INCOMING_LIKES.format(len(rows)))
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to send incoming likes header: %s", e)
     await _show_incoming(message, rows[0], user)
 
 
@@ -49,7 +53,8 @@ async def _show_incoming(message: Message, candidate: dict, viewer: dict) -> Non
             caption=caption,
             reply_markup=like_response_kb(candidate["tg_id"]),
         )
-    except Exception:
+    except Exception as e:
+        log.warning("Failed to send incoming profile photo: %s", e)
         await message.answer(caption, reply_markup=like_response_kb(candidate["tg_id"]))
 
 
@@ -63,17 +68,19 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
     # FIX: await directly
     try:
         await call.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Failed to edit reply markup: %s", e)
 
     if decision == LikeResponse.YES.value:
         matched = await like_repo.add_like(viewer_id, target_id, True)
         if matched:
             # FIX: create_task for actual coroutine
             try:
-                asyncio.create_task(announce_match(bot, viewer_id, target_id))
-            except Exception:
-                pass
+                _task = asyncio.create_task(announce_match(bot, viewer_id, target_id))
+                _background_tasks.add(_task)
+                _task.add_done_callback(_background_tasks.discard)
+            except Exception as e:
+                log.error("Failed to announce match %d <-> %d: %s", viewer_id, target_id, e)
             await call.answer(Message.MATCH_ACHIEVED)
         else:
             await call.answer(Message.LIKE_SENT)
@@ -82,21 +89,25 @@ async def on_like_back(call: CallbackQuery, bot: Bot) -> None:
         await call.answer(Message.DISLIKE_SENT)
 
     # Параллельно: значки + загрузка данных для следующей анкеты
-    new_badges, user, rows = await asyncio.gather(
-        check_and_award(viewer_id),
-        user_repo.get_user(viewer_id),
-        like_repo.incoming_likes(viewer_id),
-    )
-    for badge in new_badges:
-        try:
-            await call.message.answer(format_badge_card(badge, is_new=True))
-        except Exception:
-            pass
+    try:
+        new_badges, user, rows = await asyncio.gather(
+            check_and_award(viewer_id),
+            user_repo.get_user(viewer_id),
+            like_repo.incoming_likes(viewer_id),
+        )
+        for badge in new_badges:
+            try:
+                await call.message.answer(format_badge_card(badge, is_new=True))
+            except Exception as e:
+                log.warning("Failed to send badge notification: %s", e)
 
-    if not rows:
-        await call.message.answer("Это были все входящие симпатии ✨", reply_markup=HIDE_MENU)
-        return
-    await _show_incoming(call.message, rows[0], user)
+        if not rows:
+            await call.message.answer("Это были все входящие симпатии ✨", reply_markup=HIDE_MENU)
+            return
+        await _show_incoming(call.message, rows[0], user)
+    except Exception as e:
+        log.error("Failed to process like response for %d: %s", viewer_id, e)
+        await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
 
 
 @router.callback_query(F.data == "open_likes")

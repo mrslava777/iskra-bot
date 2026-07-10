@@ -4,11 +4,13 @@ FIX: убрана дублирующая _format_profile_with_batch_badges — �
      единый format_profile_async из profile_formatter.py.
      Значки подставляются через badges_map (batch-загрузка сохранена).
 FIX: добавлен обработчик callback rel:<uid> — уровень отношений.
+FIX v8: логирование ошибок вместо bare pass.
 """
 import logging
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.match_repo as match_repo
 import repositories.user_repo as user_repo
@@ -20,6 +22,31 @@ from services.badge_service import get_user_badges_batch
 from services.compatibility import common_interests, compatibility, compat_bar
 from services.profile_formatter import format_profile_async
 from services.relationship_service import get_relationship, format_status
+import asyncio
+
+
+log = logging.getLogger("iskra." + __name__.split(".")[-1])
+
+async def _safe_send(coro, fallback=None):
+    """Safe wrapper for Telegram send operations."""
+    try:
+        return await coro
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            return await coro
+        except Exception as e2:
+            log.warning("Retry failed after TelegramRetryAfter: %s", e2)
+    except TelegramForbiddenError:
+        log.debug("User blocked bot, skipping send")
+    except Exception as e:
+        log.warning("Send failed: %s", e)
+        if fallback:
+            try:
+                return await fallback
+            except Exception as e2:
+                log.warning("Fallback failed: %s", e2)
+    return None
 
 router = Router()
 log = logging.getLogger("iskra.matches")
@@ -32,19 +59,37 @@ async def show_matches(message: Message) -> None:
     Оптимизация: batch-загрузка значков для всех мэтчей одним запросом
     вместо N+1 запросов get_user_badges() на каждого мэтча.
     """
-    rows = await match_repo.get_matches(message.from_user.id)
+    try:
+        rows = await match_repo.get_matches(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to load matches for %d: %s", message.from_user.id, e)
+        await message.answer("Не удалось загрузить мэтчи 😕", reply_markup=HIDE_MENU)
+        return
+
     if not rows:
         await message.answer(Msg.NO_MATCHES, reply_markup=HIDE_MENU)
         return
-    viewer = await user_repo.get_user(message.from_user.id)
+
+    try:
+        viewer = await user_repo.get_user(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to load viewer %d: %s", message.from_user.id, e)
+        viewer = None
 
     # Batch-загрузка значков для всех мэтчей одним запросом
-    match_ids = [r["tg_id"] for r in rows]
-    badges_map = await get_user_badges_batch(match_ids)
+    try:
+        match_ids = [r["tg_id"] for r in rows]
+        badges_map = await get_user_badges_batch(match_ids)
+    except Exception as e:
+        log.error("Failed to load badges batch: %s", e)
+        badges_map = {}
 
     await message.answer(Format.MATCH_COUNT.format(len(rows)))
     for r in rows:
-        await _show_match(message, r, viewer, badges_map)
+        try:
+            await _show_match(message, r, viewer, badges_map)
+        except Exception as e:
+            log.error("Failed to show match %d: %s", r.get("tg_id", "?"), e)
     await message.answer("Это все твои мэтчи ✨", reply_markup=HIDE_MENU)
 
 
@@ -61,7 +106,11 @@ async def _show_match(
     """
     contact = _format_contact(match)
 
-    caption = await format_profile_async(match, viewer=viewer, show_compat=True, show_badges=False)
+    try:
+        caption = await format_profile_async(match, viewer=viewer, show_compat=True, show_badges=False)
+    except Exception as e:
+        log.error("Failed to format profile for match %d: %s", match.get("tg_id", "?"), e)
+        caption = f"<b>{match.get('name', 'Unknown')}</b>"
 
     # Добавляем значки из batch-загрузки (без дополнительного запроса)
     match_badges = badges_map.get(match["tg_id"], [])
@@ -83,8 +132,12 @@ async def _show_match(
     )
     try:
         await message.answer_photo(photo=match["photo_id"], caption=caption, reply_markup=rel_kb)
-    except Exception:
-        await message.answer(caption, reply_markup=rel_kb)
+    except Exception as e:
+        log.warning("Failed to send match photo for %d: %s", match.get("tg_id", "?"), e)
+        try:
+            await message.answer(caption, reply_markup=rel_kb)
+        except Exception as e2:
+            log.error("Failed to send match text for %d: %s", match.get("tg_id", "?"), e2)
 
 
 def _format_contact(user: dict) -> str:
@@ -104,6 +157,10 @@ async def on_relationship(call: CallbackQuery) -> None:
     target_id = int(parts[1])
     viewer_id = call.from_user.id
 
-    rel_stats = await get_relationship(viewer_id, target_id)
-    text = format_status(rel_stats, viewer_id)
-    await call.answer(text, show_alert=True)
+    try:
+        rel_stats = await get_relationship(viewer_id, target_id)
+        text = format_status(rel_stats, viewer_id)
+        await call.answer(text, show_alert=True)
+    except Exception as e:
+        log.error("Failed to get relationship %d <-> %d: %s", viewer_id, target_id, e)
+        await call.answer("Не удалось загрузить уровень отношений", show_alert=True)
