@@ -11,7 +11,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Пример: https://example.up.railway.app
 
 # ── Database ──────────────────────────────────────────────────────
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./iskra.db")
+DB_PATH = os.getenv("DB_PATH", "./iskra.db")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{DB_PATH}")
 
 # ── Redis (опционально) ─────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL")
