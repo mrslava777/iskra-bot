@@ -20,9 +20,18 @@ class NSFWMiddleware(BaseMiddleware):
     """Middleware для проверки всех фото на NSFW-контент."""
 
     async def __call__(self, handler, event, data):
+        log.info("NSFWMiddleware: processing event type=%s", type(event).__name__)
+
         # Работаем только с сообщениями, содержащими фото
-        if not isinstance(event, Message) or not event.photo:
+        if not isinstance(event, Message):
+            log.debug("NSFWMiddleware: not a Message, skipping")
             return await handler(event, data)
+
+        if not event.photo:
+            log.debug("NSFWMiddleware: no photo in message, skipping")
+            return await handler(event, data)
+
+        log.info("NSFWMiddleware: photo detected from user %d", event.from_user.id)
 
         # Получаем FSM-состояние если есть
         fsm_context = data.get("state")
@@ -30,37 +39,39 @@ class NSFWMiddleware(BaseMiddleware):
         if fsm_context:
             try:
                 current_state = await fsm_context.get_state()
-            except Exception:
-                pass
+                log.info("NSFWMiddleware: current state=%s", current_state)
+            except Exception as e:
+                log.warning("NSFWMiddleware: failed to get state: %s", e)
 
         # Получаем бота
         bot = data.get("bot")
         if not bot:
-            log.warning("NSFW: bot not found in data, skipping check")
+            log.warning("NSFWMiddleware: bot not found in data, skipping check")
             return await handler(event, data)
 
         # Проверяем фото
         try:
+            log.info("NSFWMiddleware: calling moderate_photo_message...")
             from services.nsfw_moderation import moderate_photo_message
             blocked = await moderate_photo_message(bot, event)
+            log.info("NSFWMiddleware: moderate_photo_message returned blocked=%s", blocked)
 
             if blocked:
-                log.info("NSFW: blocked photo from user %d (state=%s)",
+                log.info("NSFWMiddleware: BLOCKED photo from user %d (state=%s)",
                          event.from_user.id, current_state)
                 # Отправляем уведомление пользователю
                 try:
-                    await event.answer(
-                        "<b>Фото заблокировано</b>\n\n"
-                        "Контент не прошел автоматическую модерацию. "
-                        "Если это ошибка — обратись в поддержку.",
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
+                    msg_text = "<b>Фото заблокировано</b>\n\nКонтент не прошел автоматическую модерацию. Если это ошибка — обратись в поддержку."
+                    await event.answer(msg_text, parse_mode="HTML")
+                    log.info("NSFWMiddleware: notification sent to user")
+                except Exception as e:
+                    log.warning("NSFWMiddleware: failed to send notification: %s", e)
                 return None  # Отменяем обработку — хендлер не вызывается
+            else:
+                log.info("NSFWMiddleware: photo PASSED checks")
 
         except Exception as e:
-            log.error("NSFW: check failed for user %d: %s", event.from_user.id, e)
+            log.error("NSFWMiddleware: check failed for user %d: %s", event.from_user.id, e, exc_info=True)
             # При ошибке проверки — пропускаем (fail-open для UX)
 
         return await handler(event, data)
