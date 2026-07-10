@@ -148,6 +148,64 @@ _BANNED_SUBSTRINGS = [
     "шантаж", "шантажист", "шантажировать",
     "рейдер", "рейдерство", "рейд", "рейдить",
     "спам", "спамер", "спамить", "флуд", "флудер", "флудить",
+    "ебать",
+    "ебу",
+    "ебёт",
+    "ебешь",
+    "ебётся",
+    "трахать",
+    "трахаю",
+    "трахаешь",
+    "трахают",
+    "трахнуть",
+    "трахается",
+    "блять",
+    "блядь",
+    "блядина",
+    "блядство",
+    "блядский",
+    "блядун",
+    "блядюга",
+    "пизда",
+    "пиздец",
+    "пиздёж",
+    "пиздить",
+    "пиздюк",
+    "пиздобол",
+    "сука",
+    "сучка",
+    "сучий",
+    "сукаблядь",
+    "сучара",
+    "сученыш",
+    "шлюха",
+    "шлюхи",
+    "шлюшка",
+    "шлюшечка",
+    "шлюханка",
+    "дрочить",
+    "дрочишь",
+    "дрочит",
+    "дрочер",
+    "дрочила",
+    "дрочун",
+    "дрочка",
+    "сперма",
+    "спермы",
+    "сперматозоид",
+    "спермобанк",
+    "хуёво",
+    "хуесос",
+    "хуеплёт",
+    "хуёвина",
+    "мудила",
+    "мудозвон",
+    "мудачок",
+    "мудозвонить",
+    "ебанутый",
+    "ебануться",
+    "ебашить",
+    "ебнуть",
     # Короткие слова (проверяем последними, т.к. чаще встречаются)
     "xxx", "porn", "sex", "nsfw", "bdsm", "cum", "dick", "cock",
     "fuck", "shit", "cunt", "slut", "whore", "bitch", "nigg",
@@ -229,7 +287,24 @@ def _contains_banned_words(text: str) -> Optional[str]:
     return None
 
 
-def sanitize_name(raw: Optional[str]) -> Optional[str]:
+async def _check_text_with_sightengine(text: str) -> tuple[bool, Optional[dict]]:
+    """Дополнительная проверка через Sightengine Text Moderation API.
+
+    Вызывается как fallback, когда локальный список не нашёл ничего.
+    Позволяет ловить обходы, контекст и новые формы матов.
+
+    Returns: (is_blocked, details_or_None)
+    """
+    try:
+        from services.nsfw_moderation import _check_sightengine_text
+        blocked, details = await _check_sightengine_text(text)
+        return blocked, details
+    except Exception as e:
+        log.debug("Sightengine text check failed: %s", e)
+        return False, None
+
+
+async def sanitize_name(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
     cleaned = raw.strip()
@@ -243,10 +318,18 @@ def sanitize_name(raw: Optional[str]) -> Optional[str]:
     if banned:
         log.info("Name rejected: banned word %r in %r", banned, raw)
         return None
+    # Дополнительная проверка через Sightengine
+    try:
+        se_blocked, se_details = await _check_text_with_sightengine(cleaned)
+        if se_blocked:
+            log.info("Name rejected by Sightengine: %s in %r", se_details, raw)
+            return None
+    except Exception:
+        pass
     return cleaned
 
 
-def sanitize_city(raw: Optional[str]) -> Optional[str]:
+async def sanitize_city(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
     cleaned = raw.strip()
@@ -260,10 +343,18 @@ def sanitize_city(raw: Optional[str]) -> Optional[str]:
     if banned:
         log.info("City rejected: banned word %r in %r", banned, raw)
         return None
+    # Дополнительная проверка через Sightengine
+    try:
+        se_blocked, se_details = await _check_text_with_sightengine(cleaned)
+        if se_blocked:
+            log.info("City rejected by Sightengine: %s in %r", se_details, raw)
+            return None
+    except Exception:
+        pass
     return cleaned
 
 
-def sanitize_bio(raw: Optional[str], max_length: int = 300) -> Optional[str]:
+async def sanitize_bio(raw: Optional[str], max_length: int = 300) -> Optional[str]:
     if not raw:
         return None
     if raw.strip() == "-":
@@ -278,6 +369,14 @@ def sanitize_bio(raw: Optional[str], max_length: int = 300) -> Optional[str]:
     if banned:
         log.info("Bio rejected: banned word %r in %r", banned, raw)
         return None
+    # Дополнительная проверка через Sightengine Text Moderation API
+    try:
+        se_blocked, se_details = await _check_text_with_sightengine(cleaned)
+        if se_blocked:
+            log.info("Bio rejected by Sightengine: %s in %r", se_details, raw)
+            return None
+    except Exception:
+        pass  # Sightengine optional — не ломаем валидацию если API недоступен
     cleaned = html.escape(cleaned)
     if len(cleaned) > max_length:
         cleaned = cleaned[:max_length]
@@ -367,7 +466,7 @@ def validate_ticket_category(raw: Optional[str]) -> Optional[str]:
     return None
 
 
-def sanitize_ticket_text(raw: Optional[str], max_length: int = 1000) -> Optional[str]:
+async def sanitize_ticket_text(raw: Optional[str], max_length: int = 1000) -> Optional[str]:
     if not raw:
         return None
     cleaned = raw.strip()
@@ -380,6 +479,14 @@ def sanitize_ticket_text(raw: Optional[str], max_length: int = 1000) -> Optional
     if banned:
         log.info("Ticket rejected: banned word %r", banned)
         return None
+    # Дополнительная проверка через Sightengine
+    try:
+        se_blocked, se_details = await _check_text_with_sightengine(cleaned)
+        if se_blocked:
+            log.info("Ticket rejected by Sightengine: %s", se_details)
+            return None
+    except Exception:
+        pass
     cleaned = html.escape(cleaned)
     if len(cleaned) > max_length:
         cleaned = cleaned[:max_length]
