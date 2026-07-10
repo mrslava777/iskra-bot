@@ -29,10 +29,8 @@ async def cb_ban_help(call: CallbackQuery) -> None:
     text = (
         f"{EMOJI.REPORT} <b>Бан / Разбан</b>\n"
         "Отправь команду:\n"
-
         f"<code>{Cmd.BAN.value} 123456789</code> — забанить\n"
         f"<code>{Cmd.UNBAN.value} 123456789</code> — разбанить\n"
-
         "Или нажми кнопку бана в разделе «Жалобы»."
     )
     await safe_send(
