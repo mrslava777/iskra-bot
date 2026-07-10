@@ -1,6 +1,7 @@
 """Статистика артефактов в админ-панели.
 
 FIX v8: логирование ошибок загрузки статистики значков.
+        Используется safe_send из services.safe_send.
 """
 import logging
 from aiogram import F, Router
@@ -13,6 +14,7 @@ from data.constants import EMOJI, Admin, Message
 from data.enums import AdminAction, CallbackPrefix
 from keyboards import back_kb
 from services.admin_service import is_admin
+from services.safe_send import safe_send
 
 router = Router()
 log = logging.getLogger("iskra.admin.badges")
@@ -61,7 +63,9 @@ async def cb_badges_stats(call: CallbackQuery) -> None:
             name = names.get(r["tg_id"], f"ID:{r['tg_id']}")
             lines.append(f"{i}. <b>{name}</b> — {r['cnt']} значков")
 
-    try:
-        await call.message.edit_text("\n".join(lines), reply_markup=back_kb())
-    except Exception as e:
-        log.error("Failed to edit badge stats for admin %d: %s", call.from_user.id, e)
+    await safe_send(
+        call.message.edit_text("
+".join(lines), reply_markup=back_kb()),
+        log_prefix="badges_stats",
+    )
+    await call.answer()

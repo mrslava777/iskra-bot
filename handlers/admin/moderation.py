@@ -1,19 +1,21 @@
 """Модерация — бан, разбан, жалобы.
 
 FIX v8: логирование ошибок бана/разбана.
+        Используется safe_send из services.safe_send.
 """
 import logging
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import repositories.settings_repo as settings_repo
 import repositories.user_repo as user_repo
-from data.constants import EMOJI, Admin, Message, Format
+from data.constants import EMOJI, Admin, Message as Msg, Format
 from data.enums import AdminAction, CallbackPrefix, Command as Cmd
 from keyboards import back_kb
 from services.admin_service import is_admin
-import asyncio
+from services.safe_send import safe_send
+from services.validation import validate_user_id
 
 router = Router()
 log = logging.getLogger("iskra.admin.moderation")
@@ -23,29 +25,32 @@ log = logging.getLogger("iskra.admin.moderation")
 async def cb_ban_help(call: CallbackQuery) -> None:
     """Инструкция по бану."""
     if not is_admin(call.from_user.id):
-        return await call.answer(Message.ADMIN_ONLY)
+        return await call.answer(Msg.ADMIN_ONLY)
     text = (
-        f"{EMOJI.REPORT} <b>Бан / Разбан</b>\n\n"
-        "Отправь команду:\n"
-        f"<code>{Cmd.BAN.value} 123456789</code> — забанить\n"
-        f"<code>{Cmd.UNBAN.value} 123456789</code> — разбанить\n\n"
+        f"{EMOJI.REPORT} <b>Бан / Разбан</b>
+
+"
+        "Отправь команду:
+"
+        f"<code>{Cmd.BAN.value} 123456789</code> — забанить
+"
+        f"<code>{Cmd.UNBAN.value} 123456789</code> — разбанить
+
+"
         "Или нажми кнопку бана в разделе «Жалобы»."
     )
-    try:
-        await call.message.edit_text(text, reply_markup=back_kb())
-    except Exception as e:
-        log.error("Failed to show ban help to admin %d: %s", call.from_user.id, e)
+    await safe_send(
+        call.message.edit_text(text, reply_markup=back_kb()),
+        log_prefix="ban_help",
+    )
     await call.answer()
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.ADMIN.value}:{AdminAction.REPORTS.value}")
 async def cb_reports(call: CallbackQuery) -> None:
-    """Показывает последние жалобы.
-
-    Оптимизация: batch-запрос для всех target пользователей вместо N запросов.
-    """
+    """Показывает последние жалобы."""
     if not is_admin(call.from_user.id):
-        return await call.answer(Message.ADMIN_ONLY)
+        return await call.answer(Msg.ADMIN_ONLY)
     try:
         reports = await settings_repo.admin_recent_reports(limit=Admin.RECENT_REPORTS_LIMIT)
     except Exception as e:
@@ -55,8 +60,6 @@ async def cb_reports(call: CallbackQuery) -> None:
 
     if not reports:
         return await call.message.edit_text(f"{EMOJI.REPORT} Жалоб нет 🎉", reply_markup=back_kb())
-
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     target_ids = list(set(r["to_id"] for r in reports))
     try:
@@ -70,8 +73,7 @@ async def cb_reports(call: CallbackQuery) -> None:
     for r in reports:
         target_id = r["to_id"]
         name = users_map.get(target_id, "удалён")
-        banned = ""
-        lines.append(f"• <b>{name}</b> (ID: <code>{target_id}</code>) — {r['report_count']} жалоб(ы){banned}")
+        lines.append(f"• <b>{name}</b> (ID: <code>{target_id}</code>) — {r['report_count']} жалоб(ы)")
         buttons.append([
             InlineKeyboardButton(
                 text=f"{EMOJI.REPORT} Бан {target_id}",
@@ -80,10 +82,11 @@ async def cb_reports(call: CallbackQuery) -> None:
         ])
     buttons.append([InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.MENU.value))])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    try:
-        await call.message.edit_text("\n".join(lines), reply_markup=kb)
-    except Exception as e:
-        log.error("Failed to edit reports for admin %d: %s", call.from_user.id, e)
+    await safe_send(
+        call.message.edit_text("
+".join(lines), reply_markup=kb),
+        log_prefix="reports",
+    )
     await call.answer()
 
 
@@ -91,7 +94,7 @@ async def cb_reports(call: CallbackQuery) -> None:
 async def cb_do_ban(call: CallbackQuery) -> None:
     """Банит пользователя из списка жалоб."""
     if not is_admin(call.from_user.id):
-        return await call.answer(Message.ADMIN_ONLY)
+        return await call.answer(Msg.ADMIN_ONLY)
     tg_id = int(call.data.split(":")[2])
     try:
         await settings_repo.admin_ban_user(tg_id)
@@ -117,18 +120,21 @@ async def cmd_ban(message: Message) -> None:
     if not is_admin(message.from_user.id):
         return
     parts = message.text.split()
-    if len(parts) < 2 or not parts[1].isdigit():
+    if len(parts) < 2:
         return await message.answer(Format.BAN_USAGE)
-    tg_id = int(parts[1])
+    tg_id = validate_user_id(parts[1])
+    if tg_id is None:
+        return await message.answer(Format.BAN_USAGE)
+
     try:
         user = await user_repo.get_user(tg_id)
     except Exception as e:
         log.error("Failed to load user %d for ban: %s", tg_id, e)
-        await message.answer(Message.USER_NOT_FOUND)
+        await message.answer(Msg.USER_NOT_FOUND)
         return
 
     if not user:
-        return await message.answer(Message.USER_NOT_FOUND)
+        return await message.answer(Msg.USER_NOT_FOUND)
 
     try:
         await settings_repo.admin_ban_user(tg_id)
@@ -146,18 +152,21 @@ async def cmd_unban(message: Message) -> None:
     if not is_admin(message.from_user.id):
         return
     parts = message.text.split()
-    if len(parts) < 2 or not parts[1].isdigit():
+    if len(parts) < 2:
         return await message.answer(Format.UNBAN_USAGE)
-    tg_id = int(parts[1])
+    tg_id = validate_user_id(parts[1])
+    if tg_id is None:
+        return await message.answer(Format.UNBAN_USAGE)
+
     try:
         user = await user_repo.get_user(tg_id)
     except Exception as e:
         log.error("Failed to load user %d for unban: %s", tg_id, e)
-        await message.answer(Message.USER_NOT_FOUND)
+        await message.answer(Msg.USER_NOT_FOUND)
         return
 
     if not user:
-        return await message.answer(Message.USER_NOT_FOUND)
+        return await message.answer(Msg.USER_NOT_FOUND)
 
     try:
         await settings_repo.admin_unban_user(tg_id)

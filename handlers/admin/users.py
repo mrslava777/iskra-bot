@@ -2,6 +2,8 @@
 
 FIX: добавлено логирование ошибок доставки.
 FIX v8: логирование ошибок управления пользователями.
+        Используется safe_send из services.safe_send.
+        Валидация user_id через validation.py.
 """
 import logging
 
@@ -11,35 +13,12 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 import repositories.user_list_repo as user_list_repo
 import repositories.user_repo as user_repo
-from data.constants import EMOJI, Admin, Message, Format
+from data.constants import EMOJI, Admin, Message as Msg, Format
 from data.enums import AdminAction, CallbackPrefix, Command as Cmd
 from keyboards import back_kb
 from services.admin_service import is_admin
-import asyncio
-
-
-log = logging.getLogger("iskra." + __name__.split(".")[-1])
-
-async def _safe_send(coro, fallback=None):
-    """Safe wrapper for Telegram send operations."""
-    try:
-        return await coro
-    except TelegramRetryAfter as e:
-        await asyncio.sleep(e.retry_after)
-        try:
-            return await coro
-        except Exception as e2:
-            log.warning("Retry failed after TelegramRetryAfter: %s", e2)
-    except TelegramForbiddenError:
-        log.debug("User blocked bot, skipping send")
-    except Exception as e:
-        log.warning("Send failed: %s", e)
-        if fallback:
-            try:
-                return await fallback
-            except Exception as e2:
-                log.warning("Fallback failed: %s", e2)
-    return None
+from services.safe_send import safe_send
+from services.validation import validate_user_id
 
 router = Router()
 log = logging.getLogger("iskra.admin.users")
@@ -49,7 +28,7 @@ log = logging.getLogger("iskra.admin.users")
 async def cb_users(call: CallbackQuery) -> None:
     """Показывает последних пользователей."""
     if not is_admin(call.from_user.id):
-        return await call.answer(Message.ADMIN_ONLY)
+        return await call.answer(Msg.ADMIN_ONLY)
 
     try:
         from repositories.settings_repo import admin_recent_users
@@ -67,20 +46,19 @@ async def cb_users(call: CallbackQuery) -> None:
         status = f"{EMOJI.BANNED}" if u["is_banned"] else (f"{EMOJI.ACTIVE}" if u["active"] else f"{EMOJI.INACTIVE}")
         uname = f"@{u['username']}" if u["username"] else f"ID:{u['tg_id']}"
         lines.append(f"{status} <b>{u['name']}</b>, {u['age']} — {uname}")
-    try:
-        await call.message.edit_text("\n".join(lines), reply_markup=back_kb())
-    except Exception as e:
-        log.error("Failed to edit users list for admin %d: %s", call.from_user.id, e)
+    await safe_send(
+        call.message.edit_text("
+".join(lines), reply_markup=back_kb()),
+        log_prefix="users_list",
+    )
+    await call.answer()
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.ADMIN.value}:{AdminAction.VERIFIED.value}")
 async def cb_verified(call: CallbackQuery) -> None:
-    """Показывает верифицированных пользователей.
-
-    Оптимизация: batch-запрос для имён вместо N запросов get_user.
-    """
+    """Показывает верифицированных пользователей."""
     if not is_admin(call.from_user.id):
-        return await call.answer(Message.ADMIN_ONLY)
+        return await call.answer(Msg.ADMIN_ONLY)
 
     try:
         rows = await user_list_repo.get_verified_users(limit=Admin.RECENT_USERS_LIMIT)
@@ -112,31 +90,34 @@ async def cb_verified(call: CallbackQuery) -> None:
                 callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.UNVERIFY.value, r["tg_id"]),
             )
         ])
-    lines.append(f"\nИли: <code>{Cmd.UNVERIFY.value} 123456789</code>")
+    lines.append(f"
+Или: <code>{Cmd.UNVERIFY.value} 123456789</code>")
     buttons.append([InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.MENU.value))])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    try:
-        await call.message.edit_text("\n".join(lines), reply_markup=kb)
-    except Exception as e:
-        log.error("Failed to edit verified list for admin %d: %s", call.from_user.id, e)
+    await safe_send(
+        call.message.edit_text("
+".join(lines), reply_markup=kb),
+        log_prefix="verified_list",
+    )
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.ADMIN.value}:{AdminAction.UNVERIFY.value}:"))
 async def cb_do_unverify(call: CallbackQuery) -> None:
     """Снимает верификацию."""
     if not is_admin(call.from_user.id):
-        return await call.answer(Message.ADMIN_ONLY)
+        return await call.answer(Msg.ADMIN_ONLY)
     tg_id = int(call.data.split(":")[2])
 
     try:
         user = await user_repo.get_user(tg_id)
     except Exception as e:
         log.error("Failed to load user %d for unverify: %s", tg_id, e)
-        await call.answer(Message.USER_NOT_FOUND, show_alert=True)
+        await call.answer(Msg.USER_NOT_FOUND, show_alert=True)
         return
 
     if not user:
-        return await call.answer(Message.USER_NOT_FOUND)
+        return await call.answer(Msg.USER_NOT_FOUND)
 
     try:
         await user_repo.upsert_user(tg_id, verified=0)
@@ -146,19 +127,10 @@ async def cb_do_unverify(call: CallbackQuery) -> None:
         return
 
     await call.answer(f"{EMOJI.VERIFIED} Верификация снята у {user['name']}")
-    try:
-        await call.bot.send_message(tg_id, Message.VERIFICATION_REMOVED)
-    except TelegramRetryAfter as e:
-        log.warning("Rate limit sending unverify notification to %d, retry after %s", tg_id, e.retry_after)
-        await asyncio.sleep(e.retry_after)
-        try:
-            await call.bot.send_message(tg_id, Message.VERIFICATION_REMOVED)
-        except Exception as e2:
-            log.error("Failed to retry unverify notification to %d: %s", tg_id, e2)
-    except TelegramForbiddenError:
-        log.debug("User %d blocked bot, cannot send unverify notification", tg_id)
-    except Exception as e:
-        log.error("Failed to send unverify notification to %d: %s", tg_id, e)
+    await safe_send(
+        call.bot.send_message(tg_id, Msg.VERIFICATION_REMOVED),
+        log_prefix=f"unverify_notify_{tg_id}",
+    )
     await cb_verified(call)
 
 
@@ -168,19 +140,21 @@ async def cmd_unverify(message: Message) -> None:
     if not is_admin(message.from_user.id):
         return
     parts = message.text.split()
-    if len(parts) < 2 or not parts[1].isdigit():
+    if len(parts) < 2:
         return await message.answer(Format.UNVERIFY_USAGE)
-    tg_id = int(parts[1])
+    tg_id = validate_user_id(parts[1])
+    if tg_id is None:
+        return await message.answer(Format.UNVERIFY_USAGE)
 
     try:
         user = await user_repo.get_user(tg_id)
     except Exception as e:
         log.error("Failed to load user %d for unverify: %s", tg_id, e)
-        await message.answer(Message.USER_NOT_FOUND)
+        await message.answer(Msg.USER_NOT_FOUND)
         return
 
     if not user:
-        return await message.answer(Message.USER_NOT_FOUND)
+        return await message.answer(Msg.USER_NOT_FOUND)
 
     try:
         await user_repo.upsert_user(tg_id, verified=0)
@@ -190,16 +164,7 @@ async def cmd_unverify(message: Message) -> None:
         return
 
     await message.answer(Format.UNVERIFY_SUCCESS.format(user["name"], tg_id))
-    try:
-        await message.bot.send_message(tg_id, Message.VERIFICATION_REMOVED)
-    except TelegramRetryAfter as e:
-        log.warning("Rate limit sending unverify notification to %d, retry after %s", tg_id, e.retry_after)
-        await asyncio.sleep(e.retry_after)
-        try:
-            await message.bot.send_message(tg_id, Message.VERIFICATION_REMOVED)
-        except Exception as e2:
-            log.error("Failed to retry unverify notification to %d: %s", tg_id, e2)
-    except TelegramForbiddenError:
-        log.debug("User %d blocked bot, cannot send unverify notification", tg_id)
-    except Exception as e:
-        log.error("Failed to send unverify notification to %d: %s", tg_id, e)
+    await safe_send(
+        message.bot.send_message(tg_id, Msg.VERIFICATION_REMOVED),
+        log_prefix=f"unverify_cmd_notify_{tg_id}",
+    )
