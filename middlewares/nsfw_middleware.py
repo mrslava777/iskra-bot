@@ -61,7 +61,11 @@ class NSFWMiddleware(BaseMiddleware):
                          event.from_user.id, current_state)
                 # Отправляем уведомление пользователю
                 try:
-                    msg_text = "<b>Фото заблокировано</b>\n\nКонтент не прошел автоматическую модерацию. Если это ошибка — обратись в поддержку."
+                    msg_text = (
+                        "<b>⚠️ Фото заблокировано</b>\n\n"
+                        "Контент не прошел автоматическую модерацию. "
+                        "Если это ошибка — обратись в поддержку."
+                    )
                     await event.answer(msg_text, parse_mode="HTML")
                     log.info("NSFWMiddleware: notification sent to user")
                 except Exception as e:
