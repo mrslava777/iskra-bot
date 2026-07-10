@@ -88,21 +88,19 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
         await safe_send(
             message.bot.send_message(
                 admin_id,
-                "🔍 <b>Запрос верификации</b>
+                await safe_send(
+        message.bot.send_message(
+            admin_id,
+            "🔍 <b>Запрос верификации</b>\n"
+            "Пользователь: <b>" + name + "</b>\n"
+            "ID: <code>" + str(message.from_user.id) + "</code>\n"
+            "Требуемый жест: <b>" + gesture + "</b>\n"
+            "Проверь, что жест виден в кадре и лицо совпадает с анкетой.",
+            reply_markup=verify_kb(message.from_user.id),
+        ),
+        log_prefix=f"verify_msg_{admin_id}",
+    )
 
-"
-                "Пользователь: <b>" + name + "</b>
-"
-                "ID: <code>" + str(message.from_user.id) + "</code>
-"
-                "Требуемый жест: <b>" + gesture + "</b>
-
-"
-                "Проверь, что жест виден в кадре и лицо совпадает с анкетой.",
-                reply_markup=verify_kb(message.from_user.id),
-            ),
-            log_prefix=f"verify_msg_{admin_id}",
-        )
 
     await message.answer(Message.VERIFICATION_SENT, reply_markup=MAIN_MENU)
 
