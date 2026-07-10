@@ -7,7 +7,9 @@ FIX: "Моя анкета" перенесена в настройки.
 FIX: "Моя анкета" из настроек теперь корректно показывает профиль пользователя
      (использует call.from_user.id вместо call.message.from_user.id, т.к.
      call.message — это сообщение бота, а не пользователя).
+FIX v8: логирование ошибок вместо bare pass.
 """
+import logging
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -18,18 +20,25 @@ from data.constants import Age, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SettingsAction
 from keyboards import confirm_delete_kb, settings_kb, MAIN_MENU, HIDE_MENU, profile_kb
 from services.profile_formatter import format_profile_async
-from services.badge_service import check_and_award
+from services.badge_service import check_and_award, invalidate_award_cache
 from services.badge_formatter import format_badge_card
 from states import Edit
 import asyncio
 
 router = Router()
+log = logging.getLogger("iskra.settings")
 
 
 @router.message(F.text == MenuText.SETTINGS)
 async def show_settings(message: Message) -> None:
     """Показывает меню настроек."""
-    user = await user_repo.get_user(message.from_user.id)
+    try:
+        user = await user_repo.get_user(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to load user %d for settings: %s", message.from_user.id, e)
+        await message.answer(Message.CREATE_PROFILE_FIRST)
+        return
+
     if not user:
         await message.answer(Message.CREATE_PROFILE_FIRST)
         return
@@ -43,13 +52,17 @@ async def show_settings(message: Message) -> None:
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:back")
 async def on_settings_back(call: CallbackQuery) -> None:
     """Шаг назад — возврат в профиль из настроек."""
-    user = await user_repo.get_user(call.from_user.id)
-    caption = await format_profile_async(user, show_compat=False, show_badges=True)
-    from keyboards import profile_kb
     try:
-        await call.message.edit_text(caption, reply_markup=profile_kb())
-    except Exception:
-        await call.message.answer(caption, reply_markup=profile_kb())
+        user = await user_repo.get_user(call.from_user.id)
+        caption = await format_profile_async(user, show_compat=False, show_badges=True)
+        from keyboards import profile_kb
+        try:
+            await call.message.edit_text(caption, reply_markup=profile_kb())
+        except Exception as e:
+            log.debug("edit_text failed, using answer: %s", e)
+            await call.message.answer(caption, reply_markup=profile_kb())
+    except Exception as e:
+        log.error("Failed to go back from settings for %d: %s", call.from_user.id, e)
     await call.answer()
 
 
@@ -61,18 +74,31 @@ async def on_settings_profile(call: CallbackQuery) -> None:
     т.к. call.message — это сообщение бота с inline-клавиатурой,
     и message.from_user.id = id бота, а не пользователя.
     """
-    user = await user_repo.get_user(call.from_user.id)
+    try:
+        user = await user_repo.get_user(call.from_user.id)
+    except Exception as e:
+        log.error("Failed to load user %d for profile view: %s", call.from_user.id, e)
+        await call.message.answer(Message.CREATE_PROFILE_FIRST)
+        await call.answer()
+        return
+
     if not user or not user.get("name"):
         await call.message.answer(Message.CREATE_PROFILE_FIRST)
         await call.answer()
         return
 
     # Параллельно: форматирование + счётчик фото + проверка значков
-    caption, n_photos, new_badges = await asyncio.gather(
-        format_profile_async(user, show_compat=False, show_badges=True),
-        photo_repo.photo_count(call.from_user.id),
-        check_and_award(call.from_user.id),
-    )
+    try:
+        caption, n_photos, new_badges = await asyncio.gather(
+            format_profile_async(user, show_compat=False, show_badges=True),
+            photo_repo.photo_count(call.from_user.id),
+            check_and_award(call.from_user.id),
+        )
+    except Exception as e:
+        log.error("Failed to load profile data for %d: %s", call.from_user.id, e)
+        await call.message.answer("Не удалось загрузить профиль 😕", reply_markup=MAIN_MENU)
+        await call.answer()
+        return
 
     photo_note = Format.PHOTO_COUNT.format(n_photos) if n_photos > 1 else ""
     caption += photo_note
@@ -80,15 +106,16 @@ async def on_settings_profile(call: CallbackQuery) -> None:
 
     try:
         await call.message.answer_photo(photo=user["photo_id"], caption=caption, reply_markup=kb)
-    except Exception:
+    except Exception as e:
+        log.warning("Failed to send profile photo for %d: %s", call.from_user.id, e)
         await call.message.answer(caption, reply_markup=kb)
 
     # Отправляем уведомления о новых значках
     for badge in new_badges:
         try:
             await call.message.answer(format_badge_card(badge, is_new=True))
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to send badge notification: %s", e)
 
     await call.answer()
 
@@ -96,12 +123,16 @@ async def on_settings_profile(call: CallbackQuery) -> None:
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.TOGGLE.value}")
 async def on_toggle_active(call: CallbackQuery) -> None:
     """Переключает видимость анкеты."""
-    user = await user_repo.get_user(call.from_user.id)
-    new_active = 0 if user.get("active") else 1
-    await user_repo.upsert_user(call.from_user.id, active=new_active)
-    status = f"{EMOJI.ACTIVE} Анкета активна" if new_active else f"{EMOJI.INACTIVE} Анкета скрыта"
-    await call.answer(status, show_alert=True)
-    await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+    try:
+        user = await user_repo.get_user(call.from_user.id)
+        new_active = 0 if user.get("active") else 1
+        await user_repo.upsert_user(call.from_user.id, active=new_active)
+        status = f"{EMOJI.ACTIVE} Анкета активна" if new_active else f"{EMOJI.INACTIVE} Анкета скрыта"
+        await call.answer(status, show_alert=True)
+        await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+    except Exception as e:
+        log.error("Failed to toggle active for %d: %s", call.from_user.id, e)
+        await call.answer("Ошибка 😕", show_alert=True)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.AGE_FILTER.value}")
@@ -123,9 +154,13 @@ async def save_age_filter(message: Message, state: FSMContext) -> None:
     if not (Age.MIN <= min_age < max_age <= Age.MAX):
         await message.answer(Message.AGE_RANGE_INVALID)
         return
-    await user_repo.upsert_user(message.from_user.id, min_age=min_age, max_age=max_age)
-    await state.clear()
-    await message.answer(Format.AGE_FILTER_SAVED.format(min_age, max_age), reply_markup=MAIN_MENU)
+    try:
+        await user_repo.upsert_user(message.from_user.id, min_age=min_age, max_age=max_age)
+        await state.clear()
+        await message.answer(Format.AGE_FILTER_SAVED.format(min_age, max_age), reply_markup=MAIN_MENU)
+    except Exception as e:
+        log.error("Failed to save age filter for %d: %s", message.from_user.id, e)
+        await message.answer("Не удалось сохранить фильтр 😕", reply_markup=MAIN_MENU)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.SEEKING.value}")
@@ -140,9 +175,13 @@ async def on_set_seeking(call: CallbackQuery) -> None:
 async def on_seeking_chosen(call: CallbackQuery) -> None:
     """Сохраняет предпочтение поиска."""
     seeking = call.data.split(":")[1]
-    await user_repo.upsert_user(call.from_user.id, seeking=seeking)
-    await call.answer(Format.SEEKING_SAVED, show_alert=True)
-    await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+    try:
+        await user_repo.upsert_user(call.from_user.id, seeking=seeking)
+        await call.answer(Format.SEEKING_SAVED, show_alert=True)
+        await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+    except Exception as e:
+        log.error("Failed to save seeking for %d: %s", call.from_user.id, e)
+        await call.answer("Ошибка 😕", show_alert=True)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.SUPPORT.value}")
@@ -154,26 +193,40 @@ async def on_support_from_settings(call: CallbackQuery, state: FSMContext) -> No
     await call.answer()
     # Импортируем и вызываем обработчик поддержки
     from handlers.support.ticket import cmd_support
-    await cmd_support(call.message, state)
+    try:
+        await cmd_support(call.message, state)
+    except Exception as e:
+        log.error("Failed to open support from settings for %d: %s", call.from_user.id, e)
+        await call.message.answer("Не удалось открыть поддержку 😕", reply_markup=MAIN_MENU)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.DELETE.value}")
 async def on_delete_account(call: CallbackQuery) -> None:
     """Запрашивает подтверждение удаления."""
-    # FIX: unterminated f-string — use \n instead of literal newlines
-    await call.message.edit_text(
-        f"{EMOJI.REPORT} <b>Удалить аккаунт?</b>\n\nВсе данные будут безвозвратно удалены.",
-        reply_markup=confirm_delete_kb(),
-    )
+    try:
+        await call.message.edit_text(
+            f"{EMOJI.REPORT} <b>Удалить аккаунт?</b>\n\nВсе данные будут безвозвратно удалены.",
+            reply_markup=confirm_delete_kb(),
+        )
+    except Exception as e:
+        log.debug("edit_text failed for delete prompt: %s", e)
+        await call.message.answer(
+            f"{EMOJI.REPORT} <b>Удалить аккаунт?</b>\n\nВсе данные будут безвозвратно удалены.",
+            reply_markup=confirm_delete_kb(),
+        )
     await call.answer()
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.DELETE_CONFIRM.value}")
 async def on_confirm_delete(call: CallbackQuery) -> None:
     """Удаляет аккаунт."""
-    await user_repo.delete_user(call.from_user.id)
-    await call.message.edit_text(Message.ACCOUNT_DELETED)
-    await call.answer("Аккаунт удалён", show_alert=True)
+    try:
+        await user_repo.delete_user(call.from_user.id)
+        await call.message.edit_text(Message.ACCOUNT_DELETED)
+        await call.answer("Аккаунт удалён", show_alert=True)
+    except Exception as e:
+        log.error("Failed to delete account %d: %s", call.from_user.id, e)
+        await call.answer("Ошибка удаления 😕", show_alert=True)
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.SETTINGS.value}:{SettingsAction.DELETE_CANCEL.value}")

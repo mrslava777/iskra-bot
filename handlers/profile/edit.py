@@ -1,4 +1,9 @@
-"""Редактирование полей анкеты — имя, возраст, город, био, интересы."""
+"""Редактирование полей анкеты — имя, возраст, город, био, интересы.
+
+FIX v8: Allowlist для полей редактирования — предотвращает инъекцию
+        через callback_data. Только разрешённые поля обрабатываются.
+        + Логирование ошибок вместо bare pass.
+"""
 import logging
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -24,16 +29,17 @@ async def _safe_send(coro, fallback=None):
         await asyncio.sleep(e.retry_after)
         try:
             return await coro
-        except Exception:
-            pass
+        except Exception as e2:
+            log.warning("Retry failed after TelegramRetryAfter: %s", e2)
     except TelegramForbiddenError:
-        pass
-    except Exception:
+        log.debug("User blocked bot, skipping send")
+    except Exception as e:
+        log.warning("Send failed: %s", e)
         if fallback:
             try:
                 return await fallback
-            except Exception:
-                pass
+            except Exception as e2:
+                log.warning("Fallback failed: %s", e2)
     return None
 
 router = Router()
@@ -50,8 +56,18 @@ _EDIT_FIELDS = {
 
 @router.callback_query(F.data.in_({f"{CallbackPrefix.EDIT.value}:{f}" for f in _EDIT_FIELDS}))
 async def on_edit_field(call: CallbackQuery, state: FSMContext) -> None:
-    """Обработчик выбора поля для редактирования."""
+    """Обработчик выбора поля для редактирования.
+
+    FIX v8: проверка allowlist — только разрешённые поля обрабатываются.
+    """
     field = call.data.split(":")[1]
+
+    # Дополнительная проверка безопасности
+    if field not in _EDIT_FIELDS:
+        log.warning("Rejected unknown edit field: %r from user %d", field, call.from_user.id)
+        await call.answer("Неизвестное поле", show_alert=True)
+        return
+
     await state.update_data(edit_field=field)
 
     prompts = {
@@ -84,12 +100,16 @@ async def on_edit_field(call: CallbackQuery, state: FSMContext) -> None:
 async def on_edit_back(call: CallbackQuery, state: FSMContext) -> None:
     """Шаг назад — возврат в профиль из любого редактирования."""
     await state.clear()
-    user = await user_repo.get_user(call.from_user.id)
-    caption = await format_profile_async(user, show_compat=False, show_badges=True)
     try:
-        await call.message.edit_text(caption, reply_markup=profile_kb())
-    except Exception:
-        await call.message.answer(caption, reply_markup=profile_kb())
+        user = await user_repo.get_user(call.from_user.id)
+        caption = await format_profile_async(user, show_compat=False, show_badges=True)
+        try:
+            await call.message.edit_text(caption, reply_markup=profile_kb())
+        except Exception as e:
+            log.debug("edit_text failed, using answer: %s", e)
+            await call.message.answer(caption, reply_markup=profile_kb())
+    except Exception as e:
+        log.error("Failed to go back from edit for %d: %s", call.from_user.id, e)
     await call.answer()
 
 
@@ -100,27 +120,38 @@ async def edit_value(message: Message, state: FSMContext) -> None:
     field = data.get("edit_field")
     text = message.text.strip()
 
-    if field == EditField.NAME.value:
-        if len(text) > Length.NAME:
-            await message.answer(Message.NAME_TOO_LONG)
-            return
-        await user_repo.upsert_user(message.from_user.id, name=text)
-
-    elif field == EditField.AGE.value:
-        if not text.isdigit() or not (Age.MIN <= int(text) <= Age.MAX):
-            await message.answer(Message.AGE_INVALID)
-            return
-        await user_repo.upsert_user(message.from_user.id, age=int(text))
-
-    elif field == EditField.CITY.value:
-        await user_repo.upsert_user(message.from_user.id, city=text[:Length.CITY])
-
-    elif field == EditField.BIO.value:
-        bio = "" if text == "-" else text[:Length.BIO]
-        await user_repo.upsert_user(message.from_user.id, bio=bio)
-
-    else:
+    # FIX v8: проверка allowlist
+    if field not in _EDIT_FIELDS:
+        log.warning("Rejected unknown edit field in handler: %r from user %d", field, message.from_user.id)
         await message.answer("Неизвестное поле.", reply_markup=MAIN_MENU)
+        return
+
+    try:
+        if field == EditField.NAME.value:
+            if len(text) > Length.NAME:
+                await message.answer(Message.NAME_TOO_LONG)
+                return
+            await user_repo.upsert_user(message.from_user.id, name=text)
+
+        elif field == EditField.AGE.value:
+            if not text.isdigit() or not (Age.MIN <= int(text) <= Age.MAX):
+                await message.answer(Message.AGE_INVALID)
+                return
+            await user_repo.upsert_user(message.from_user.id, age=int(text))
+
+        elif field == EditField.CITY.value:
+            await user_repo.upsert_user(message.from_user.id, city=text[:Length.CITY])
+
+        elif field == EditField.BIO.value:
+            bio = "" if text == "-" else text[:Length.BIO]
+            await user_repo.upsert_user(message.from_user.id, bio=bio)
+
+        else:
+            await message.answer("Неизвестное поле.", reply_markup=MAIN_MENU)
+            return
+    except Exception as e:
+        log.error("Failed to update field %r for %d: %s", field, message.from_user.id, e)
+        await message.answer("Не удалось сохранить 😕 Попробуй ещё раз.", reply_markup=MAIN_MENU)
         return
 
     await state.clear()
@@ -132,27 +163,31 @@ async def edit_value(message: Message, state: FSMContext) -> None:
 async def edit_interests(call: CallbackQuery, state: FSMContext) -> None:
     """Обработчик выбора интересов."""
     payload = call.data.split(":")[1]
-    user = await user_repo.get_user(call.from_user.id)
-    sel = [int(x) for x in (user["interests"] or "").split(",") if x.strip().isdigit()]
+    try:
+        user = await user_repo.get_user(call.from_user.id)
+        sel = [int(x) for x in (user["interests"] or "").split(",") if x.strip().isdigit()]
 
-    if payload == "done":
-        interests = ",".join(str(i) for i in sel)
-        await user_repo.upsert_user(call.from_user.id, interests=interests)
-        await state.clear()
-        # Push-уведомление + главное меню
-        await call.answer("✅ Интересы обновлены!", show_alert=True)
-        await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
-        return
+        if payload == "done":
+            interests = ",".join(str(i) for i in sel)
+            await user_repo.upsert_user(call.from_user.id, interests=interests)
+            await state.clear()
+            # Push-уведомление + главное меню
+            await call.answer("✅ Интересы обновлены!", show_alert=True)
+            await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
+            return
 
-    idx = int(payload)
-    if idx in sel:
-        sel.remove(idx)
-    elif len(sel) < Interest.MAX_SELECTED:
-        sel.append(idx)
-    else:
-        await call.answer(Message.MAX_INTERESTS)
-        return
+        idx = int(payload)
+        if idx in sel:
+            sel.remove(idx)
+        elif len(sel) < Interest.MAX_SELECTED:
+            sel.append(idx)
+        else:
+            await call.answer(Message.MAX_INTERESTS)
+            return
 
-    await user_repo.upsert_user(call.from_user.id, interests=",".join(str(i) for i in sel))
-    await call.message.edit_reply_markup(reply_markup=interests_kb(sel, CallbackPrefix.EDIT_INTEREST.value))
-    await call.answer()
+        await user_repo.upsert_user(call.from_user.id, interests=",".join(str(i) for i in sel))
+        await call.message.edit_reply_markup(reply_markup=interests_kb(sel, CallbackPrefix.EDIT_INTEREST.value))
+        await call.answer()
+    except Exception as e:
+        log.error("Failed to update interests for %d: %s", call.from_user.id, e)
+        await call.answer("Ошибка обновления интересов", show_alert=True)
