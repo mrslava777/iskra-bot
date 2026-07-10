@@ -2,7 +2,16 @@
 
 anon_sessions с ended_at IS NULL — активная сессия.
 anon_queue — пользователи, ожидающие собеседника.
+
+FIX (#5 транзакционность reveal): добавлена finalize_reveal() — атомарно
+ в ОДНОЙ транзакции ставит флаг раскрытия, и если раскрылись оба:
+ завершает сессию (UPDATE ... WHERE ended_at IS NULL), создаёт встречные
+ лайки, мэтч и запись relationship. Завершение через total_changes
+ гарантирует, что финализацию выполнит ровно один клиент, даже если оба
+ нажали «Открыться» одновременно — нет двойного announce_match и полу-записей.
+FIX (#8 __import__): убраны inline __import__('time'), импорт вынесен наверх.
 """
+import time as _time
 from typing import Optional
 
 from database.connection import db
@@ -46,12 +55,12 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
     """Подбирает собеседника или ставит в очередь.
 
     Возвращает статус:
-        in_session — уже в активной сессии (partner = ID собеседника)
-        waiting    — уже стоит в очереди (partner = None)
-        matched    — найден собеседник, создана сессия (partner = ID)
-        queued     — поставлен в очередь, ждём (partner = None)
+      in_session — уже в активной сессии (partner = ID собеседника)
+      waiting    — уже стоит в очереди (partner = None)
+      matched    — найден собеседник, создана сессия (partner = ID)
+      queued     — поставлен в очередь, ждём (partner = None)
     """
-    now = int(__import__('time').time())
+    now = int(_time.time())
     async with db() as conn:
         # Уже в сессии?
         existing = await _active_session_row(conn, tg_id)
@@ -101,7 +110,11 @@ async def anon_leave_queue(tg_id: int) -> None:
 
 
 async def anon_set_reveal(tg_id: int) -> Optional[dict]:
-    """Отмечает, что пользователь раскрылся. Возвращает обновлённую сессию или None."""
+    """Отмечает, что пользователь раскрылся. Возвращает обновлённую сессию или None.
+
+    Оставлено для обратной совместимости. Для завершённого сценария «оба
+    раскрылись» используйте finalize_reveal() — она атомарна.
+    """
     async with db() as conn:
         row = await _active_session_row(conn, tg_id)
         if not row:
@@ -119,12 +132,116 @@ async def anon_set_reveal(tg_id: int) -> Optional[dict]:
         return dict(updated) if updated else None
 
 
+async def finalize_reveal(tg_id: int) -> dict:
+    """Атомарно обрабатывает нажатие «Открыться».
+
+    Всё в ОДНОЙ транзакции:
+      1) ставит флаг раскрытия текущему пользователю;
+      2) перечитывает флаги;
+      3) если раскрылись оба — завершает сессию через
+         UPDATE ... WHERE ended_at IS NULL и по total_changes определяет,
+         кто реально её закрыл. Только этот вызов создаёт встречные лайки,
+         мэтч и relationship и получает status="finalized".
+
+    Возвращает dict со status:
+      no_session   — активной сессии нет;
+      waiting      — раскрылся только текущий, ждём собеседника (partner);
+      finalized    — раскрылись оба, всё создано (a_id, b_id, partner, is_new_match);
+      already_done — оба раскрыты, но финализацию уже выполнил собеседник.
+    """
+    now = int(_time.time())
+    async with db() as conn:
+        row = await _active_session_row(conn, tg_id)
+        if not row:
+            return {"status": "no_session"}
+
+        sid = row["id"]
+        a_id, b_id = row["a_id"], row["b_id"]
+        partner = b_id if a_id == tg_id else a_id
+
+        col = "a_reveal" if a_id == tg_id else "b_reveal"
+        await conn.execute(
+            f"UPDATE anon_sessions SET {col} = 1 WHERE id = ?",
+            (sid,),
+        )
+
+        cur = await conn.execute(
+            "SELECT a_reveal, b_reveal FROM anon_sessions WHERE id = ?",
+            (sid,),
+        )
+        flags = await cur.fetchone()
+        both = bool(flags["a_reveal"]) and bool(flags["b_reveal"])
+
+        if not both:
+            return {"status": "waiting", "partner": partner}
+
+        # Оба раскрылись — пытаемся завершить сессию атомарно.
+        before = conn.total_changes
+        await conn.execute(
+            "UPDATE anon_sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
+            (now, sid),
+        )
+        if conn.total_changes == before:
+            # Сессию уже завершил собеседник — финализацию делать не нам.
+            return {"status": "already_done", "partner": partner}
+
+        # Встречные лайки (idempotent).
+        await conn.execute(
+            """
+            INSERT INTO likes (from_id, to_id, is_like, created_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT (from_id, to_id) DO UPDATE SET is_like = 1, created_at = excluded.created_at
+            """,
+            (a_id, b_id, now),
+        )
+        await conn.execute(
+            """
+            INSERT INTO likes (from_id, to_id, is_like, created_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT (from_id, to_id) DO UPDATE SET is_like = 1, created_at = excluded.created_at
+            """,
+            (b_id, a_id, now),
+        )
+
+        # Мэтч (idempotent) + факт новизны.
+        m_a, m_b = sorted((a_id, b_id))
+        mbefore = conn.total_changes
+        await conn.execute(
+            """
+            INSERT INTO matches (a_id, b_id, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (a_id, b_id) DO NOTHING
+            """,
+            (m_a, m_b, now),
+        )
+        is_new_match = conn.total_changes > mbefore
+
+        # Relationship (idempotent).
+        r_a, r_b = sorted((a_id, b_id))
+        await conn.execute(
+            """
+            INSERT INTO relationships (user1_id, user2_id, points, level, created_at)
+            VALUES (?, ?, 0, 0, ?)
+            ON CONFLICT (user1_id, user2_id) DO NOTHING
+            """,
+            (r_a, r_b, now),
+        )
+
+        return {
+            "status": "finalized",
+            "a_id": a_id,
+            "b_id": b_id,
+            "partner": partner,
+            "is_new_match": is_new_match,
+        }
+
+
 async def anon_end(tg_id: int) -> Optional[int]:
     """Завершает активную сессию или убирает из очереди.
 
     Возвращает ID собеседника, если завершилась сессия, иначе None.
     """
-    now = int(__import__('time').time())
+    now = int(_time.time())
     async with db() as conn:
         row = await _active_session_row(conn, tg_id)
         if row:
