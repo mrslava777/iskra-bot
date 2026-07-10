@@ -1,10 +1,10 @@
 """NSFW middleware — проверяет ВСЕ фото перед обработкой.
 
 Проверяет:
-1. Фото анкеты (регистрация, редактирование)
-2. Фото в анонимном чате
-3. Фото в поддержке
-4. Любые другие фото от пользователей
+1. Фото анкеты (регистрация, редактирование) — через moderate_profile_photo
+2. Фото в анонимном чате — через moderate_photo_message
+3. Фото в поддержке — через moderate_photo_message
+4. Любые другие фото от пользователей — через moderate_photo_message
 
 Если фото заблокировано — отменяет обработку update'а.
 """
@@ -13,7 +13,16 @@ import logging
 from aiogram import BaseMiddleware
 from aiogram.types import Message
 
+from states import Reg, Edit
+
 log = logging.getLogger("iskra.nsfw_middleware")
+
+# States where photo is for PROFILE (not chat)
+_PROFILE_PHOTO_STATES = {
+    Reg.photo.state,
+    Reg.extra_photos.state,
+    Edit.photos.state,
+}
 
 
 class NSFWMiddleware(BaseMiddleware):
@@ -49,33 +58,46 @@ class NSFWMiddleware(BaseMiddleware):
             log.warning("NSFWMiddleware: bot not found in data, skipping check")
             return await handler(event, data)
 
+        # Определяем тип фото: профильное или чатовое
+        is_profile_photo = current_state in _PROFILE_PHOTO_STATES
+
         # Проверяем фото
         try:
-            log.info("NSFWMiddleware: calling moderate_photo_message...")
-            from services.nsfw_moderation import moderate_photo_message
-            blocked = await moderate_photo_message(bot, event)
-            log.info("NSFWMiddleware: moderate_photo_message returned blocked=%s", blocked)
+            if is_profile_photo:
+                log.info("NSFWMiddleware: profile photo detected, using moderate_profile_photo")
+                from services.nsfw_moderation import moderate_profile_photo
+                photo_file_id = event.photo[-1].file_id
+                allowed, reason = await moderate_profile_photo(bot, event.from_user.id, photo_file_id)
 
-            if blocked:
-                log.info("NSFWMiddleware: BLOCKED photo from user %d (state=%s)",
-                         event.from_user.id, current_state)
-                # Отправляем уведомление пользователю
-                try:
-                    msg_text = (
-                        "<b>⚠️ Фото заблокировано</b>\n\n"
-                        "Контент не прошел автоматическую модерацию. "
-                        "Если это ошибка — обратись в поддержку."
-                    )
-                    await event.answer(msg_text, parse_mode="HTML")
-                    log.info("NSFWMiddleware: notification sent to user")
-                except Exception as e:
-                    log.warning("NSFWMiddleware: failed to send notification: %s", e)
-                return None  # Отменяем обработку — хендлер не вызывается
+                if not allowed:
+                    log.info("NSFWMiddleware: BLOCKED profile photo from user %d: %s",
+                             event.from_user.id, reason)
+                    try:
+                        msg_text = (
+                            "<b>⚠️ Фото не подходит для анкеты</b>\n\n"
+                            "Обнаружен запрещённый контент. "
+                            "Пожалуйста, загрузите другое фото."
+                        )
+                        await event.answer(msg_text, parse_mode="HTML")
+                        log.info("NSFWMiddleware: profile rejection notification sent")
+                    except Exception as e:
+                        log.warning("NSFWMiddleware: failed to send notification: %s", e)
+                    return None
+                else:
+                    log.info("NSFWMiddleware: profile photo PASSED checks")
             else:
-                log.info("NSFWMiddleware: photo PASSED checks")
+                log.info("NSFWMiddleware: chat photo detected, using moderate_photo_message")
+                from services.nsfw_moderation import moderate_photo_message
+                blocked = await moderate_photo_message(bot, event)
+
+                if blocked:
+                    log.info("NSFWMiddleware: BLOCKED chat photo from user %d (state=%s)",
+                             event.from_user.id, current_state)
+                    return None
+                else:
+                    log.info("NSFWMiddleware: chat photo PASSED checks")
 
         except Exception as e:
             log.error("NSFWMiddleware: check failed for user %d: %s", event.from_user.id, e, exc_info=True)
-            # При ошибке проверки — пропускаем (fail-open для UX)
 
         return await handler(event, data)
