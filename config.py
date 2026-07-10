@@ -80,3 +80,9 @@ BROADCAST_DELAY = float(os.getenv("BROADCAST_DELAY", "0.05"))
 BROADCAST_CONCURRENT = _safe_int(
     os.getenv("BROADCAST_CONCURRENT"), 10, "BROADCAST_CONCURRENT"
 )
+
+# ── NSFW Moderation ───────────────────────────────────────────────
+NSFW_API_KEY = os.getenv("NSFW_API_KEY", "")
+NSFW_API_PROVIDER = os.getenv("NSFW_API_PROVIDER", "")  # sightengine | deepai | ""
+NSFW_ENABLED = os.getenv("NSFW_ENABLED", "true").lower() in ("1", "true", "yes")
+
