@@ -1,16 +1,21 @@
 """NSFW-модерация контента — автоматическая + ручная.
 
 Уровни модерации:
-  1. Эвристика: метаданные, подписи, хеши известных изображений
-  2. AI-сканер: Sightengine / DeepAI / Azure Content Moderator (опционально)
-  3. Пользовательские репорты: агрегация жалоб
-  4. Ручная модерация админами
+ 1. Эвристика: метаданные, подписи, хеши известных изображений
+ 2. AI-сканер: Sightengine / DeepAI / Azure Content Moderator (опционально)
+ 3. Пользовательские репорты: агрегация жалоб
+ 4. Ручная модерация админами
 
 FIX: все внешние API-вызовы — с таймаутом и fallback.
 FIX v9: добавлены детальные логи для отладки.
 FIX v10: пороги NSFW снижены (0.8→0.3), учитывается suggestive контент.
 FIX v11: moderate_profile_photo теперь не вызывает _take_action (нет auto-ban/strikes
-         для фото профиля). Профильные фото — не чат-спам.
+ для фото профиля). Профильные фото — не чат-спам.
+FIX v12: КРИТИЧНО — _check_sightengine и _check_sightengine_text были перепутаны:
+ логика проверки картинки лежала внутри text-функции после return, а
+ _check_sightengine возвращала None → "cannot unpack non-iterable NoneType".
+ Логика возвращена на место. _ai_check застрахован от None.
+ Убран агрессивный none_score-блок, дававший ложные баны (suggestive=0.99 → бан).
 """
 import asyncio
 import hashlib
@@ -33,6 +38,7 @@ log = logging.getLogger("iskra.nsfw")
 # ═══════════════════════════════════════════════════════════════════════════════
 _banned_hashes: set[str] = set()
 
+
 async def _load_banned_hashes() -> None:
     """Загружает хеши забаненных изображений из БД."""
     try:
@@ -53,7 +59,7 @@ def _compute_hash(photo_bytes: bytes) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
-    """Sightengine: возвращает (nudity_score, violence_score).
+    """Sightengine (image): возвращает (nudity_score, violence_score).
 
     https://sightengine.com/docs/
     """
@@ -61,16 +67,68 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
              bool(NSFW_API_KEY), NSFW_API_PROVIDER)
 
     if not NSFW_API_KEY or NSFW_API_PROVIDER != "sightengine":
-        log.warning("Sightengine skipped: key=%s provider=%s", 
-                   bool(NSFW_API_KEY), NSFW_API_PROVIDER)
+        log.warning("Sightengine skipped: key=%s provider=%s",
+                    bool(NSFW_API_KEY), NSFW_API_PROVIDER)
         return 0.0, 0.0
+
+    try:
+        api_user, api_secret = NSFW_API_KEY.split(":", 1)
+        log.info("Sightengine credentials: user=%s... secret=%s...",
+                 api_user[:5], api_secret[:5])
+    except ValueError as e:
+        log.error("Failed to parse NSFW_API_KEY (expected user:secret): %s", e)
+        return 0.0, 0.0
+
+    import aiohttp
+
+    data = aiohttp.FormData()
+    data.add_field("media", io.BytesIO(photo_bytes), filename="photo.jpg")
+    data.add_field("api_user", api_user)
+    data.add_field("api_secret", api_secret)
+    data.add_field("models", "nudity-2.1,weapon,violence,offensive")
+
+    log.info("Sending request to Sightengine API...")
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.post("https://api.sightengine.com/1.0/check.json", data=data) as resp:
+                log.info("Sightengine response status: %s", resp.status)
+                if resp.status == 200:
+                    result = await resp.json()
+                    log.info("Sightengine raw response: %s", result)
+                    nudity = result.get("nudity", {})
+
+                    # FIX v10: учитываем ВСЕ типы nudity, включая suggestive
+                    score = max(
+                        nudity.get("sexual_activity", 0),
+                        nudity.get("sexual_display", 0),
+                        nudity.get("erotica", 0),
+                        nudity.get("very_suggestive", 0) * 0.7,
+                        nudity.get("suggestive", 0) * 0.4,
+                        nudity.get("mildly_suggestive", 0) * 0.2,
+                    )
+
+                    # FIX v12: убран блок «if none_score < 0.3: score = max(score, 1 - none_score)».
+                    # Он давал ложные баны на обычных фото (suggestive=0.99, none=0.001 → 0.999).
+                    # Полагаемся только на явные сигналы nudity выше.
+
+                    violence = result.get("violence", {}).get("prob", 0)
+                    log.info("Sightengine scores: nudity=%.3f, violence=%.3f", score, violence)
+                    return score, violence
+                else:
+                    body = await resp.text()
+                    log.warning("Sightengine error status=%s body=%s", resp.status, body[:200])
+    except asyncio.TimeoutError:
+        log.warning("Sightengine timeout")
+    except Exception as e:
+        log.warning("Sightengine error: %s", e)
+    return 0.0, 0.0
 
 
 async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
     """Sightengine Text Moderation API.
 
     Returns: (is_blocked, details)
-    details: {sexual_score, toxic_score, insult_score, profanity_found}
+    details: {sexual, toxic, insulting, violent, discriminatory, self_harm, ...}
     """
     if not NSFW_API_KEY or not NSFW_API_PROVIDER:
         return False, {"reason": "no_api_config"}
@@ -140,59 +198,6 @@ async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
 
     return False, {"reason": "api_error"}
 
-    try:
-        api_user, api_secret = NSFW_API_KEY.split(":", 1)
-        log.info("Sightengine credentials: user=%s... secret=%s...", 
-                api_user[:5], api_secret[:5])
-    except ValueError as e:
-        log.error("Failed to parse NSFW_API_KEY (expected user:secret): %s", e)
-        return 0.0, 0.0
-
-    import aiohttp
-
-    data = aiohttp.FormData()
-    data.add_field("media", io.BytesIO(photo_bytes), filename="photo.jpg")
-    data.add_field("api_user", api_user)
-    data.add_field("api_secret", api_secret)
-    data.add_field("models", "nudity-2.1,weapon,violence,offensive")
-
-    log.info("Sending request to Sightengine API...")
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.post("https://api.sightengine.com/1.0/check.json", data=data) as resp:
-                log.info("Sightengine response status: %s", resp.status)
-                if resp.status == 200:
-                    result = await resp.json()
-                    log.info("Sightengine raw response: %s", result)
-                    nudity = result.get("nudity", {})
-
-                    # FIX v10: учитываем ВСЕ типы nudity, включая suggestive
-                    score = max(
-                        nudity.get("sexual_activity", 0),
-                        nudity.get("sexual_display", 0),
-                        nudity.get("erotica", 0),
-                        nudity.get("very_suggestive", 0) * 0.7,
-                        nudity.get("suggestive", 0) * 0.4,
-                        nudity.get("mildly_suggestive", 0) * 0.2,
-                    )
-
-                    # Если none очень низкий — значит что-то есть
-                    none_score = nudity.get("none", 1)
-                    if none_score < 0.3:
-                        score = max(score, 1 - none_score)
-
-                    violence = result.get("violence", {}).get("prob", 0)
-                    log.info("Sightengine scores: nudity=%.3f, violence=%.3f", score, violence)
-                    return score, violence
-                else:
-                    body = await resp.text()
-                    log.warning("Sightengine error status=%s body=%s", resp.status, body[:200])
-    except asyncio.TimeoutError:
-        log.warning("Sightengine timeout")
-    except Exception as e:
-        log.warning("Sightengine error: %s", e)
-    return 0.0, 0.0
-
 
 async def _check_deepai(photo_bytes: bytes) -> float:
     """DeepAI NSFW detector. Возвращает score 0-1."""
@@ -222,13 +227,17 @@ async def _check_deepai(photo_bytes: bytes) -> float:
 
 
 async def _ai_check(photo_bytes: bytes) -> tuple[float, float]:
-    """Запускает AI-проверку. Возвращает (nsfw_score, violence_score)."""
+    """Запускает AI-проверку. Возвращает (nsfw_score, violence_score).
+
+    FIX v12: гарантированно возвращает кортеж, даже если провайдер вернул None.
+    """
     log.info("AI check started. Provider=%s", NSFW_API_PROVIDER)
     if NSFW_API_PROVIDER == "sightengine":
-        return await _check_sightengine(photo_bytes)
+        res = await _check_sightengine(photo_bytes)
+        return res if res else (0.0, 0.0)
     elif NSFW_API_PROVIDER == "deepai":
         score = await _check_deepai(photo_bytes)
-        return score, 0.0
+        return (score or 0.0), 0.0
     log.warning("No AI provider configured")
     return 0.0, 0.0
 
@@ -317,8 +326,8 @@ async def check_photo(
         "ai_nsfw_score": round(nsfw_score, 3),
         "ai_violence_score": round(violence_score, 3),
     }
-    log.info("AI scores: nudity=%.3f, violence=%.3f, threshold_nudity=%.1f, threshold_violence=%.1f", 
-            nsfw_score, violence_score, NSFWThreshold.NUDITY, NSFWThreshold.VIOLENCE)
+    log.info("AI scores: nudity=%.3f, violence=%.3f, threshold_nudity=%.1f, threshold_violence=%.1f",
+             nsfw_score, violence_score, NSFWThreshold.NUDITY, NSFWThreshold.VIOLENCE)
 
     if nsfw_score >= NSFWThreshold.NUDITY or violence_score >= NSFWThreshold.VIOLENCE:
         log.info("AI check BLOCKED photo (score above threshold)")
@@ -399,7 +408,7 @@ async def _log_suspicious(message: Message, score: float, photo_bytes: bytes) ->
     try:
         async with db() as conn:
             await conn.execute(
-                """INSERT INTO nsfw_review_queue 
+                """INSERT INTO nsfw_review_queue
                    (tg_id, message_id, chat_id, ai_score, status, created_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (message.from_user.id, message.message_id, message.chat.id,
@@ -437,8 +446,8 @@ async def moderate_profile_photo(bot: Bot, tg_id: int, photo_file_id: str) -> tu
     Returns: (is_allowed, reason)
 
     FIX v11: Не вызывает _take_action — нет auto-ban/strikes для фото профиля.
-             Сохраняет хеш в бан-лист для будущих проверок.
-             Профильные фото — не чат-спам, не должны караться баном.
+    Сохраняет хеш в бан-лист для будущих проверок.
+    Профильные фото — не чат-спам, не должны караться баном.
     """
     log.info("moderate_profile_photo called for user %d", tg_id)
     try:
@@ -495,22 +504,22 @@ async def moderate_profile_photo(bot: Bot, tg_id: int, photo_file_id: str) -> tu
 NSFW_MIGRATION_SQL = """
 -- Таблица забаненных хешей изображений
 CREATE TABLE IF NOT EXISTS nsfw_banned_hashes (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    image_hash  TEXT UNIQUE NOT NULL,
-    reason      TEXT,
-    created_at  INTEGER DEFAULT (strftime(''%s'',''now''))
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    image_hash TEXT UNIQUE NOT NULL,
+    reason TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
 );
 
 -- Таблица подозрительного контента на ручную проверку
 CREATE TABLE IF NOT EXISTS nsfw_review_queue (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    tg_id       INTEGER NOT NULL,
-    message_id  INTEGER,
-    chat_id     INTEGER,
-    ai_score    REAL,
-    status      TEXT DEFAULT ''pending'',  -- pending, approved, rejected
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id INTEGER NOT NULL,
+    message_id INTEGER,
+    chat_id INTEGER,
+    ai_score REAL,
+    status TEXT DEFAULT 'pending',  -- pending, approved, rejected
     reviewed_by INTEGER,
-    created_at  INTEGER DEFAULT (strftime(''%s'',''now'')),
+    created_at INTEGER DEFAULT (strftime('%s','now')),
     reviewed_at INTEGER
 );
 
