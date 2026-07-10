@@ -2,13 +2,12 @@
 
 PERF: in-memory TTL-кэш для get_user().
 FIX v8: SQL allowlist для upsert_user.
+FIX (#4): reset_feed(tg_id) — сброс ленты при реактивации/смене фильтров.
+FIX (#6): при смене interests чистим кэш совместимости.
 
-FIX (#4 shown_profiles при деактивации): добавлен reset_feed(tg_id) —
- очищает показанные анкеты, чтобы после реактивации/смены фильтров лента
- обновлялась (иначе пользователь упирался в «анкет нет», хотя подходящие
- кандидаты есть). Вызывается из настроек при включении анкеты и смене фильтров.
-FIX (#6 инвалидация кэша совместимости): при изменении interests чистим
- связанные записи в кэше compatibility, чтобы не показывать устаревший %.
+PERF (пул соединений): чистые чтения помечены db(write=False) — параллельно
+ в WAL. Записи и read-modify-write (update_max_compat, delete_user) идут через
+ db() (write=True, атомарно). touch_activity — write.
 """
 import time
 from collections import OrderedDict
@@ -21,7 +20,6 @@ _user_cache: OrderedDict[int, tuple[Optional[dict], float]] = OrderedDict()
 _USER_CACHE_TTL = 10
 _USER_CACHE_MAX = 500
 
-# SQL allowlist: только эти поля могут быть обновлены через upsert_user
 _USER_FIELD_ALLOWLIST = {
     "username", "name", "age", "gender", "seeking", "city",
     "bio", "interests", "photo_id", "active", "verified",
@@ -45,7 +43,7 @@ async def get_user(tg_id: int) -> Optional[dict]:
             _user_cache.move_to_end(tg_id)
             return data
 
-    async with db() as conn:
+    async with db(write=False) as conn:
         cursor = await conn.execute(
             "SELECT * FROM users WHERE tg_id = ?", (tg_id,)
         )
@@ -62,7 +60,7 @@ async def get_user_names_batch(tg_ids: list[int]) -> dict[int, str]:
     """Возвращает имена пользователей batch-запросом."""
     if not tg_ids:
         return {}
-    async with db() as conn:
+    async with db(write=False) as conn:
         placeholders = ",".join("?" for _ in tg_ids)
         cursor = await conn.execute(
             f"SELECT tg_id, name FROM users WHERE tg_id IN ({placeholders})",
@@ -101,11 +99,10 @@ async def upsert_user(
             if old_interests is not None and old_interests != interests:
                 invalidate_compat_for(old_interests)
         except Exception:
-            pass  # кэш — не критичный путь
+            pass
 
     now = int(time.time())
 
-    # Собираем только разрешённые поля
     locals_dict = locals()
     fields_to_update = {}
     for field_name in _USER_FIELD_ALLOWLIST:
@@ -141,11 +138,7 @@ async def upsert_user(
 
 
 async def reset_feed(tg_id: int) -> int:
-    """Очищает показанные анкеты пользователя (лента начинается заново).
-
-    #4: вызывается при реактивации анкеты и смене фильтров, чтобы подходящие
-    кандидаты снова появлялись в ленте. Возвращает число удалённых записей.
-    """
+    """Очищает показанные анкеты пользователя (лента начинается заново). #4"""
     async with db() as conn:
         cursor = await conn.execute(
             "DELETE FROM shown_profiles WHERE from_id = ?",
@@ -174,7 +167,7 @@ async def increment_anon_messages(tg_id: int) -> None:
 
 
 async def update_max_compat(tg_id: int, pct: int) -> None:
-    """Запоминает максимальную совместимость, которую видел пользователь."""
+    """Запоминает максимальную совместимость (read-modify-write, атомарно)."""
     async with db() as conn:
         cur = await conn.execute(
             "SELECT COALESCE(max_compat, 0) FROM users WHERE tg_id = ?",

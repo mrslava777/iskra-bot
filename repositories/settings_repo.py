@@ -1,6 +1,8 @@
 """Settings/Admin repository — операции админ-панели, статистики, жалоб, банов.
 
 FIX (#8): убран inline __import__('time'); импорт time вынесен наверх модуля.
+PERF (пул соединений): статистика и списки — чистые чтения (db(write=False)),
+ идут параллельно без глобального write-лока. add_report/ban/unban пишут через db().
 """
 import time
 
@@ -10,7 +12,7 @@ from database.connection import db
 
 async def stats() -> dict:
     """Возвращает базовую статистику одним запросом."""
-    async with db() as conn:
+    async with db(write=False) as conn:
         cursor = await conn.execute("""
             SELECT
                 COUNT(*) as users,
@@ -25,7 +27,7 @@ async def stats() -> dict:
 
 async def admin_extended_stats() -> dict:
     """Возвращает расширенную статистику для админ-панели одним запросом."""
-    async with db() as conn:
+    async with db(write=False) as conn:
         now = int(time.time())
         today_start = now - (now % 86400)
 
@@ -45,7 +47,7 @@ async def admin_extended_stats() -> dict:
 
 async def admin_recent_users(limit: int = 20) -> list:
     """Возвращает последних пользователей."""
-    async with db() as conn:
+    async with db(write=False) as conn:
         cursor = await conn.execute(
             """
             SELECT tg_id, name, username, age, active, is_banned
@@ -59,7 +61,7 @@ async def admin_recent_users(limit: int = 20) -> list:
 
 async def admin_all_active_ids() -> list:
     """Возвращает ID всех активных пользователей."""
-    async with db() as conn:
+    async with db(write=False) as conn:
         cursor = await conn.execute(
             "SELECT tg_id FROM users WHERE active = 1 AND is_banned = 0"
         )
@@ -83,7 +85,7 @@ async def add_report(from_id: int, to_id: int) -> None:
 
 async def admin_recent_reports(limit: int = 10) -> list:
     """Возвращает последние жалобы."""
-    async with db() as conn:
+    async with db(write=False) as conn:
         cursor = await conn.execute(
             """
             SELECT to_id, COUNT(*) as report_count

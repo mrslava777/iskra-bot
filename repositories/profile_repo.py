@@ -2,21 +2,13 @@
 
 PERF: next_candidate_and_mark / next_candidate_full минимизируют round-trip к БД.
 
-FIX (#9 рефакторинг): общий SQL-фильтр ленты (FROM + WHERE + ORDER + LIMIT) и
- порядок параметров вынесены в _FEED_TAIL и _feed_params(). Раньше идентичный
- блок и кортеж из 9 параметров были скопированы в трёх функциях — правка
- фильтра в одном месте молча ломала ленту. Теперь единый источник правды,
- функции отличаются только SELECT-проекцией.
+FIX (#9 рефакторинг): общий SQL-фильтр ленты и параметры вынесены в _FEED_TAIL
+ и _feed_params(). Единый источник правды, функции отличаются только SELECT.
 FIX v7: параметризованные запросы, без f-string и inline __import__.
 
-ПРИМЕЧАНИЕ по порядку параметров (сохранён из рабочей версии):
-  плейсхолдеры WHERE идут так:
-    sp.from_id, l.from_id, u.tg_id,
-    (? = 'any' OR u.gender = ?)              -> seeking, seeking
-    (? = '' OR u.seeking = ? OR 'any')       -> gender, gender
-    age BETWEEN ? AND ?                        -> min_age, max_age
-  Логика: "seeking='any' ИЛИ пол кандидата = seeking зрителя" и
-          "пол зрителя='' ИЛИ кандидат ищет пол зрителя ИЛИ ищет любой".
+PERF (пул соединений): чистые чтения помечены db(write=False) — идут
+ параллельно в WAL без глобального write-лока. Функции, которые пишут
+ shown_profiles, используют db() (write=True) — атомарно.
 """
 import time as _time
 from typing import Optional
@@ -76,11 +68,11 @@ async def _mark_shown(conn, from_id: int, to_id: int) -> None:
 async def next_candidate_and_mark(
     viewer_id: int, viewer: dict | None = None
 ) -> Optional[dict]:
-    """Находит следующего кандидата И отмечает его показанным."""
+    """Находит следующего кандидата И отмечает его показанным (write — атомарно)."""
     if viewer is None:
         return None
 
-    async with db() as conn:
+    async with db() as conn:  # write=True: SELECT + INSERT в одной транзакции
         cursor = await conn.execute(
             "SELECT u.* " + _FEED_TAIL,
             _feed_params(viewer_id, viewer),
@@ -95,7 +87,7 @@ async def next_candidate_and_mark(
 async def next_candidate_full(
     viewer_id: int, viewer: dict | None = None
 ) -> Optional[dict]:
-    """Находит кандидата с предзагруженными photo_count и badge_ids."""
+    """Находит кандидата с предзагруженными photo_count и badge_ids (write — атомарно)."""
     if viewer is None:
         return None
 
@@ -104,7 +96,7 @@ async def next_candidate_full(
                (SELECT COUNT(*) FROM photos p WHERE p.tg_id = u.tg_id) AS photo_count,
                (SELECT GROUP_CONCAT(badge_id) FROM user_badges ub WHERE ub.tg_id = u.tg_id) AS badge_ids_str
     """
-    async with db() as conn:
+    async with db() as conn:  # write=True: SELECT + mark_shown атомарно
         cursor = await conn.execute(select + _FEED_TAIL, _feed_params(viewer_id, viewer))
         row = await cursor.fetchone()
         if not row:
@@ -122,11 +114,11 @@ async def next_candidate_full(
 async def next_candidate(
     viewer_id: int, viewer: dict | None = None
 ) -> Optional[dict]:
-    """Возвращает следующего кандидата для ленты (без mark_shown)."""
+    """Следующий кандидат без mark_shown — чистое чтение."""
     if viewer is None:
         return None
 
-    async with db() as conn:
+    async with db(write=False) as conn:
         cursor = await conn.execute(
             "SELECT u.* " + _FEED_TAIL,
             _feed_params(viewer_id, viewer),
