@@ -379,7 +379,8 @@ class Message:
     AGE_RANGE_INVALID = "Диапазон: 14–99, мин < макс"
     SEND_PHOTO = "Нужно именно фото 📷 (как изображение, не файлом)."
     SEND_PHOTO_OR_SKIP = "Отправь фото 📷 или нажми «Пропустить»."
-    PROFILE_COMPLETE = "✨ Готово! Вот твоя анкета:\n"
+    PROFILE_COMPLETE = "✨ Готово! Вот твоя анкета:
+"
     LETS_GO = "Поехали искать! Жми «🔍 Смотреть анкеты»."
     MATCH_ACHIEVED = "🎉 Мэтч!"
     LIKE_SENT = "❤️"
