@@ -2,6 +2,7 @@
 
 FIX: обработка asyncio.CancelledError — корректная остановка при shutdown.
 FIX: добавлено логирование прогресса и ошибок.
+FIX v8: логирование ошибок рассылки + обработка TelegramRetryAfter.
 """
 import asyncio
 import logging
@@ -29,16 +30,17 @@ async def _safe_send(coro, fallback=None):
         await asyncio.sleep(e.retry_after)
         try:
             return await coro
-        except Exception:
-            pass
+        except Exception as e2:
+            log.warning("Retry failed after TelegramRetryAfter: %s", e2)
     except TelegramForbiddenError:
-        pass
-    except Exception:
+        log.debug("User blocked bot, skipping send")
+    except Exception as e:
+        log.warning("Send failed: %s", e)
         if fallback:
             try:
                 return await fallback
-            except Exception:
-                pass
+            except Exception as e2:
+                log.warning("Fallback failed: %s", e2)
     return None
 
 router = Router()
@@ -56,7 +58,11 @@ async def cb_broadcast_help(call: CallbackQuery) -> None:
         f"<code>{Cmd.BROADCAST.value} Текст сообщения</code>\n\n"
         "Сообщение получат все активные пользователи."
     )
-    await call.message.edit_text(text, reply_markup=back_kb())
+    try:
+        await call.message.edit_text(text, reply_markup=back_kb())
+    except Exception as e:
+        log.error("Failed to show broadcast help to admin %d: %s", call.from_user.id, e)
+    await call.answer()
 
 
 @router.message(Command(Cmd.BROADCAST.value[1:]))
@@ -65,6 +71,7 @@ async def cmd_broadcast(message: Message) -> None:
 
     FIX: корректная обработка asyncio.CancelledError при shutdown.
     FIX: логирование результатов рассылки.
+    FIX v8: обработка TelegramRetryAfter для каждого сообщения.
     """
     if not is_admin(message.from_user.id):
         return
@@ -72,12 +79,23 @@ async def cmd_broadcast(message: Message) -> None:
     if not text:
         return await message.answer(Format.BROADCAST_USAGE)
 
-    all_users = await settings_repo.admin_all_active_ids()
+    try:
+        all_users = await settings_repo.admin_all_active_ids()
+    except Exception as e:
+        log.error("Failed to load active users for broadcast: %s", e)
+        await message.answer("Не удалось загрузить список пользователей 😕")
+        return
+
     total = len(all_users)
     sent = 0
     failed = 0
 
-    status = await message.answer(Format.BROADCAST_START.format(total))
+    try:
+        status = await message.answer(Format.BROADCAST_START.format(total))
+    except Exception as e:
+        log.error("Failed to send broadcast status: %s", e)
+        status = None
+
     semaphore = asyncio.Semaphore(BROADCAST_CONCURRENT)
 
     async def send_one(uid: int) -> tuple[bool, int]:
@@ -86,7 +104,20 @@ async def cmd_broadcast(message: Message) -> None:
             try:
                 await message.bot.send_message(uid, f"{Format.BROADCAST_PREFIX}{text}")
                 result = (True, uid)
-            except Exception:
+            except TelegramRetryAfter as e:
+                log.warning("Rate limit broadcasting to %d, retry after %s", uid, e.retry_after)
+                await asyncio.sleep(e.retry_after)
+                try:
+                    await message.bot.send_message(uid, f"{Format.BROADCAST_PREFIX}{text}")
+                    result = (True, uid)
+                except Exception as e2:
+                    log.error("Failed to retry broadcast to %d: %s", uid, e2)
+                    result = (False, uid)
+            except TelegramForbiddenError:
+                log.debug("User %d blocked bot, skipping broadcast", uid)
+                result = (False, uid)
+            except Exception as e:
+                log.warning("Failed to broadcast to %d: %s", uid, e)
                 result = (False, uid)
             await asyncio.sleep(BROADCAST_DELAY)
             return result
@@ -98,22 +129,28 @@ async def cmd_broadcast(message: Message) -> None:
 
             for r in results:
                 if isinstance(r, Exception):
+                    log.error("Broadcast exception: %s", r)
                     failed += 1
                 elif r[0]:
                     sent += 1
                 else:
                     failed += 1
 
-            try:
-                await status.edit_text(
-                    Format.BROADCAST_STATUS.format(min(i + BROADCAST_BATCH_SIZE, total), total, sent, failed)
-                )
-            except Exception:
-                pass
+            if status:
+                try:
+                    await status.edit_text(
+                        Format.BROADCAST_STATUS.format(min(i + BROADCAST_BATCH_SIZE, total), total, sent, failed)
+                    )
+                except Exception as e:
+                    log.debug("Failed to edit broadcast status: %s", e)
 
     except asyncio.CancelledError:
         log.warning("Рассылка прервана (shutdown). Отправлено: %d, ошибок: %d", sent, failed)
         raise
 
     log.info("Рассылка завершена: отправлено %d, ошибок %d из %d", sent, failed, total)
-    await status.edit_text(Format.BROADCAST_DONE.format(sent, failed))
+    if status:
+        try:
+            await status.edit_text(Format.BROADCAST_DONE.format(sent, failed))
+        except Exception as e:
+            log.error("Failed to edit final broadcast status: %s", e)

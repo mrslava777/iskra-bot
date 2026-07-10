@@ -1,4 +1,8 @@
-"""Модерация — бан, разбан, жалобы."""
+"""Модерация — бан, разбан, жалобы.
+
+FIX v8: логирование ошибок бана/разбана.
+"""
+import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
@@ -12,6 +16,7 @@ from services.admin_service import is_admin
 import asyncio
 
 router = Router()
+log = logging.getLogger("iskra.admin.moderation")
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.ADMIN.value}:{AdminAction.BAN.value}")
@@ -26,7 +31,11 @@ async def cb_ban_help(call: CallbackQuery) -> None:
         f"<code>{Cmd.UNBAN.value} 123456789</code> — разбанить\n\n"
         "Или нажми кнопку бана в разделе «Жалобы»."
     )
-    await call.message.edit_text(text, reply_markup=back_kb())
+    try:
+        await call.message.edit_text(text, reply_markup=back_kb())
+    except Exception as e:
+        log.error("Failed to show ban help to admin %d: %s", call.from_user.id, e)
+    await call.answer()
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.ADMIN.value}:{AdminAction.REPORTS.value}")
@@ -37,14 +46,24 @@ async def cb_reports(call: CallbackQuery) -> None:
     """
     if not is_admin(call.from_user.id):
         return await call.answer(Message.ADMIN_ONLY)
-    reports = await settings_repo.admin_recent_reports(limit=Admin.RECENT_REPORTS_LIMIT)
+    try:
+        reports = await settings_repo.admin_recent_reports(limit=Admin.RECENT_REPORTS_LIMIT)
+    except Exception as e:
+        log.error("Failed to load reports for admin %d: %s", call.from_user.id, e)
+        await call.answer("Ошибка загрузки жалоб", show_alert=True)
+        return
+
     if not reports:
         return await call.message.edit_text(f"{EMOJI.REPORT} Жалоб нет 🎉", reply_markup=back_kb())
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     target_ids = list(set(r["to_id"] for r in reports))
-    users_map = await user_repo.get_user_names_batch(target_ids)
+    try:
+        users_map = await user_repo.get_user_names_batch(target_ids)
+    except Exception as e:
+        log.error("Failed to load user names for reports: %s", e)
+        users_map = {}
 
     lines = [f"{EMOJI.REPORT} <b>Последние жалобы:</b>"]
     buttons = []
@@ -61,7 +80,11 @@ async def cb_reports(call: CallbackQuery) -> None:
         ])
     buttons.append([InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.MENU.value))])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await call.message.edit_text("\n".join(lines), reply_markup=kb)
+    try:
+        await call.message.edit_text("\n".join(lines), reply_markup=kb)
+    except Exception as e:
+        log.error("Failed to edit reports for admin %d: %s", call.from_user.id, e)
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.ADMIN.value}:{AdminAction.DO_BAN.value}:"))
@@ -70,8 +93,19 @@ async def cb_do_ban(call: CallbackQuery) -> None:
     if not is_admin(call.from_user.id):
         return await call.answer(Message.ADMIN_ONLY)
     tg_id = int(call.data.split(":")[2])
-    await settings_repo.admin_ban_user(tg_id)
-    user = await user_repo.get_user(tg_id)
+    try:
+        await settings_repo.admin_ban_user(tg_id)
+    except Exception as e:
+        log.error("Failed to ban user %d: %s", tg_id, e)
+        await call.answer("Ошибка бана 😕", show_alert=True)
+        return
+
+    try:
+        user = await user_repo.get_user(tg_id)
+    except Exception as e:
+        log.error("Failed to load user %d after ban: %s", tg_id, e)
+        user = None
+
     name = user["name"] if user else "?"
     await call.answer(f"{EMOJI.VERIFIED} {name} забанен")
     await cb_reports(call)
@@ -86,10 +120,23 @@ async def cmd_ban(message: Message) -> None:
     if len(parts) < 2 or not parts[1].isdigit():
         return await message.answer(Format.BAN_USAGE)
     tg_id = int(parts[1])
-    user = await user_repo.get_user(tg_id)
+    try:
+        user = await user_repo.get_user(tg_id)
+    except Exception as e:
+        log.error("Failed to load user %d for ban: %s", tg_id, e)
+        await message.answer(Message.USER_NOT_FOUND)
+        return
+
     if not user:
         return await message.answer(Message.USER_NOT_FOUND)
-    await settings_repo.admin_ban_user(tg_id)
+
+    try:
+        await settings_repo.admin_ban_user(tg_id)
+    except Exception as e:
+        log.error("Failed to ban user %d: %s", tg_id, e)
+        await message.answer("Ошибка бана 😕")
+        return
+
     await message.answer(Format.BAN_SUCCESS.format(user["name"], tg_id))
 
 
@@ -102,8 +149,21 @@ async def cmd_unban(message: Message) -> None:
     if len(parts) < 2 or not parts[1].isdigit():
         return await message.answer(Format.UNBAN_USAGE)
     tg_id = int(parts[1])
-    user = await user_repo.get_user(tg_id)
+    try:
+        user = await user_repo.get_user(tg_id)
+    except Exception as e:
+        log.error("Failed to load user %d for unban: %s", tg_id, e)
+        await message.answer(Message.USER_NOT_FOUND)
+        return
+
     if not user:
         return await message.answer(Message.USER_NOT_FOUND)
-    await settings_repo.admin_unban_user(tg_id)
+
+    try:
+        await settings_repo.admin_unban_user(tg_id)
+    except Exception as e:
+        log.error("Failed to unban user %d: %s", tg_id, e)
+        await message.answer("Ошибка разбана 😕")
+        return
+
     await message.answer(Format.UNBAN_SUCCESS.format(user["name"], tg_id))
