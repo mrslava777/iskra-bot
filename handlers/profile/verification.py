@@ -88,18 +88,15 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
         await safe_send(
             message.bot.send_message(
                 admin_id,
-                await safe_send(
-        message.bot.send_message(
-            admin_id,
-            "🔍 <b>Запрос верификации</b>\n"
-            "Пользователь: <b>" + name + "</b>\n"
-            "ID: <code>" + str(message.from_user.id) + "</code>\n"
-            "Требуемый жест: <b>" + gesture + "</b>\n"
-            "Проверь, что жест виден в кадре и лицо совпадает с анкетой.",
-            reply_markup=verify_kb(message.from_user.id),
-        ),
-        log_prefix=f"verify_msg_{admin_id}",
-    )
+                "🔍 <b>Запрос верификации</b>\n"
+                "Пользователь: <b>" + name + "</b>\n"
+                "ID: <code>" + str(message.from_user.id) + "</code>\n"
+                "Требуемый жест: <b>" + gesture + "</b>\n"
+                "Проверь, что жест виден в кадре и лицо совпадает с анкетой.",
+                reply_markup=verify_kb(message.from_user.id),
+            ),
+            log_prefix=f"verify_msg_{admin_id}",
+        )
 
 
     await message.answer(Message.VERIFICATION_SENT, reply_markup=MAIN_MENU)
@@ -129,15 +126,11 @@ async def on_approve_verify(call: CallbackQuery) -> None:
     try:
         if call.message.photo:
             await call.message.edit_caption(
-                caption=call.message.caption + "
-
-" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
+                caption=call.message.caption + "\n\n" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
             )
         else:
             await call.message.edit_text(
-                call.message.text + "
-
-" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
+                call.message.text + "\n\n" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
             )
     except Exception as e:
         log.debug("Failed to edit verification status: %s", e)
@@ -159,15 +152,11 @@ async def on_reject_verify(call: CallbackQuery) -> None:
     try:
         if call.message.photo:
             await call.message.edit_caption(
-                caption=call.message.caption + "
-
-" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
+                caption=call.message.caption + "\n\n" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
             )
         else:
             await call.message.edit_text(
-                call.message.text + "
-
-" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
+                call.message.text + "\n\n" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
             )
     except Exception as e:
         log.debug("Failed to edit rejection status: %s", e)
