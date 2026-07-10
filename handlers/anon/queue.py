@@ -2,6 +2,7 @@
 
 PERF: touch_activity — fire-and-forget, не блокирует ответ.
 PERF: «Отменить поиск» перенесена в reply keyboard — убран 3-й message.answer.
+FIX v8: _background_tasks + логирование ошибок.
 """
 import asyncio
 import logging
@@ -28,14 +29,20 @@ async def _safe_touch(tg_id: int) -> None:
     """Fire-and-forget touch_activity с перехватом ошибок."""
     try:
         await user_repo.touch_activity(tg_id)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to touch activity for %d: %s", tg_id, e)
 
 
 @router.message(F.text == MenuText.BLIND_DATE)
 async def blind_date(message: Message, state: FSMContext, bot: Bot) -> None:
     """Обработчик входа в анонимный чат."""
-    user = await user_repo.get_user(message.from_user.id)
+    try:
+        user = await user_repo.get_user(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to load user %d for blind date: %s", message.from_user.id, e)
+        await message.answer("Не удалось загрузить профиль 😕")
+        return
+
     if not user or not user["name"]:
         await message.answer(Message.CREATE_PROFILE_FIRST)
         return
@@ -46,7 +53,12 @@ async def blind_date(message: Message, state: FSMContext, bot: Bot) -> None:
     _background_tasks.add(_task)
     _task.add_done_callback(_background_tasks.discard)
 
-    status, partner = await anon_repo.anon_find_or_queue(message.from_user.id)
+    try:
+        status, partner = await anon_repo.anon_find_or_queue(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to find/queue for %d: %s", message.from_user.id, e)
+        await message.answer("Ошибка поиска собеседника 😕", reply_markup=MAIN_MENU)
+        return
 
     if status == "in_session":
         await message.answer(
@@ -64,8 +76,11 @@ async def blind_date(message: Message, state: FSMContext, bot: Bot) -> None:
             reply_markup=ANON_SEARCH_MENU,
         )
     elif status == "matched":
-        await _notify_matched(bot, message.from_user.id)
-        await _notify_matched(bot, partner)
+        try:
+            await _notify_matched(bot, message.from_user.id)
+            await _notify_matched(bot, partner)
+        except Exception as e:
+            log.error("Failed to notify matched users %d <-> %d: %s", message.from_user.id, partner, e)
 
 
 async def _notify_matched(bot: Bot, uid: int) -> None:
@@ -100,7 +115,10 @@ async def stop_cmd(message: Message, bot: Bot) -> None:
 @router.message(F.text == MenuText.CANCEL_SEARCH)
 async def cancel_queue(message: Message, bot: Bot) -> None:
     """Отменяет поиск собеседника (кнопка в reply keyboard)."""
-    await anon_repo.anon_leave_queue(message.from_user.id)
+    try:
+        await anon_repo.anon_leave_queue(message.from_user.id)
+    except Exception as e:
+        log.error("Failed to cancel queue for %d: %s", message.from_user.id, e)
     await message.answer(Message.SEARCH_CANCELLED, reply_markup=MAIN_MENU)
 
 
@@ -110,20 +128,32 @@ async def stop_cb(call: CallbackQuery, bot: Bot) -> None:
     await call.answer()
     try:
         await call.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass  # edit_reply_markup fails if message was already modified — OK
+    except Exception as e:
+        log.debug("edit_reply_markup failed: %s", e)  # edit_reply_markup fails if message was already modified — OK
     await _end_session(call.from_user.id, bot)
 
 
 async def _end_session(uid: int, bot: Bot, notifier: Message | None = None) -> None:
     """Завершает сессию или поиск."""
-    was_in_queue = await anon_repo.anon_in_queue(uid)
-    partner = await anon_repo.anon_end(uid)
+    try:
+        was_in_queue = await anon_repo.anon_in_queue(uid)
+    except Exception as e:
+        log.error("Failed to check queue status for %d: %s", uid, e)
+        was_in_queue = False
+
+    try:
+        partner = await anon_repo.anon_end(uid)
+    except Exception as e:
+        log.error("Failed to end session for %d: %s", uid, e)
+        partner = None
 
     if partner is None:
         text = Message.SEARCH_CANCELLED if was_in_queue else Message.NOT_IN_SESSION
         if notifier is not None:
-            await notifier.answer(text, reply_markup=MAIN_MENU)
+            try:
+                await notifier.answer(text, reply_markup=MAIN_MENU)
+            except Exception as e:
+                log.error("Failed to send end session text to %d: %s", uid, e)
         else:
             try:
                 await bot.send_message(uid, text, reply_markup=MAIN_MENU)

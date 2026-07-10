@@ -4,6 +4,10 @@ FIX: InAnonChat теперь сохраняет partner_id в event-data, что
      не делал повторный запрос anon_active_partner() — убрана двойная нагрузка
      на БД при каждом сообщении в анонимном чате.
 FIX: добавлено логирование ошибок доставки.
+FIX v8: copy_message → ручная пересылка по типам контента (безопасность).
+        Вместо copy_message, который копирует всё как есть (включая caption,
+        reply_markup и пр.), используем явную отправку по типу контента.
+        Это предотвращает утечку метаданных и потенциальные проблемы безопасности.
 """
 import logging
 
@@ -20,7 +24,7 @@ from data.enums import CallbackPrefix, AnonAction
 from keyboards import MAIN_MENU, anon_session_kb
 from services.anon_rate_limiter import check_rate_limit
 from services.badge_formatter import format_badge_card
-from services.badge_service import check_and_award
+from services.badge_service import check_and_award, invalidate_award_cache
 from services.notification import announce_match
 from services.relationship_service import RelationshipService, add_message_event
 import asyncio
@@ -28,25 +32,7 @@ import asyncio
 
 log = logging.getLogger("iskra." + __name__.split(".")[-1])
 
-async def _safe_send(coro, fallback=None):
-    """Safe wrapper for Telegram send operations."""
-    try:
-        return await coro
-    except TelegramRetryAfter as e:
-        await asyncio.sleep(e.retry_after)
-        try:
-            return await coro
-        except Exception:
-            pass
-    except TelegramForbiddenError:
-        pass
-    except Exception:
-        if fallback:
-            try:
-                return await fallback
-            except Exception:
-                pass
-    return None
+_background_tasks: set[asyncio.Task] = set()
 
 router = Router()
 log = logging.getLogger("iskra.anon")
@@ -123,6 +109,9 @@ async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
 
     FIX: partner_id передаётся из фильтра InAnonChat через keyword argument,
     вместо повторного запроса anon_active_partner() — убрана двойная нагрузка на БД.
+
+    FIX v8: ручная пересылка по типам контента вместо copy_message.
+    copy_message копирует ВСЕ метаданные, что потенциально небезопасно.
     """
     allowed, wait = check_rate_limit(message.from_user.id)
     if not allowed:
@@ -132,15 +121,97 @@ async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
     await user_repo.increment_anon_messages(message.from_user.id)
     try:
         await add_message_event(message.from_user.id, anon_partner_id)
-    except Exception:
-        pass
-
-    try:
-        await bot.copy_message(
-            chat_id=anon_partner_id,
-            from_chat_id=message.chat.id,
-            message_id=message.message_id,
-        )
     except Exception as e:
-        log.warning("Не удалось переслать сообщение %d → %d: %s", message.from_user.id, anon_partner_id, e)
+        log.debug("Failed to add message event: %s", e)
+
+    # FIX v8: ручная пересылка по типу контента вместо copy_message
+    try:
+        if message.text:
+            await bot.send_message(anon_partner_id, message.text)
+        elif message.photo:
+            await bot.send_photo(
+                anon_partner_id,
+                photo=message.photo[-1].file_id,
+                caption=message.caption or "",
+            )
+        elif message.voice:
+            await bot.send_voice(
+                anon_partner_id,
+                voice=message.voice.file_id,
+                caption=message.caption or "",
+            )
+        elif message.video:
+            await bot.send_video(
+                anon_partner_id,
+                video=message.video.file_id,
+                caption=message.caption or "",
+            )
+        elif message.video_note:
+            await bot.send_video_note(
+                anon_partner_id,
+                video_note=message.video_note.file_id,
+            )
+        elif message.sticker:
+            await bot.send_sticker(
+                anon_partner_id,
+                sticker=message.sticker.file_id,
+            )
+        elif message.document:
+            await bot.send_document(
+                anon_partner_id,
+                document=message.document.file_id,
+                caption=message.caption or "",
+            )
+        elif message.audio:
+            await bot.send_audio(
+                anon_partner_id,
+                audio=message.audio.file_id,
+                caption=message.caption or "",
+            )
+        elif message.animation:
+            await bot.send_animation(
+                anon_partner_id,
+                animation=message.animation.file_id,
+                caption=message.caption or "",
+            )
+        elif message.location:
+            await bot.send_location(
+                anon_partner_id,
+                latitude=message.location.latitude,
+                longitude=message.location.longitude,
+            )
+        elif message.contact:
+            await bot.send_contact(
+                anon_partner_id,
+                phone_number=message.contact.phone_number,
+                first_name=message.contact.first_name,
+                last_name=message.contact.last_name or "",
+            )
+        else:
+            # Fallback для неподдерживаемых типов
+            await bot.send_message(
+                anon_partner_id,
+                "[Получено неподдерживаемое сообщение]"
+            )
+    except TelegramRetryAfter as e:
+        log.warning("Rate limit relaying message %d → %d: retry after %s",
+                    message.from_user.id, anon_partner_id, e.retry_after)
+        await asyncio.sleep(e.retry_after)
+        try:
+            # Retry with text fallback
+            if message.text:
+                await bot.send_message(anon_partner_id, message.text)
+            else:
+                await bot.send_message(anon_partner_id, "[Сообщение не доставлено — попробуйте позже]")
+        except Exception as e2:
+            log.error("Failed to retry relay %d → %d: %s",
+                      message.from_user.id, anon_partner_id, e2)
+            await message.answer(Msg.DELIVERY_FAILED)
+    except TelegramForbiddenError:
+        log.warning("User %d blocked bot, cannot relay from %d",
+                    anon_partner_id, message.from_user.id)
+        await message.answer(Msg.DELIVERY_FAILED)
+    except Exception as e:
+        log.error("Failed to relay message %d → %d: %s",
+                  message.from_user.id, anon_partner_id, e)
         await message.answer(Msg.DELIVERY_FAILED)
