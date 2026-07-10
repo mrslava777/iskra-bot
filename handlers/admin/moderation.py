@@ -27,14 +27,14 @@ async def cb_ban_help(call: CallbackQuery) -> None:
     if not is_admin(call.from_user.id):
         return await call.answer(Msg.ADMIN_ONLY)
     text = (
-        f"{EMOJI.REPORT} <b>Бан / Разбан</b>
+        f"{EMOJI.REPORT} <b>Бан / Разбан</b>\n"
 
 "
-        "Отправь команду:
+        "Отправь команду:\n"
 "
-        f"<code>{Cmd.BAN.value} 123456789</code> — забанить
+        f"<code>{Cmd.BAN.value} 123456789</code> — забанить\n"
 "
-        f"<code>{Cmd.UNBAN.value} 123456789</code> — разбанить
+        f"<code>{Cmd.UNBAN.value} 123456789</code> — разбанить\n"
 
 "
         "Или нажми кнопку бана в разделе «Жалобы»."
@@ -83,8 +83,7 @@ async def cb_reports(call: CallbackQuery) -> None:
     buttons.append([InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.MENU.value))])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await safe_send(
-        call.message.edit_text("
-".join(lines), reply_markup=kb),
+        call.message.edit_text("\n".join(lines), reply_markup=kb),
         log_prefix="reports",
     )
     await call.answer()
