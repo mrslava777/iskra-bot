@@ -11,16 +11,13 @@
 import logging
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message
 
 log = logging.getLogger("iskra.nsfw_middleware")
 
 
 class NSFWMiddleware(BaseMiddleware):
     """Middleware для проверки всех фото на NSFW-контент."""
-
-    # Состояния, где фото ожидается и НЕ проверяется (админские, верификация)
-    _SKIP_STATES = frozenset()
 
     async def __call__(self, handler, event, data):
         # Работаем только с сообщениями, содержащими фото
@@ -53,10 +50,8 @@ class NSFWMiddleware(BaseMiddleware):
                 # Отправляем уведомление пользователю
                 try:
                     await event.answer(
-                        "⚠️ <b>Фото заблокировано</b>
-
-"
-                        "Контент не прошёл автоматическую модерацию. "
+                        "<b>Фото заблокировано</b>\n\n"
+                        "Контент не прошел автоматическую модерацию. "
                         "Если это ошибка — обратись в поддержку.",
                         parse_mode="HTML",
                     )
@@ -66,8 +61,6 @@ class NSFWMiddleware(BaseMiddleware):
 
         except Exception as e:
             log.error("NSFW: check failed for user %d: %s", event.from_user.id, e)
-            # При ошибке проверки — пропускаем (fail-open для UX,
-            # fail-close для безопасности: раскомментируй return None)
-            # return None
+            # При ошибке проверки — пропускаем (fail-open для UX)
 
         return await handler(event, data)
