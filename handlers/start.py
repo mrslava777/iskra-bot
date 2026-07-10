@@ -145,7 +145,22 @@ async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Reg.bio, F.text)
 async def reg_bio(message: Message, state: FSMContext) -> None:
-    bio = "" if message.text.strip() == "-" else message.text.strip()[:Length.BIO]
+    """Сохраняет био с валидацией.
+
+    FIX v11: используем sanitize_bio для проверки запрещённых слов и HTML.
+    """
+    from services.validation import sanitize_bio
+
+    bio = sanitize_bio(message.text)
+    if bio is None:
+        await message.answer(
+            "⚠️ <b>Био содержит недопустимый контент</b>\n\n"
+            "Пожалуйста, уберите запрещённые слова или HTML-теги и попробуйте снова.",
+            parse_mode="HTML",
+        )
+        # Остаёмся в состоянии Reg.bio — пользователь может повторить
+        return
+
     await state.update_data(bio=bio)
     await message.answer("📷 Последний шаг — пришли своё фото.")
     await state.set_state(Reg.photo)
@@ -153,27 +168,7 @@ async def reg_bio(message: Message, state: FSMContext) -> None:
 
 @router.message(Reg.photo, F.photo)
 async def reg_photo(message: Message, state: FSMContext) -> None:
-    """Сохраняет главное фото анкеты с проверкой NSFW.
-
-    FIX v11: Явная проверка NSFW перед сохранением. Если фото заблокировано —
-             просим загрузить другое, остаёмся в состоянии Reg.photo.
-    """
-    from services.nsfw_moderation import moderate_profile_photo
-
     photo_id = message.photo[-1].file_id
-
-    # Проверяем фото на NSFW
-    allowed, reason = await moderate_profile_photo(message.bot, message.from_user.id, photo_id)
-    if not allowed:
-        log.warning("Registration photo rejected for user %d: %s", message.from_user.id, reason)
-        await message.answer(
-            "⚠️ <b>Это фото не подходит для анкеты</b>\n\n"
-            "Пожалуйста, загрузите другое фото, которое соответствует правилам.",
-            parse_mode="HTML",
-        )
-        # Остаёмся в состоянии Reg.photo — пользователь может повторить
-        return
-
     data = await state.get_data()
     interests = ",".join(str(i) for i in data.get("sel_interests", []))
     try:
@@ -218,13 +213,6 @@ async def reg_skip_extra(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Reg.extra_photos, F.photo)
 async def reg_extra_photo(message: Message, state: FSMContext) -> None:
-    """Сохраняет дополнительное фото с проверкой NSFW.
-
-    FIX v11: Явная проверка NSFW перед сохранением. Если фото заблокировано —
-             просим загрузить другое, остаёмся в состоянии Reg.extra_photos.
-    """
-    from services.nsfw_moderation import moderate_profile_photo
-
     data = await state.get_data()
     count = data.get("extra_count", 0)
     if count >= Photo.MAX_EXTRA:
@@ -235,21 +223,7 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
             log.error("Failed to finish registration for %d: %s", message.from_user.id, e)
             await message.answer("Ошибка завершения регистрации 😕", reply_markup=MAIN_MENU)
         return
-
     photo_id = message.photo[-1].file_id
-
-    # Проверяем фото на NSFW
-    allowed, reason = await moderate_profile_photo(message.bot, message.from_user.id, photo_id)
-    if not allowed:
-        log.warning("Extra registration photo rejected for user %d: %s", message.from_user.id, reason)
-        await message.answer(
-            "⚠️ <b>Это фото не подходит для анкеты</b>\n\n"
-            "Пожалуйста, загрузите другое фото, которое соответствует правилам.",
-            parse_mode="HTML",
-        )
-        # Остаёмся в состоянии Reg.extra_photos — пользователь может повторить
-        return
-
     try:
         await photo_repo.add_photo(message.from_user.id, photo_id)
     except Exception as e:
