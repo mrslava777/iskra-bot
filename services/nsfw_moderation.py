@@ -8,6 +8,7 @@
 
 FIX: все внешние API-вызовы — с таймаутом и fallback.
 FIX v9: добавлены детальные логи для отладки.
+FIX v10: пороги NSFW снижены (0.8→0.3), учитывается suggestive контент.
 """
 import asyncio
 import hashlib
@@ -87,12 +88,22 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
                     result = await resp.json()
                     log.info("Sightengine raw response: %s", result)
                     nudity = result.get("nudity", {})
-                    # score от 0 до 1, где 1 = точно NSFW
+
+                    # FIX v10: учитываем ВСЕ типы nudity, включая suggestive
                     score = max(
                         nudity.get("sexual_activity", 0),
                         nudity.get("sexual_display", 0),
                         nudity.get("erotica", 0),
+                        nudity.get("very_suggestive", 0) * 0.7,
+                        nudity.get("suggestive", 0) * 0.4,
+                        nudity.get("mildly_suggestive", 0) * 0.2,
                     )
+
+                    # Если none очень низкий — значит что-то есть
+                    none_score = nudity.get("none", 1)
+                    if none_score < 0.3:
+                        score = max(score, 1 - none_score)
+
                     violence = result.get("violence", {}).get("prob", 0)
                     log.info("Sightengine scores: nudity=%.3f, violence=%.3f", score, violence)
                     return score, violence
@@ -168,7 +179,7 @@ async def _heuristic_check(
 
     # 2. Проверка подписи на запрещённые слова
     if caption:
-        banned_words = {"xxx", "porn", "nude", "naked", "sex", "18+", "onlyfans"}
+        banned_words = {"xxx", "porn", "nude", "naked", "sex", "18+", "onlyfans", "nsfw", "adult"}
         caption_lower = caption.lower()
         for word in banned_words:
             if word in caption_lower:
@@ -229,8 +240,9 @@ async def check_photo(
         "ai_nsfw_score": round(nsfw_score, 3),
         "ai_violence_score": round(violence_score, 3),
     }
-    log.info("AI scores: nudity=%.3f, violence=%.3f, threshold=%.1f", 
-            nsfw_score, violence_score, NSFWThreshold.NUDITY)
+    # FIX v10: порог снижен с 0.8 до 0.3 для nudity, 0.5 для violence
+    log.info("AI scores: nudity=%.3f, violence=%.3f, threshold_nudity=%.1f, threshold_violence=%.1f", 
+            nsfw_score, violence_score, NSFWThreshold.NUDITY, NSFWThreshold.VIOLENCE)
 
     if nsfw_score >= NSFWThreshold.NUDITY or violence_score >= NSFWThreshold.VIOLENCE:
         log.info("AI check BLOCKED photo (score above threshold)")
@@ -382,7 +394,7 @@ CREATE TABLE IF NOT EXISTS nsfw_banned_hashes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     image_hash  TEXT UNIQUE NOT NULL,
     reason      TEXT,
-    created_at  INTEGER DEFAULT (strftime('%s','now'))
+    created_at  INTEGER DEFAULT (strftime(''%s'',''now''))
 );
 
 -- Таблица подозрительного контента на ручную проверку
@@ -392,9 +404,9 @@ CREATE TABLE IF NOT EXISTS nsfw_review_queue (
     message_id  INTEGER,
     chat_id     INTEGER,
     ai_score    REAL,
-    status      TEXT DEFAULT 'pending',  -- pending, approved, rejected
+    status      TEXT DEFAULT ''pending'',  -- pending, approved, rejected
     reviewed_by INTEGER,
-    created_at  INTEGER DEFAULT (strftime('%s','now')),
+    created_at  INTEGER DEFAULT (strftime(''%s'',''now'')),
     reviewed_at INTEGER
 );
 
