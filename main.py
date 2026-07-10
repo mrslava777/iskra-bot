@@ -1,21 +1,12 @@
-"""Главный файл бота Искра — Long Polling mode.
+"""Главный файл бота Искра — Webhook mode.
 
-Переход с webhook на polling:
-- Убирает overhead aiohttp-сервера на каждый update
-- Убирает задержку webhook → aiohttp → dispatcher → handler
-- Polling забирает пачки update'ов напрямую, без HTTP-сервера
-- Проще деплоить (не нужен WEBHOOK_HOST, сертификаты, etc.)
-- Health-check поднимается отдельным легковесным сервером
+Переход с polling на webhook:
+- Один aiohttp.Application обрабатывает /health, /ready, /metrics и POST /webhook
+- Webhook-обновления передаются в Dispatcher через feed_raw_update()
+- Семафор ограничивает одновременно обрабатываемые update'ы
+- При startup регистрируется webhook, при shutdown — удаляется
 
-FIX v6: TelegramUnauthorizedError теперь ловится и выводит понятное сообщение
-        вместо километрового traceback — помогает диагностировать невалидный токен.
-FIX v6: cleanup_shown_profiles обёрнут в try/except — не блокирует старт при
-        проблемах с параметрами aiosqlite.
-FIX v7: добавлен глобальный error handler для aiogram.
-        Исправлена обработка CancelledError — теперь не ловится bare except.
-        Добавлены импорты TelegramRetryAfter, TelegramForbiddenError.
-FIX v8: подключён RateLimitMiddleware для всех update'ов.
-FIX v9: подключён NSFWMiddleware для проверки всех фото на NSFW.
+Все middleware, error handlers, Sentry, Prometheus сохранены без изменений.
 """
 import asyncio
 import logging
@@ -34,7 +25,7 @@ from aiogram.exceptions import (
 )
 from aiogram.types import ErrorEvent
 
-from config import BOT_TOKEN, SENTRY_DSN
+from config import BOT_TOKEN, SENTRY_DSN, WEBHOOK_URL
 from database.connection import close_db_pool, ping_db, wait_until_db_ready
 from handlers import setup_routers
 from middlewares.rate_limit import RateLimitMiddleware
@@ -45,6 +36,11 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("iskra.main")
 
 PORT = int(os.getenv("PORT", "8080"))
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_FULL_URL = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+
+# Семафор для ограничения одновременно обрабатываемых update'ов
+_update_semaphore = asyncio.Semaphore(100)
 
 
 async def _health_handler(request: web.Request) -> web.Response:
@@ -74,23 +70,37 @@ async def _metrics_handler(request: web.Request) -> web.Response:
         return web.Response(status=500, text="error")
 
 
-async def _start_health_server() -> web.AppRunner:
-    """Запускает минимальный HTTP-сервер только для health-check."""
-    app = web.Application()
-    app.router.add_get("/health", _health_handler)
-    app.router.add_get("/ready", _health_handler)
-    app.router.add_get("/", _health_handler)
-    app.router.add_get("/metrics", _metrics_handler)
-    runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    log.info("Health-check сервер запущен на порту %s", PORT)
-    return runner
+async def _webhook_handler(request: web.Request) -> web.Response:
+    """Обработчик входящих webhook-обновлений от Telegram.
+
+    Читает JSON-тело, передаёт update в Dispatcher через feed_raw_update().
+    Семафор ограничивает количество одновременно обрабатываемых update'ов.
+    """
+    try:
+        raw_update = await request.json()
+    except Exception as e:
+        log.warning("Failed to parse webhook body: %s", e)
+        return web.Response(status=400, text="Bad Request")
+
+    bot: Bot = request.app["bot"]
+    dp: Dispatcher = request.app["dp"]
+
+    async with _update_semaphore:
+        try:
+            await dp.feed_raw_update(bot, raw_update)
+        except Exception as e:
+            log.exception("Error processing webhook update: %s", e)
+            # Возвращаем 200 OK, чтобы Telegram не ретраил update
+            # (иначе может прийти дубль)
+
+    return web.Response(status=200)
 
 
-async def on_startup(bot: Bot) -> None:
-    """Действия при запуске: прогрев пула, очистка, удаление старого webhook."""
+async def on_startup(app: web.Application) -> None:
+    """Действия при запуске: прогрев БД, регистрация webhook, очистка."""
+    bot: Bot = app["bot"]
+    dp: Dispatcher = app["dp"]
+
     # Ждём, пока схема прогреется
     try:
         await wait_until_db_ready(timeout=60)
@@ -100,17 +110,20 @@ async def on_startup(bot: Bot) -> None:
     except Exception as e:
         log.error("DB not ready after wait_until_db_ready: %s", e)
 
-    # Удаляем webhook если был (переход с webhook на polling)
+    # Регистрируем webhook
     try:
-        await bot.delete_webhook(drop_pending_updates=False)
-        log.info("Webhook удалён (polling mode)")
+        await bot.set_webhook(
+            url=WEBHOOK_FULL_URL,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
+        log.info("Webhook registered at %s", WEBHOOK_FULL_URL)
     except TelegramUnauthorizedError:
-        log.error("Невозможно удалить webhook: токен невалиден. Проверь BOT_TOKEN.")
+        log.error("Невозможно зарегистрировать webhook: токен невалиден. Проверь BOT_TOKEN.")
         raise
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        log.warning("Failed to delete webhook: %s", e)
+        log.warning("Failed to set webhook: %s", e)
 
     # Очистка shown_profiles
     try:
@@ -125,8 +138,24 @@ async def on_startup(bot: Bot) -> None:
         log.warning("Не удалось очистить shown_profiles: %s", e)
 
 
-async def on_shutdown(bot: Bot) -> None:
-    """Закрываем ресурсы при остановке."""
+async def on_shutdown(app: web.Application) -> None:
+    """Закрываем ресурсы при остановке: удаляем webhook, закрываем сессию и БД."""
+    bot: Bot = app["bot"]
+
+    log.info("Удаляю webhook...")
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+        log.info("Webhook удалён")
+    except Exception as e:
+        log.warning("Failed to delete webhook: %s", e)
+
+    log.info("Закрываю сессию бота...")
+    try:
+        await bot.session.close()
+        log.info("Сессия бота закрыта")
+    except Exception as e:
+        log.warning("Failed to close bot session: %s", e)
+
     log.info("Закрываю пул соединений с БД...")
     await close_db_pool()
     log.info("Бот остановлен")
@@ -175,6 +204,14 @@ async def main() -> None:
         )
         sys.exit(1)
 
+    # Проверяем WEBHOOK_URL
+    if not WEBHOOK_URL:
+        log.error(
+            "WEBHOOK_URL не задан! Проверь переменные окружения. "
+            "Пример: WEBHOOK_URL=https://example.up.railway.app"
+        )
+        sys.exit(1)
+
     bot = Bot(
         token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
@@ -196,39 +233,39 @@ async def main() -> None:
     dp.message.outer_middleware(NSFWMiddleware())
     log.info("NSFWMiddleware подключён")
 
-    # Startup/Shutdown
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
+    # Создаём единый aiohttp Application
+    app = web.Application()
+    app["bot"] = bot
+    app["dp"] = dp
 
-    # Health-check сервер для Railway (отдельно от бота)
-    health_runner = await _start_health_server()
+    # Регистрируем маршруты
+    app.router.add_get("/health", _health_handler)
+    app.router.add_get("/ready", _health_handler)
+    app.router.add_get("/", _health_handler)
+    app.router.add_get("/metrics", _metrics_handler)
+    app.router.add_post(WEBHOOK_PATH, _webhook_handler)
 
+    # Startup / Shutdown hooks
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_shutdown)
+
+    # Запускаем сервер
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    log.info("Сервер запущен на порту %s (webhook: %s)", PORT, WEBHOOK_FULL_URL)
+
+    # Бесконечное ожидание — сервер работает пока не получит сигнал завершения
     try:
-        # Запускаем polling — основной цикл
-        log.info("Запускаю бота в режиме long polling...")
-        await dp.start_polling(
-            bot,
-            allowed_updates=dp.resolve_used_update_types(),
-            close_bot_session=True,
-            polling_timeout=30,
-            tasks_concurrency_limit=50,
-        )
-    except TelegramUnauthorizedError:
-        log.error("=" * 60)
-        log.error("ОШИБКА: Telegram токен невалиден (Unauthorized)")
-        log.error("Проверь BOT_TOKEN в переменных окружения Railway.")
-        log.error("Возможные причины:")
-        log.error("  1. Токен скопирован не полностью")
-        log.error("  2. Бот был удалён через @BotFather")
-        log.error("  3. Токен содержит лишние пробелы или символы")
-        log.error("=" * 60)
-        sys.exit(1)
+        while True:
+            await asyncio.sleep(3600)
     except asyncio.CancelledError:
-        log.info("Polling cancelled (shutdown)")
+        log.info("Получен сигнал завершения")
         raise
     finally:
-        await health_runner.cleanup()
-        log.info("Health-check сервер остановлен")
+        await runner.cleanup()
+        log.info("Сервер остановлен")
 
 
 if __name__ == "__main__":
@@ -237,6 +274,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log.info("Прервано пользователем (KeyboardInterrupt)")
     except TelegramUnauthorizedError:
-        # Дополнительная защита — если ошибка вылетела за пределами main()
         log.error("TelegramUnauthorizedError: проверь BOT_TOKEN")
         sys.exit(1)
