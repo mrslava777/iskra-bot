@@ -1,29 +1,31 @@
-"""Подключение к БД (SQLite через aiosqlite): пул соединений + сериализация записи.
+"""Подключение к БД (SQLite через aiosqlite): пул соединений.
 
-ГЛАВНЫЙ ФИКС (общее соединение под конкурентной нагрузкой):
-Раньше на весь процесс жило ОДНО соединение, и параллельные корутины
-коммитили чужие незавершённые записи. Теперь пул из POOL_SIZE отдельных
-соединений: каждый блок db() берёт своё, значит свою транзакцию.
+ГЛАВНЫЙ ФИКС (общее соединение): раньше на весь процесс жило ОДНО соединение,
+и параллельные корутины коммитили чужие незавершённые записи. Теперь пул из
+POOL_SIZE отдельных соединений — каждый блок db() берёт своё, значит свою
+транзакцию, и коммитит только себя. Это и решает исходную проблему.
 
-FIX (thread error): НЕ трогаем conn.isolation_level напрямую (это лезет в
-sqlite-объект из чужого потока → "SQLite objects created in a thread can only
-be used in that same thread"). Оставляем стандартный режим aiosqlite: DML
-авто-открывает транзакцию, а conn.commit()/rollback() её закрывают. PRAGMA
-выставляем через conn.execute() (уходит в worker-поток соединения).
+FIX (лаги): убран глобальный write-лок. Он сериализовал ВСЕ обращения (а db()
+по умолчанию write=True, его дёргают touch_activity, чтения репозиториев и т.д.),
+из-за чего всё вставало в одну очередь → лаги под нагрузкой. Сериализацию
+записи бесплатно обеспечивает сам SQLite в режиме WAL: один писатель за раз,
+остальные ждут по busy_timeout. Чтения идут параллельно по разным соединениям.
 
-Атомарность read-modify-write обеспечивается глобальным write-локом: писатели
-идут строго по одному, каждый на своём соединении, и коммитят только себя.
-Гонок и "database is locked" нет.
+FIX (thread error): НЕ трогаем conn.isolation_level напрямую (падало с
+"SQLite objects created in a thread..."). Используем стандартный режим
+aiosqlite: DML авто-открывает транзакцию, commit()/rollback() закрывают её.
 
-Совместимость: `async with db() as conn` не изменился (write=True по умолчанию).
-Чистые чтения можно звать db(write=False) — параллельно, без write-лока.
+Совместимость: `async with db() as conn` не изменился. Параметр write оставлен:
+  write=True  → по завершении блока commit() (по умолчанию, безопасно);
+  write=False → без commit (чистые чтения; чуть дешевле).
+Оба варианта берут отдельное соединение из пула и работают параллельно.
 """
 import asyncio
 import logging
 import time as _time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator
 
 import aiosqlite
 
@@ -39,7 +41,6 @@ SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 _pool: "asyncio.Queue[aiosqlite.Connection]" = asyncio.Queue()
 _all_conns: list[aiosqlite.Connection] = []
 _pool_lock = asyncio.Lock()
-_write_lock = asyncio.Lock()
 _pool_ready = False
 
 _schema_ready = False
@@ -47,16 +48,12 @@ _schema_lock = asyncio.Lock()
 
 
 async def _configure_conn(conn: aiosqlite.Connection) -> None:
-    """PRAGMA-настройки. Всё через execute() → выполняется в потоке соединения.
-
-    ВАЖНО: не трогаем conn.isolation_level напрямую — это обращение к sqlite
-    из главного потока и падает с thread-ошибкой.
-    """
+    """PRAGMA через execute() (уходит в поток соединения). isolation_level не трогаем."""
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA synchronous=NORMAL")
     await conn.execute("PRAGMA foreign_keys=ON")
-    await conn.execute("PRAGMA busy_timeout=5000")
+    await conn.execute("PRAGMA busy_timeout=5000")  # ждём до 5с, если пишет другой
     await conn.commit()
 
 
@@ -144,13 +141,12 @@ async def _ensure_schema() -> None:
         if _schema_ready:
             return
         await _ensure_pool()
-        async with _write_lock:
-            conn = await aiosqlite.connect(DB_PATH)
-            try:
-                await _configure_conn(conn)
-                await init_schema(conn)
-            finally:
-                await conn.close()
+        conn = await aiosqlite.connect(DB_PATH)
+        try:
+            await _configure_conn(conn)
+            await init_schema(conn)
+        finally:
+            await conn.close()
         _schema_ready = True
         log.info("Схема БД инициализирована")
 
@@ -161,35 +157,27 @@ async def _ensure_schema() -> None:
 async def db(write: bool = True) -> AsyncGenerator[aiosqlite.Connection, None]:
     """Контекстный менеджер для работы с БД.
 
-    write=True (по умолчанию): под глобальным write-локом. Писатели идут по
-      одному, каждый на своём соединении и коммитит только себя → атомарный
-      read-modify-write без гонок.
-    write=False: параллельное чтение в WAL без лока (лента, статистика).
+    Берёт СВОЁ соединение из пула → своя транзакция, не пересекается с чужими.
+    write=True (по умолчанию): по завершении блока commit().
+    write=False: без commit (чистые чтения, чуть дешевле).
 
-    Совместимо со старым `async with db() as conn`.
+    Сериализацию одновременных записей обеспечивает SQLite (WAL + busy_timeout),
+    поэтому глобального питоновского лока нет — чтения и запись идут параллельно.
     """
     await _ensure_schema()
-
-    if write:
-        async with _write_lock:
-            conn = await _pool.get()
-            try:
-                yield conn
-                await conn.commit()
-            except BaseException:
-                try:
-                    await conn.rollback()
-                except Exception as e:
-                    log.warning("rollback failed: %s", e)
-                raise
-            finally:
-                _pool.put_nowait(conn)
-    else:
-        conn = await _pool.get()
+    conn = await _pool.get()
+    try:
+        yield conn
+        if write:
+            await conn.commit()
+    except BaseException:
         try:
-            yield conn
-        finally:
-            _pool.put_nowait(conn)
+            await conn.rollback()
+        except Exception as e:
+            log.warning("rollback failed: %s", e)
+        raise
+    finally:
+        _pool.put_nowait(conn)
 
 
 async def get_single_db() -> aiosqlite.Connection:
@@ -238,7 +226,7 @@ async def wait_until_db_ready(timeout: float = 60.0) -> None:
 
 
 async def ping_db() -> bool:
-    """Проверяет живость соединения с БД (чтение, без write-лока)."""
+    """Проверяет живость соединения с БД (чтение)."""
     try:
         async with db(write=False) as conn:
             await conn.execute("SELECT 1")
