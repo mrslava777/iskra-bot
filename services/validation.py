@@ -2,6 +2,8 @@
 
 Все пользовательские строки проходят через sanitize_* перед записью в БД
 и отображением в Telegram (HTML parse_mode).
+
+FIX v11: добавлена проверка запрещённых слов в bio, name, city, ticket_text.
 """
 import html
 import re
@@ -38,13 +40,44 @@ _VALID_GENDERS = {"m", "f", "any"}
 # Интересы: CSV из цифр
 _RE_INTERESTS = re.compile(r"^\d+(?:,\d+)*$")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ЗАПРЕЩЁННЫЕ СЛОВА (NSFW / спам)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Слова, запрещённые в любом пользовательском тексте
+_BANNED_WORDS = {
+    "xxx", "porn", "nude", "naked", "sex", "18+", "onlyfans", "nsfw", "adult",
+    "hentai", "xxx", "xxx", "эротика", "порно", "голый", "голая", "секс",
+    "intim", "интим", "проститут", "проституция", "эскорт", "escort",
+    "sugar daddy", "sugar baby", "дроч", "дрочка", "мастурб", "masturb",
+    "cum", "sperm", "сперма", "минет", "анал", "anal", "blowjob", "handjob",
+    "fuck", "shit", "bitch", "whore", "slut", "cunt", "dick", "cock",
+    "хуй", "пизда", "ебать", "блядь", "шлюха", "сука", "мудак",
+}
+
+_RE_BANNED_WORDS = re.compile(
+    r"(" + "|".join(re.escape(w) for w in _BANNED_WORDS) + r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _contains_banned_words(text: str) -> Optional[str]:
+    """Проверяет текст на наличие запрещённых слов.
+
+    Returns: первое найденное слово или None.
+    """
+    if not text:
+        return None
+    match = _RE_BANNED_WORDS.search(text)
+    return match.group(1) if match else None
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SANITIZE / VALIDATE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def sanitize_name(raw: Optional[str]) -> Optional[str]:
-    """Очищает имя: strip, HTML-escape, проверка regex.
+    """Очищает имя: strip, HTML-escape, проверка regex, запрещённые слова.
 
     Returns None если валидация не пройдена.
     """
@@ -56,6 +89,10 @@ def sanitize_name(raw: Optional[str]) -> Optional[str]:
     # HTML-escape для безопасного отображения в Telegram HTML
     cleaned = html.escape(cleaned)
     if not _RE_NAME.match(cleaned):
+        return None
+    # FIX v11: проверка запрещённых слов
+    banned = _contains_banned_words(cleaned)
+    if banned:
         return None
     return cleaned
 
@@ -70,13 +107,17 @@ def sanitize_city(raw: Optional[str]) -> Optional[str]:
     cleaned = html.escape(cleaned)
     if not _RE_CITY.match(cleaned):
         return None
+    # FIX v11: проверка запрещённых слов
+    banned = _contains_banned_words(cleaned)
+    if banned:
+        return None
     return cleaned
 
 
 def sanitize_bio(raw: Optional[str], max_length: int = 300) -> Optional[str]:
-    """Очищает био: strip, HTML-escape, проверка на HTML-теги, обрезка.
+    """Очищает био: strip, HTML-escape, проверка на HTML-теги, запрещённые слова, обрезка.
 
-    Returns None если содержит raw HTML-теги (< или >).
+    Returns None если содержит raw HTML-теги (< или >) или запрещённые слова.
     """
     if not raw:
         return None
@@ -87,6 +128,10 @@ def sanitize_bio(raw: Optional[str], max_length: int = 300) -> Optional[str]:
         return None
     # Запрещаем raw HTML-теги — они ломают parse_mode=HTML
     if _RE_BIO.search(cleaned):
+        return None
+    # FIX v11: проверка запрещённых слов
+    banned = _contains_banned_words(cleaned)
+    if banned:
         return None
     cleaned = html.escape(cleaned)
     if len(cleaned) > max_length:
@@ -187,7 +232,10 @@ def validate_ticket_category(raw: Optional[str]) -> Optional[str]:
 
 
 def sanitize_ticket_text(raw: Optional[str], max_length: int = 1000) -> Optional[str]:
-    """Очищает текст тикета: strip, HTML-escape, обрезка."""
+    """Очищает текст тикета: strip, HTML-escape, запрещённые слова, обрезка.
+
+    FIX v11: добавлена проверка запрещённых слов.
+    """
     if not raw:
         return None
     cleaned = raw.strip()
@@ -195,6 +243,10 @@ def sanitize_ticket_text(raw: Optional[str], max_length: int = 1000) -> Optional
         return None
     # Запрещаем raw HTML-теги
     if _RE_BIO.search(cleaned):
+        return None
+    # FIX v11: проверка запрещённых слов
+    banned = _contains_banned_words(cleaned)
+    if banned:
         return None
     cleaned = html.escape(cleaned)
     if len(cleaned) > max_length:
