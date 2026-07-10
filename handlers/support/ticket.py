@@ -66,12 +66,9 @@ async def on_support_category(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(support_cat=cat, support_label=category.display_name)
     await state.set_state(Support.message)
     await call.message.edit_text(
-        f"{category.display_name}
-"
-        "Опишите вашу проблему одним сообщением.
-"
-        "Можете прикрепить скриншот 📷
-"
+        f"{category.display_name}\n"
+        "Опишите вашу проблему одним сообщением.\n"
+        "Можете прикрепить скриншот 📷\n"
         f"Для отмены — {Cmd.CANCEL.value}"
     )
     await call.answer()
