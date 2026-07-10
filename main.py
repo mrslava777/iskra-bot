@@ -15,6 +15,7 @@ FIX v7: добавлен глобальный error handler для aiogram.
         Исправлена обработка CancelledError — теперь не ловится bare except.
         Добавлены импорты TelegramRetryAfter, TelegramForbiddenError.
 FIX v8: подключён RateLimitMiddleware для всех update'ов.
+FIX v9: подключён NSFWMiddleware для проверки всех фото на NSFW.
 """
 import asyncio
 import logging
@@ -37,6 +38,7 @@ from config import BOT_TOKEN, SENTRY_DSN
 from database.connection import close_db_pool, ping_db, wait_until_db_ready
 from handlers import setup_routers
 from middlewares.rate_limit import RateLimitMiddleware
+from middlewares.nsfw_middleware import NSFWMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 logging.basicConfig(level=logging.INFO)
@@ -188,6 +190,11 @@ async def main() -> None:
     # Rate limiting middleware для ВСЕХ update'ов
     dp.update.outer_middleware(RateLimitMiddleware())
     log.info("RateLimitMiddleware подключён")
+
+    # NSFW middleware — проверяет все фото перед обработкой
+    # ВАЖНО: подключаем ПОСЛЕ rate limit, чтобы не тратить API-запросы на флуд
+    dp.message.outer_middleware(NSFWMiddleware())
+    log.info("NSFWMiddleware подключён")
 
     # Startup/Shutdown
     dp.startup.register(on_startup)
