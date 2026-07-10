@@ -3,6 +3,9 @@
 PERF: добавлен in-memory TTL-кэш для get_user().
 Каждый handler-chain вызывает get_user() 2-5 раз для одного и того же tg_id.
 Кэш на 10 секунд убирает 50-80% запросов к users без риска для консистентности.
+
+FIX v8: SQL allowlist — предотвращает инъекцию через динамические поля upsert_user.
+        Только разрешённые поля могут быть использованы в UPDATE.
 """
 import time
 from collections import OrderedDict
@@ -15,6 +18,14 @@ from database.connection import db
 _user_cache: OrderedDict[int, tuple[Optional[dict], float]] = OrderedDict()
 _USER_CACHE_TTL = 10  # секунд
 _USER_CACHE_MAX = 500
+
+# SQL allowlist: только эти поля могут быть обновлены через upsert_user
+# Предотвращает SQL-инъекцию через динамические поля
+_USER_FIELD_ALLOWLIST = {
+    "username", "name", "age", "gender", "seeking", "city",
+    "bio", "interests", "photo_id", "active", "verified",
+    "min_age", "max_age",
+}
 
 
 def _invalidate_user(tg_id: int) -> None:
@@ -79,57 +90,34 @@ async def upsert_user(
     min_age: Optional[int] = None,
     max_age: Optional[int] = None,
 ) -> None:
+    """Обновляет или создаёт пользователя.
+
+    FIX v8: SQL allowlist — только разрешённые поля попадают в запрос.
+    """
     _invalidate_user(tg_id)
     import time as _time
     now = int(_time.time())
+
+    # Собираем только разрешённые поля
+    locals_dict = locals()
+    fields_to_update = {}
+    for field_name in _USER_FIELD_ALLOWLIST:
+        value = locals_dict.get(field_name)
+        if value is not None:
+            fields_to_update[field_name] = value
+
     async with db() as conn:
         # Check if user exists
         cur = await conn.execute("SELECT 1 FROM users WHERE tg_id = ?", (tg_id,))
         exists = await cur.fetchone()
 
         if exists:
-            # Update existing user
+            # Update existing user — только разрешённые поля
             fields = []
             params = []
-            if username is not None:
-                fields.append("username = ?")
-                params.append(username)
-            if name is not None:
-                fields.append("name = ?")
-                params.append(name)
-            if age is not None:
-                fields.append("age = ?")
-                params.append(age)
-            if gender is not None:
-                fields.append("gender = ?")
-                params.append(gender)
-            if seeking is not None:
-                fields.append("seeking = ?")
-                params.append(seeking)
-            if city is not None:
-                fields.append("city = ?")
-                params.append(city)
-            if bio is not None:
-                fields.append("bio = ?")
-                params.append(bio)
-            if interests is not None:
-                fields.append("interests = ?")
-                params.append(interests)
-            if photo_id is not None:
-                fields.append("photo_id = ?")
-                params.append(photo_id)
-            if active is not None:
-                fields.append("active = ?")
-                params.append(active)
-            if verified is not None:
-                fields.append("verified = ?")
-                params.append(verified)
-            if min_age is not None:
-                fields.append("min_age = ?")
-                params.append(min_age)
-            if max_age is not None:
-                fields.append("max_age = ?")
-                params.append(max_age)
+            for field_name, value in fields_to_update.items():
+                fields.append(f"{field_name} = ?")
+                params.append(value)
 
             fields.append("last_active = ?")
             params.append(now)
