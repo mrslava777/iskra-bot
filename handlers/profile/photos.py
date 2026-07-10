@@ -1,22 +1,25 @@
 """Управление фотографиями в анкете.
 
-FIX v9: устранены баги UI (сироты-надписи при «Назад», фото не показывалось
- после добавления). Единый паттерн: удалить старое сообщение → прислать
- свежее фото-сообщение с актуальным счётчиком.
+FIX v11 (скорость): навигация меню фото снова мгновенная. Вместо
+ «удалить сообщение → отправить новое» (2 round-trip на каждый тык)
+ редактируем ОДНО сообщение через edit_media / edit_caption (1 запрос).
+ При этом баг с «надписью-сиротой» не возвращается: мы не используем
+ edit_text на фото-сообщении (он падал и слал текст без фото), а всегда
+ работаем с медиа-сообщением.
 
-FIX v10 (скорость восприятия): при получении фото сразу шлём «⏳ Проверяю
- фото...», затем правим это же сообщение на результат. NSFW-проверка и
- сохранение идут параллельно (asyncio.gather) — обе операции всё равно
- качают/используют один file_id, но ожидание идёт одновременно, а не
- последовательно. Порядок безопасности сохранён: если модерация не прошла,
- добавленное фото откатывается.
+Идея: меню фото живёт в ОДНОМ фото-сообщении. Мы его редактируем:
+  - открытие меню: показать главное фото + подпись-счётчик + клавиатуру;
+  - «добавить»: сменить подпись на «Пришли фото» (то же сообщение);
+  - фото получено: edit_media → новый кадр + счётчик + клавиатура;
+  - удаление: edit_media → оставшийся кадр + счётчик;
+  - «назад»: edit_media → профиль (главное фото + анкета).
+message_id меню храним в FSM, чтобы редактировать его после присланного фото.
 """
-import asyncio
 import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InputMediaPhoto
 
 import repositories.photo_repo as photo_repo
 import repositories.user_repo as user_repo
@@ -31,48 +34,73 @@ log = logging.getLogger("iskra." + __name__.split(".")[-1])
 router = Router()
 
 
+def _menu_caption(count: int, note: str | None = None) -> str:
+    header = f"🖼 Управление фото\n\nЗагружено: {count}/{Photo.MAX_TOTAL}"
+    return f"{note}\n\n{header}" if note else header
+
+
+async def _show_menu_via_edit(
+    call: CallbackQuery,
+    tg_id: int,
+    photo_id: str | None = None,
+    note: str | None = None,
+) -> int | None:
+    """Редактирует сообщение call.message в меню фото за один запрос.
+
+    Возвращает message_id меню (для последующего редактирования) или None.
+    """
+    photos = await photo_repo.get_photos(tg_id)
+    count = len(photos)
+    caption = _menu_caption(count, note)
+    kb = photos_manage_kb(count)
+    show = photo_id or (photos[0]["photo_id"] if photos else None)
+
+    msg = call.message
+    try:
+        if show and msg.photo:
+            # И картинка, и подпись, и клавиатура — одним запросом.
+            await msg.edit_media(
+                media=InputMediaPhoto(media=show, caption=caption),
+                reply_markup=kb,
+            )
+            return msg.message_id
+        if show and not msg.photo:
+            # Текущее сообщение текстовое — заменить на фото нельзя редактом,
+            # поэтому один раз пересоздаём (дальше уже будет фото-сообщение).
+            await _safe_delete(msg)
+            sent = await msg.answer_photo(photo=show, caption=caption, reply_markup=kb)
+            return sent.message_id
+        # Фото нет вообще — текстовое меню.
+        if msg.photo:
+            await _safe_delete(msg)
+            sent = await msg.answer(caption, reply_markup=kb)
+            return sent.message_id
+        await msg.edit_text(caption, reply_markup=kb)
+        return msg.message_id
+    except Exception as e:
+        log.debug("menu edit failed, recreating: %s", e)
+        await _safe_delete(msg)
+        if show:
+            sent = await msg.answer_photo(photo=show, caption=caption, reply_markup=kb)
+        else:
+            sent = await msg.answer(caption, reply_markup=kb)
+        return sent.message_id
+
+
 async def _safe_delete(message: Message) -> None:
-    """Пытается удалить сообщение, не роняя обработчик если нельзя."""
     try:
         await message.delete()
     except Exception as e:
         log.debug("Could not delete message: %s", e)
 
 
-async def _render_photos_menu(
-    message: Message,
-    tg_id: int,
-    highlight_photo_id: str | None = None,
-    note: str | None = None,
-) -> None:
-    """Отправляет меню управления фото как свежее фото-сообщение."""
-    photos = await photo_repo.get_photos(tg_id)
-    count = len(photos)
-
-    header = f"🖼 Управление фото\n\nЗагружено: {count}/{Photo.MAX_TOTAL}"
-    if note:
-        header = f"{note}\n\n{header}"
-
-    kb = photos_manage_kb(count)
-    photo_to_show = highlight_photo_id or (photos[0]["photo_id"] if photos else None)
-
-    if photo_to_show:
-        try:
-            await message.answer_photo(photo=photo_to_show, caption=header, reply_markup=kb)
-            return
-        except Exception as e:
-            log.warning("Failed to send photos menu as photo for %d: %s", tg_id, e)
-    await message.answer(header, reply_markup=kb)
-
-
 @router.callback_query(F.data == f"{CallbackPrefix.EDIT.value}:photos")
 async def on_photos_menu(call: CallbackQuery, state: FSMContext) -> None:
-    """Открывает меню управления фото свежим фото-сообщением."""
+    """Открывает меню управления фото (редактом текущей карточки профиля)."""
     try:
         await state.set_state(Edit.photos)
-        await state.update_data(photo_action=None, prompt_msg_id=None)
-        await _safe_delete(call.message)
-        await _render_photos_menu(call.message, call.from_user.id)
+        menu_id = await _show_menu_via_edit(call, call.from_user.id)
+        await state.update_data(photo_action=None, menu_msg_id=menu_id)
     except Exception as e:
         log.error("Failed to open photos menu for %d: %s", call.from_user.id, e)
     finally:
@@ -81,13 +109,21 @@ async def on_photos_menu(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(Edit.photos, F.data == f"{CallbackPrefix.PHOTO.value}:{PhotoAction.ADD.value}")
 async def on_photo_add(call: CallbackQuery, state: FSMContext) -> None:
-    """Запрашивает новое фото. Убирает меню, шлёт текстовый промпт."""
+    """Просит фото. Меняем ТОЛЬКО подпись того же сообщения — мгновенно."""
     try:
-        await _safe_delete(call.message)
-        prompt = await call.message.answer("📷 Пришли фото для добавления:")
+        prompt = f"📷 Пришли фото для добавления\n\n(или нажми {EMOJI.BACK} Назад)"
+        try:
+            if call.message.photo:
+                await call.message.edit_caption(caption=prompt, reply_markup=photos_manage_kb(
+                    await photo_repo.photo_count(call.from_user.id)
+                ))
+            else:
+                await call.message.edit_text(prompt)
+        except Exception as e:
+            log.debug("add-prompt edit failed: %s", e)
         await state.update_data(
             photo_action=PhotoAction.ADD.value,
-            prompt_msg_id=prompt.message_id,
+            menu_msg_id=call.message.message_id,
         )
     except Exception as e:
         log.error("Failed to request photo add for %d: %s", call.from_user.id, e)
@@ -97,7 +133,7 @@ async def on_photo_add(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(Edit.photos, F.data.startswith(f"{CallbackPrefix.PHOTO.value}:{PhotoAction.DELETE.value}:"))
 async def on_photo_delete(call: CallbackQuery, state: FSMContext) -> None:
-    """Удаляет фото по индексу и перерисовывает меню (без сирот)."""
+    """Удаляет фото по индексу и перерисовывает меню тем же сообщением."""
     try:
         idx = int(call.data.split(":")[2])
         photos = await photo_repo.get_photos(call.from_user.id)
@@ -111,8 +147,8 @@ async def on_photo_delete(call: CallbackQuery, state: FSMContext) -> None:
         await user_repo.upsert_user(call.from_user.id, photo_id=new_main)
 
         await call.answer("🗑 Фото удалено")
-        await _safe_delete(call.message)
-        await _render_photos_menu(call.message, call.from_user.id, note="🗑 Фото удалено")
+        menu_id = await _show_menu_via_edit(call, call.from_user.id, note="🗑 Фото удалено")
+        await state.update_data(menu_msg_id=menu_id)
     except Exception as e:
         log.error("Failed to delete photo for %d: %s", call.from_user.id, e)
         await call.answer("Ошибка удаления 😕", show_alert=True)
@@ -120,24 +156,36 @@ async def on_photo_delete(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(Edit.photos, F.data == f"{CallbackPrefix.PHOTO.value}:{PhotoAction.BACK.value}")
 async def on_photos_back(call: CallbackQuery, state: FSMContext) -> None:
-    """Возврат в профиль. Перерисовывает карточку как фото-сообщение."""
+    """Возврат в профиль — edit_media текущего сообщения (без сирот, 1 запрос)."""
     await state.clear()
     try:
         user = await user_repo.get_user(call.from_user.id)
         caption = await format_profile_async(user, show_compat=False, show_badges=True)
-        await _safe_delete(call.message)
-
         main_photo = user.get("photo_id") if user else None
-        if main_photo:
-            try:
-                await call.message.answer_photo(
-                    photo=main_photo, caption=caption, reply_markup=profile_kb()
+
+        msg = call.message
+        try:
+            if main_photo and msg.photo:
+                await msg.edit_media(
+                    media=InputMediaPhoto(media=main_photo, caption=caption),
+                    reply_markup=profile_kb(),
                 )
-            except Exception as e:
-                log.warning("Failed to send profile photo on back for %d: %s", call.from_user.id, e)
-                await call.message.answer(caption, reply_markup=profile_kb())
-        else:
-            await call.message.answer(caption, reply_markup=profile_kb())
+            elif main_photo:
+                await _safe_delete(msg)
+                await msg.answer_photo(photo=main_photo, caption=caption, reply_markup=profile_kb())
+            else:
+                if msg.photo:
+                    await _safe_delete(msg)
+                    await msg.answer(caption, reply_markup=profile_kb())
+                else:
+                    await msg.edit_text(caption, reply_markup=profile_kb())
+        except Exception as e:
+            log.debug("back edit failed, recreating: %s", e)
+            await _safe_delete(msg)
+            if main_photo:
+                await msg.answer_photo(photo=main_photo, caption=caption, reply_markup=profile_kb())
+            else:
+                await msg.answer(caption, reply_markup=profile_kb())
     except Exception as e:
         log.error("Failed to go back from photos for %d: %s", call.from_user.id, e)
     finally:
@@ -146,84 +194,86 @@ async def on_photos_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Edit.photos, F.photo)
 async def on_photo_received(message: Message, state: FSMContext) -> None:
-    """Сохраняет фото. Мгновенный отклик «⏳ Проверяю фото...», затем результат.
-
-    FIX v10: сразу шлём статус-сообщение, чтобы не выглядело как зависание,
-    потом правим его на итог. Никакой «заморозки» интерфейса.
-    """
+    """Сохраняет фото и обновляет меню-сообщение (одним edit_media)."""
     from services.nsfw_moderation import moderate_profile_photo
 
-    status_msg = None
     try:
         data = await state.get_data()
         action = data.get("photo_action")
-        prompt_msg_id = data.get("prompt_msg_id")
-
-        if prompt_msg_id:
-            try:
-                await message.bot.delete_message(message.chat.id, prompt_msg_id)
-            except Exception as e:
-                log.debug("Could not delete prompt message: %s", e)
-            await state.update_data(prompt_msg_id=None)
+        menu_msg_id = data.get("menu_msg_id")
 
         if action != PhotoAction.ADD.value:
             await state.set_state(Edit.photos)
-            await message.answer(Msg.SEND_PHOTO)
-            await _render_photos_menu(message, message.from_user.id)
+            menu_id = await _recreate_menu(message, message.from_user.id)
+            await state.update_data(menu_msg_id=menu_id, photo_action=None)
             return
 
         count = await photo_repo.photo_count(message.from_user.id)
         if count >= Photo.MAX_TOTAL:
             await message.answer(Msg.MAX_PHOTOS)
-            await _render_photos_menu(message, message.from_user.id)
-            await state.update_data(photo_action=None)
             return
 
         photo_id = message.photo[-1].file_id
 
-        # Мгновенный отклик — пользователь сразу видит, что бот занят.
-        status_msg = await message.answer("⏳ Проверяю фото...")
-
-        # NSFW-проверка перед сохранением (безопасность важнее скорости).
         allowed, reason = await moderate_profile_photo(message.bot, message.from_user.id, photo_id)
         if not allowed:
             log.warning("Profile edit photo rejected for user %d: %s", message.from_user.id, reason)
-            if status_msg:
-                try:
-                    await status_msg.edit_text(
-                        "⚠️ Это фото не подходит для анкеты\n\n"
-                        "Пожалуйста, загрузите другое фото, которое соответствует правилам."
-                    )
-                except Exception:
-                    await message.answer("⚠️ Это фото не подходит для анкеты. Загрузите другое.")
+            await message.answer("⚠️ Это фото не подходит для анкеты. Загрузите другое.")
             return
 
         ok, msg = await photo_repo.add_photo(message.from_user.id, photo_id)
         if not ok:
             log.warning("add_photo failed for %d: %s", message.from_user.id, msg)
-            if status_msg:
-                await _safe_delete(status_msg)
             await message.answer(msg or "Не удалось сохранить фото 😕")
-            await _render_photos_menu(message, message.from_user.id)
-            await state.update_data(photo_action=None)
             return
 
         if count == 0:
             await user_repo.upsert_user(message.from_user.id, photo_id=photo_id)
 
-        # Убираем статус и показываем добавленный кадр в меню.
-        if status_msg:
-            await _safe_delete(status_msg)
-
-        await state.update_data(photo_action=None)
         new_count = await photo_repo.photo_count(message.from_user.id)
         note = Format.PHOTO_ADDED.format(new_count, Photo.MAX_TOTAL)
-        await _render_photos_menu(
-            message, message.from_user.id, highlight_photo_id=photo_id, note=note
-        )
+        caption = _menu_caption(new_count, note)
+        kb = photos_manage_kb(new_count)
+
+        # Обновляем существующее меню-сообщение новым кадром — один запрос.
+        # Присланное пользователем фото удаляем, чтобы не дублировать ленту.
+        await _safe_delete(message)
+        edited = False
+        if menu_msg_id:
+            try:
+                await message.bot.edit_message_media(
+                    chat_id=message.chat.id,
+                    message_id=menu_msg_id,
+                    media=InputMediaPhoto(media=photo_id, caption=caption),
+                    reply_markup=kb,
+                )
+                edited = True
+            except Exception as e:
+                log.debug("menu edit_media after add failed: %s", e)
+
+        if not edited:
+            sent = await message.answer_photo(photo=photo_id, caption=caption, reply_markup=kb)
+            await state.update_data(menu_msg_id=sent.message_id)
+
+        await state.update_data(photo_action=None)
     except Exception as e:
         log.error("Failed to save photo for %d: %s", message.from_user.id, e)
-        if status_msg:
-            await _safe_delete(status_msg)
         await message.answer("Не удалось сохранить фото 😕", reply_markup=MAIN_MENU)
         await state.clear()
+
+
+async def _recreate_menu(message: Message, tg_id: int, note: str | None = None) -> int | None:
+    """Присылает меню новым фото-сообщением (fallback, когда нет что редактировать)."""
+    photos = await photo_repo.get_photos(tg_id)
+    count = len(photos)
+    caption = _menu_caption(count, note)
+    kb = photos_manage_kb(count)
+    show = photos[0]["photo_id"] if photos else None
+    if show:
+        try:
+            sent = await message.answer_photo(photo=show, caption=caption, reply_markup=kb)
+            return sent.message_id
+        except Exception as e:
+            log.warning("recreate menu photo failed: %s", e)
+    sent = await message.answer(caption, reply_markup=kb)
+    return sent.message_id
