@@ -28,7 +28,6 @@ async def cb_ban_help(call: CallbackQuery) -> None:
         return await call.answer(Msg.ADMIN_ONLY)
     text = (
         f"{EMOJI.REPORT} <b>Бан / Разбан</b>\n"
-
 "
         "Отправь команду:\n"
 "
