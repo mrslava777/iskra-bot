@@ -65,6 +65,81 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
                    bool(NSFW_API_KEY), NSFW_API_PROVIDER)
         return 0.0, 0.0
 
+
+async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
+    """Sightengine Text Moderation API.
+
+    Returns: (is_blocked, details)
+    details: {sexual_score, toxic_score, insult_score, profanity_found}
+    """
+    if not NSFW_API_KEY or not NSFW_API_PROVIDER:
+        return False, {"reason": "no_api_config"}
+
+    try:
+        api_user, api_secret = NSFW_API_KEY.split(":", 1)
+    except ValueError:
+        log.error("Failed to parse NSFW_API_KEY (expected user:secret)")
+        return False, {"reason": "bad_api_key_format"}
+
+    import aiohttp
+
+    data = {
+        "text": text,
+        "lang": "ru,en",  # Russian + English
+        "mode": "ml,rules",  # Both ML and rule-based
+        "models": "general,self-harm",  # ML models
+        "categories": "profanity,personal,link,drug,weapon,violence,self-harm,medical,extremism,spam,content-trade,money-transaction",
+        "api_user": api_user,
+        "api_secret": api_secret,
+    }
+
+    log.info("Sightengine text check: text_len=%d", len(text))
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.post(
+                "https://api.sightengine.com/1.0/text/check.json",
+                data=data,
+            ) as resp:
+                log.info("Sightengine text response status: %s", resp.status)
+                if resp.status == 200:
+                    result = await resp.json()
+                    log.info("Sightengine text raw: %s", result)
+
+                    details = {
+                        "sexual": result.get("moderation_classes", {}).get("sexual", 0),
+                        "toxic": result.get("moderation_classes", {}).get("toxic", 0),
+                        "insulting": result.get("moderation_classes", {}).get("insulting", 0),
+                        "violent": result.get("moderation_classes", {}).get("violent", 0),
+                        "discriminatory": result.get("moderation_classes", {}).get("discriminatory", 0),
+                        "self_harm": result.get("moderation_classes", {}).get("self-harm", 0),
+                    }
+
+                    # Check rule-based profanity
+                    profanity = result.get("profanity", [])
+                    if profanity:
+                        details["profanity_found"] = profanity
+                        log.info("Sightengine found profanity: %s", profanity)
+                        return True, details
+
+                    # Check ML scores — threshold 0.5 for any category
+                    threshold = 0.5
+                    for category, score in details.items():
+                        if score >= threshold:
+                            log.info("Sightengine ML blocked: %s=%.3f", category, score)
+                            return True, details
+
+                    log.info("Sightengine text passed")
+                    return False, details
+                else:
+                    body = await resp.text()
+                    log.warning("Sightengine text error status=%s body=%s", resp.status, body[:200])
+    except asyncio.TimeoutError:
+        log.warning("Sightengine text timeout")
+    except Exception as e:
+        log.warning("Sightengine text error: %s", e)
+
+    return False, {"reason": "api_error"}
+
     try:
         api_user, api_secret = NSFW_API_KEY.split(":", 1)
         log.info("Sightengine credentials: user=%s... secret=%s...", 
