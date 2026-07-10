@@ -379,8 +379,7 @@ class Message:
     AGE_RANGE_INVALID = "Диапазон: 14–99, мин < макс"
     SEND_PHOTO = "Нужно именно фото 📷 (как изображение, не файлом)."
     SEND_PHOTO_OR_SKIP = "Отправь фото 📷 или нажми «Пропустить»."
-    PROFILE_COMPLETE = """✨ Готово! Вот твоя анкета:
-"""
+    PROFILE_COMPLETE = "✨ Готово! Вот твоя анкета:\n"
     LETS_GO = "Поехали искать! Жми «🔍 Смотреть анкеты»."
     MATCH_ACHIEVED = "🎉 Мэтч!"
     LIKE_SENT = "❤️"
@@ -459,7 +458,7 @@ class Separator:
     """Разделители строк."""
     COMMA = ","
     SPACE = " "
-    NEWLINE = """"""
+    NEWLINE = "\n"
     CALLBACK = ":"
     DASH = "-"
 
@@ -472,13 +471,11 @@ class Format:
     CONTACT_USERNAME = "@{}"
     CONTACT_LINK = '<a href="tg://user?id={}">{}</a>'
     ID_LABEL = "ID:{}"
-    PHOTO_COUNT = """
-📸 Фото в анкете: {}"""
+    PHOTO_COUNT = "\n📸 Фото в анкете: {}"
     COMPAT_PERCENT = "{}%"
     PROGRESS_BAR = "{}{} {}%"
     BADGE_EXTRA = " +{}"
-    BADGE_INLINE = """
-🏆 {}{}"""
+    BADGE_INLINE = "\n🏆 {}{}"
     MATCH_COUNT = "💞 <b>Твои мэтчи ({}):</b>"
     INCOMING_LIKES = "💌 Тебя лайкнули: <b>{}</b>. Показываю по одному:"
     PHOTO_ADDED = "✅ Фото добавлено! ({}/{})"
@@ -504,29 +501,24 @@ class Format:
 (или /cancel для отмены)"""
     SUPPORT_REPLY = """💬 <b>Ответ от поддержки:</b>
 {}"""
-    STATS_HEADER = """📊 <b>Статистика Искра</b>"""
-    STATS_USERS = """👥 Всего пользователей: <b>{}</b>"""
-    STATS_ACTIVE = """🟢 Активных: <b>{}</b>"""
-    STATS_NEW_TODAY = """🆕 Новых сегодня: <b>{}</b>"""
-    STATS_BANNED = """🚫 Забанено: <b>{}</b>
-"""
-    STATS_LIKES = """❤️ Лайков: <b>{}</b>"""
-    STATS_MATCHES = """💞 Мэтчей: <b>{}</b>"""
-    STATS_REPORTS = """🚩 Жалоб: <b>{}</b>
-"""
-    STATS_MALES = """👨 Парней: <b>{}</b>"""
-    STATS_FEMALES = "👩 Девушек: <b>{}</b>"
-    REL_STATUS_POINTS = """Очков: {} / {}"""
+    STATS_HEADER = "📊 <b>Статистика Искра</b>"
+    STATS_USERS = "\n👥 Всего пользователей: <b>{}</b>"
+    STATS_ACTIVE = "\n🟢 Активных: <b>{}</b>"
+    STATS_NEW_TODAY = "\n🆕 Новых сегодня: <b>{}</b>"
+    STATS_BANNED = "\n🚫 Забанено: <b>{}</b>\n"
+    STATS_LIKES = "\n❤️ Лайков: <b>{}</b>"
+    STATS_MATCHES = "\n💞 Мэтчей: <b>{}</b>"
+    STATS_REPORTS = "\n🚩 Жалоб: <b>{}</b>\n"
+    STATS_MALES = "\n👨 Парней: <b>{}</b>"
+    STATS_FEMALES = "\n👩 Девушек: <b>{}</b>"
+    REL_STATUS_POINTS = "Очков: {} / {}"
     REL_STATUS_BAR = "{} {}%"
     VERIFICATION_REQUEST = """🎥 <b>Верификация через кружочек</b>
 Запиши <b>кружочек</b> (видеосообщение) и покажи в кадре жест: <b>{}</b>
 Лицо должно быть хорошо видно. Жест — обязательно."""
-    LIKE_NOTIFICATION = """💌 Кто-то проявил симпатию!
-Совместимость с этим человеком — <b>{}%</b>."""
-    LIKE_NOTIFICATION_WITH_MESSAGE = """💬 Подсказка для первого сообщения:
-<i>{}</i>"""
-    LIKE_NOTIFICATION_FOOTER = """
-Открой «💌 Кто меня лайкнул», чтобы посмотреть анкету."""
+    LIKE_NOTIFICATION = "💌 Кто-то проявил симпатию!\nСовместимость с этим человеком — <b>{}%</b>."
+    LIKE_NOTIFICATION_WITH_MESSAGE = "💬 Подсказка для первого сообщения:\n<i>{}</i>"
+    LIKE_NOTIFICATION_FOOTER = "\nОткрой «💌 Кто меня лайкнул», чтобы посмотреть анкету."
     MATCH_ANNOUNCE = """🎉 <b>Это мэтч!</b> {}
 Вы понравились друг другу с <b>{}</b>, {}.
 {}
@@ -535,19 +527,12 @@ class Format:
 💬 С чего начать:
 <i>{}</i>"""
     PROFILE_NAME_AGE = "<b>{}</b>{}, {} {}  •  {} {}"
-    PROFILE_INTERESTS = """
-🏷 {}"""
-    PROFILE_BIO = """
-📝 {}"""
-    PROFILE_RATING = """
-{}  Симпатий: {}"""
-    PROFILE_COMPAT = """
-💞 Совместимость: <b>{}%</b>
-{}"""
+    PROFILE_INTERESTS = "\n🏷 {}"
+    PROFILE_BIO = "\n📝 {}"
+    PROFILE_RATING = "\n{}  Симпатий: {}"
+    PROFILE_COMPAT = "\n💞 Совместимость: <b>{}%</b>\n{}"
     PROFILE_COMMON = "🏷 Общее: "
-    BROADCAST_STATUS = """📣 <b>Рассылка...</b> {}/{}
-✅ Доставлено: {}
-❌ Ошибок: {}"""
+    BROADCAST_STATUS = "📣 <b>Рассылка...</b> {}/{}\n✅ Доставлено: {}\n❌ Ошибок: {}"
     BROADCAST_DONE = """📣 <b>Рассылка завершена</b>
 
 ✅ Доставлено: {}
