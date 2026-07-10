@@ -9,6 +9,8 @@
 FIX: все внешние API-вызовы — с таймаутом и fallback.
 FIX v9: добавлены детальные логи для отладки.
 FIX v10: пороги NSFW снижены (0.8→0.3), учитывается suggestive контент.
+FIX v11: moderate_profile_photo теперь не вызывает _take_action (нет auto-ban/strikes
+         для фото профиля). Профильные фото — не чат-спам.
 """
 import asyncio
 import hashlib
@@ -240,7 +242,6 @@ async def check_photo(
         "ai_nsfw_score": round(nsfw_score, 3),
         "ai_violence_score": round(violence_score, 3),
     }
-    # FIX v10: порог снижен с 0.8 до 0.3 для nudity, 0.5 для violence
     log.info("AI scores: nudity=%.3f, violence=%.3f, threshold_nudity=%.1f, threshold_violence=%.1f", 
             nsfw_score, violence_score, NSFWThreshold.NUDITY, NSFWThreshold.VIOLENCE)
 
@@ -359,6 +360,10 @@ async def moderate_profile_photo(bot: Bot, tg_id: int, photo_file_id: str) -> tu
     """Проверяет фото анкеты перед сохранением.
 
     Returns: (is_allowed, reason)
+
+    FIX v11: Не вызывает _take_action — нет auto-ban/strikes для фото профиля.
+             Сохраняет хеш в бан-лист для будущих проверок.
+             Профильные фото — не чат-спам, не должны караться баном.
     """
     log.info("moderate_profile_photo called for user %d", tg_id)
     try:
@@ -370,14 +375,38 @@ async def moderate_profile_photo(bot: Bot, tg_id: int, photo_file_id: str) -> tu
         log.warning("Failed to download profile photo: %s", e)
         return True, ""  # fallback: разрешаем если не смогли проверить
 
+    # 1. Эвристика
     is_nsfw, reason = await _heuristic_check(photo_bytes)
     if is_nsfw:
         log.info("Profile photo blocked by heuristic: %s", reason)
+        # Сохраняем хеш для будущих проверок (без strikes/ban)
+        img_hash = _compute_hash(photo_bytes)
+        _banned_hashes.add(img_hash)
+        try:
+            async with db() as conn:
+                await conn.execute(
+                    "INSERT OR IGNORE INTO nsfw_banned_hashes (image_hash, reason, created_at) VALUES (?, ?, ?)",
+                    (img_hash, reason, int(asyncio.get_event_loop().time())),
+                )
+        except Exception:
+            pass
         return False, reason
 
+    # 2. AI-проверка
     nsfw_score, _ = await _ai_check(photo_bytes)
     if nsfw_score >= NSFWThreshold.NUDITY:
         log.info("Profile photo blocked by AI: score=%.3f", nsfw_score)
+        # Сохраняем хеш для будущих проверок (без strikes/ban)
+        img_hash = _compute_hash(photo_bytes)
+        _banned_hashes.add(img_hash)
+        try:
+            async with db() as conn:
+                await conn.execute(
+                    "INSERT OR IGNORE INTO nsfw_banned_hashes (image_hash, reason, created_at) VALUES (?, ?, ?)",
+                    (img_hash, f"ai_nsfw:{nsfw_score:.2f}", int(asyncio.get_event_loop().time())),
+                )
+        except Exception:
+            pass
         return False, f"ai_nsfw:{nsfw_score:.2f}"
 
     log.info("Profile photo passed checks")
