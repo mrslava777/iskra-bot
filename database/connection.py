@@ -75,9 +75,18 @@ async def init_schema(conn: aiosqlite.Connection) -> None:
     log.info("Инициализация схемы БД...")
     if SCHEMA_FILE.exists():
         schema_sql = SCHEMA_FILE.read_text(encoding="utf-8")
-        await conn.executescript(schema_sql)
-        await conn.commit()
-        log.info("Схема БД загружена из %s", SCHEMA_FILE)
+        # FIX: schema.sql может содержать документацию вместо SQL — проверяем
+        sql_lines = [ln for ln in schema_sql.splitlines() if ln.strip() and not ln.strip().startswith("--") and not ln.strip().startswith("#")]
+        if not sql_lines or "CREATE" not in schema_sql.upper():
+            log.warning("schema.sql не содержит валидного SQL, пропускаем: %s", SCHEMA_FILE)
+            return
+        try:
+            await conn.executescript(schema_sql)
+            await conn.commit()
+            log.info("Схема БД загружена из %s", SCHEMA_FILE)
+        except Exception as e:
+            log.error("Ошибка выполнения schema.sql: %s", e)
+            raise
     else:
         log.warning("schema.sql не найден: %s", SCHEMA_FILE)
 
