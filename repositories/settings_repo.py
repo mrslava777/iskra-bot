@@ -1,12 +1,21 @@
 """Settings/Admin repository — операции админ-панели, статистики, жалоб, банов.
 
 FIX (#8): убран inline __import__('time'); импорт time вынесен наверх модуля.
-PERF (пул соединений): статистика и списки — чистые чтения (db(write=False)),
- идут параллельно без глобального write-лока. add_report/ban/unban пишут через db().
+PERF (пул): чистые чтения помечены db(write=False).
+
+NEW (порог автоскрытия по жалобам): add_report теперь считает УНИКАЛЬНЫХ
+ жалобщиков на цель и при достижении REPORTS_AUTO_HIDE автоматически скрывает
+ анкету из ленты (active=0) и помечает на ручную проверку админом. Считаем
+ именно уникальных from_id (COUNT(DISTINCT)), чтобы один человек не мог
+ «нафлудить» жалобами и снести кого угодно.
 """
 import time
 
 from database.connection import db
+
+# Сколько РАЗНЫХ пользователей должны пожаловаться, чтобы анкета авто-скрылась.
+REPORTS_AUTO_HIDE = 5
+
 
 # ── Statistics ────────────────────────────────────────────────────
 
@@ -43,6 +52,7 @@ async def admin_extended_stats() -> dict:
         row = await cursor.fetchone()
         return dict(row)
 
+
 # ── Users management ──────────────────────────────────────────────
 
 async def admin_recent_users(limit: int = 20) -> list:
@@ -68,27 +78,60 @@ async def admin_all_active_ids() -> list:
         rows = await cursor.fetchall()
         return [r["tg_id"] for r in rows]
 
+
 # ── Reports ───────────────────────────────────────────────────────
 
-async def add_report(from_id: int, to_id: int) -> None:
-    """Добавляет жалобу."""
+async def add_report(from_id: int, to_id: int) -> dict:
+    """Добавляет жалобу и применяет порог автоскрытия.
+
+    Возвращает dict:
+      {"unique_reporters": N, "auto_hidden": bool}
+
+    Логика:
+      1) пишем жалобу;
+      2) считаем УНИКАЛЬНЫХ жалобщиков на цель (COUNT(DISTINCT from_id));
+      3) если >= REPORTS_AUTO_HIDE и анкета ещё видима — скрываем (active=0).
+         Это не бан: админ может вернуть через разбан/ревью. Просто убираем
+         из ленты, пока не разберутся.
+    Всё в одной транзакции — счёт и скрытие консистентны.
+    """
     now = int(time.time())
     async with db() as conn:
         await conn.execute(
-            """
-            INSERT INTO reports (from_id, to_id, created_at)
-            VALUES (?, ?, ?)
-            """,
+            "INSERT INTO reports (from_id, to_id, created_at) VALUES (?, ?, ?)",
             (from_id, to_id, now),
         )
 
+        cur = await conn.execute(
+            "SELECT COUNT(DISTINCT from_id) AS c FROM reports WHERE to_id = ?",
+            (to_id,),
+        )
+        row = await cur.fetchone()
+        unique_reporters = row["c"] if row else 0
+
+        auto_hidden = False
+        if unique_reporters >= REPORTS_AUTO_HIDE:
+            cur2 = await conn.execute(
+                "SELECT active, is_banned FROM users WHERE tg_id = ?",
+                (to_id,),
+            )
+            u = await cur2.fetchone()
+            if u and u["active"] and not u["is_banned"]:
+                await conn.execute(
+                    "UPDATE users SET active = 0 WHERE tg_id = ?",
+                    (to_id,),
+                )
+                auto_hidden = True
+
+        return {"unique_reporters": unique_reporters, "auto_hidden": auto_hidden}
+
 
 async def admin_recent_reports(limit: int = 10) -> list:
-    """Возвращает последние жалобы."""
+    """Возвращает последние жалобы (по уникальным жалобщикам)."""
     async with db(write=False) as conn:
         cursor = await conn.execute(
             """
-            SELECT to_id, COUNT(*) as report_count
+            SELECT to_id, COUNT(DISTINCT from_id) as report_count
             FROM reports
             GROUP BY to_id
             ORDER BY report_count DESC
@@ -98,6 +141,7 @@ async def admin_recent_reports(limit: int = 10) -> list:
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
 
 # ── Ban/Unban ─────────────────────────────────────────────────────
 
@@ -111,9 +155,9 @@ async def admin_ban_user(tg_id: int) -> None:
 
 
 async def admin_unban_user(tg_id: int) -> None:
-    """Разбанивает пользователя."""
+    """Разбанивает пользователя (и возвращает в ленту)."""
     async with db() as conn:
         await conn.execute(
-            "UPDATE users SET is_banned = 0 WHERE tg_id = ?",
+            "UPDATE users SET is_banned = 0, active = 1 WHERE tg_id = ?",
             (tg_id,),
         )
