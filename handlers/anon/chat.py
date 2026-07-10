@@ -1,14 +1,14 @@
 """Пересылка сообщений и открытие анкет в анонимном чате.
 
-FIX: InAnonChat теперь сохраняет partner_id в event-data, чтобы relay()
-     не делал повторный запрос anon_active_partner() — убрана двойная нагрузка
-     на БД при каждом сообщении в анонимном чате.
-FIX: добавлено логирование ошибок доставки.
+FIX: InAnonChat сохраняет partner_id в event-data (relay() не делает
+ повторный запрос anon_active_partner()).
 FIX v8: copy_message → ручная пересылка по типам контента (безопасность).
-        Вместо copy_message, который копирует всё как есть (включая caption,
-        reply_markup и пр.), используем явную отправку по типу контента.
-        Это предотвращает утечку метаданных и потенциальные проблемы безопасности.
+FIX (#5 транзакционность reveal): reveal() использует anon_repo.finalize_reveal(),
+ которая атомарно ставит флаг, завершает сессию, создаёт лайки/мэтч/relationship.
+ announce_match вызывается ровно один раз (по status="finalized"), даже если
+ оба нажали «Открыться» одновременно.
 """
+import asyncio
 import logging
 
 from aiogram import Bot, F, Router
@@ -17,22 +17,15 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.anon_repo as anon_repo
-import repositories.like_repo as like_repo
 import repositories.user_repo as user_repo
 from data.constants import Message as Msg
 from data.enums import CallbackPrefix, AnonAction
 from keyboards import MAIN_MENU, anon_session_kb
 from services.anon_rate_limiter import check_rate_limit
 from services.badge_formatter import format_badge_card
-from services.badge_service import check_and_award, invalidate_award_cache
+from services.badge_service import check_and_award
 from services.notification import announce_match
-from services.relationship_service import RelationshipService, add_message_event
-import asyncio
-
-
-log = logging.getLogger("iskra." + __name__.split(".")[-1])
-
-_background_tasks: set[asyncio.Task] = set()
+from services.relationship_service import add_message_event
 
 router = Router()
 log = logging.getLogger("iskra.anon")
@@ -41,24 +34,26 @@ log = logging.getLogger("iskra.anon")
 class InAnonChat(BaseFilter):
     """Срабатывает только если пользователь в активной анонимной сессии.
 
-    FIX: сохраняет partner_id в словарь event-data, чтобы хендлер relay()
-    мог получить его без повторного запроса к БД.
+    Сохраняет partner_id в event-data, чтобы relay() не делал повторный
+    запрос к БД.
     """
 
     async def __call__(self, event: Message | CallbackQuery) -> bool | dict:
         partner = await anon_repo.anon_active_partner(event.from_user.id)
         if partner is None:
             return False
-        # Передаём partner_id в хендлер через возвращаемый словарь
         return {"anon_partner_id": partner}
 
 
 @router.callback_query(F.data == f"{CallbackPrefix.ANON.value}:{AnonAction.REVEAL.value}")
 async def reveal(call: CallbackQuery, bot: Bot) -> None:
-    """Обработчик открытия анкеты."""
-    s = await anon_repo.anon_set_reveal(call.from_user.id)
+    """Обработчик открытия анкеты (атомарная финализация)."""
+    result = await anon_repo.finalize_reveal(call.from_user.id)
     await call.answer()
-    if s is None:
+
+    status = result.get("status")
+
+    if status == "no_session":
         await call.message.answer("Свидание уже завершено.", reply_markup=MAIN_MENU)
         return
 
@@ -66,12 +61,8 @@ async def reveal(call: CallbackQuery, bot: Bot) -> None:
     for badge in await check_and_award(call.from_user.id):
         await call.message.answer(format_badge_card(badge, is_new=True))
 
-    partner = s["b_id"] if s["a_id"] == call.from_user.id else s["a_id"]
-    both_revealed = s["a_reveal"] and s["b_reveal"]
-
-    if both_revealed:
-        await _handle_both_revealed(bot, s)
-    else:
+    if status == "waiting":
+        partner = result["partner"]
         await call.message.answer(Msg.BLIND_DATE_REVEAL_WAIT)
         try:
             await bot.send_message(
@@ -81,16 +72,23 @@ async def reveal(call: CallbackQuery, bot: Bot) -> None:
             )
         except Exception as e:
             log.warning("Не удалось отправить запрос reveal → %d: %s", partner, e)
+        return
+
+    if status == "already_done":
+        # Финализацию выполнил собеседник — не дублируем announce_match.
+        log.info("Reveal already finalized by partner for user %d", call.from_user.id)
+        return
+
+    if status == "finalized":
+        await _announce_both_revealed(bot, result["a_id"], result["b_id"])
 
 
-async def _handle_both_revealed(bot: Bot, session: dict) -> None:
-    """Обрабатывает случай, когда оба открылись."""
-    a_id, b_id = session["a_id"], session["b_id"]
-    await like_repo.add_like(a_id, b_id, True)
-    await like_repo.add_like(b_id, a_id, True)
-    await anon_repo.anon_end(a_id)
-    await announce_match(bot, a_id, b_id)
-    await RelationshipService.ensure_exists(a_id, b_id)
+async def _announce_both_revealed(bot: Bot, a_id: int, b_id: int) -> None:
+    """Оповещает обоих о раскрытии. DB-часть уже сделана в finalize_reveal()."""
+    try:
+        await announce_match(bot, a_id, b_id)
+    except Exception as e:
+        log.warning("announce_match failed for %d/%d: %s", a_id, b_id, e)
 
     for who in (a_id, b_id):
         try:
@@ -107,11 +105,8 @@ async def _handle_both_revealed(bot: Bot, session: dict) -> None:
 async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
     """Пересылает сообщения между собеседниками.
 
-    FIX: partner_id передаётся из фильтра InAnonChat через keyword argument,
-    вместо повторного запроса anon_active_partner() — убрана двойная нагрузка на БД.
-
-    FIX v8: ручная пересылка по типам контента вместо copy_message.
-    copy_message копирует ВСЕ метаданные, что потенциально небезопасно.
+    partner_id приходит из фильтра InAnonChat (без повторного запроса к БД).
+    Ручная пересылка по типам контента вместо copy_message (безопасность).
     """
     allowed, wait = check_rate_limit(message.from_user.id)
     if not allowed:
@@ -124,7 +119,6 @@ async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
     except Exception as e:
         log.debug("Failed to add message event: %s", e)
 
-    # FIX v8: ручная пересылка по типу контента вместо copy_message
     try:
         if message.text:
             await bot.send_message(anon_partner_id, message.text)
@@ -188,17 +182,15 @@ async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
                 last_name=message.contact.last_name or "",
             )
         else:
-            # Fallback для неподдерживаемых типов
             await bot.send_message(
                 anon_partner_id,
-                "[Получено неподдерживаемое сообщение]"
+                "[Получено неподдерживаемое сообщение]",
             )
     except TelegramRetryAfter as e:
         log.warning("Rate limit relaying message %d → %d: retry after %s",
                     message.from_user.id, anon_partner_id, e.retry_after)
         await asyncio.sleep(e.retry_after)
         try:
-            # Retry with text fallback
             if message.text:
                 await bot.send_message(anon_partner_id, message.text)
             else:
