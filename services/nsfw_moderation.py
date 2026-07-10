@@ -1,16 +1,15 @@
 """NSFW-модерация контента — автоматическая + ручная.
 
 Уровни модерации:
- 1. Эвристика: метаданные, подписи, хеши известных изображений
- 2. AI-сканер: Sightengine / DeepAI (опционально)
- 3. Пользовательские репорты: агрегация жалоб
+ 1. Эвристика: хеши известных изображений, запрещённые слова в подписи
+ 2. AI-сканер изображений: Sightengine nudity-2.1 / DeepAI
+ 3. AI-модерация текста: Sightengine Text Moderation (ML + rules)
  4. Ручная модерация админами
 
-FIX v12: _check_sightengine / _check_sightengine_text были перепутаны местами.
-FIX v13: переписан скоринг фото под nudity-2.1. Теперь учитываются классы
- раздетости (visibly_undressed, lingerie, male_underwear, nudity_art, sextoy)
- и общий сигнал none. Голые/раздетые фото больше не проскакивают.
- Пляжные bikini/swimwear/cleavage остаются разрешёнными.
+FIX v13: скоринг фото под nudity-2.1 (ловит раздетость, не режет пляж).
+FIX v14: _check_sightengine_text переписан под реальный ответ API —
+ отдельно ML (moderation_classes) и rules (profanity.matches).
+ Русский язык включён (lang=ru,en). Порог ML вынесен в TEXT_ML_THRESHOLD.
 """
 import asyncio
 import hashlib
@@ -30,6 +29,9 @@ log = logging.getLogger("iskra.nsfw")
 
 _banned_hashes: set[str] = set()
 
+# Порог ML-классов текста (sexual/insulting/violent/toxic/...). 0..1.
+TEXT_ML_THRESHOLD = 0.5
+
 
 async def _load_banned_hashes() -> None:
     """Загружает хеши забаненных изображений из БД."""
@@ -47,15 +49,10 @@ def _compute_hash(photo_bytes: bytes) -> str:
 
 
 def _score_nudity(nudity: dict) -> float:
-    """Вычисляет итоговый nudity-score из ответа Sightengine nudity-2.1.
+    """Итоговый nudity-score из ответа Sightengine nudity-2.1.
 
-    Логика для дейтинг-приложения:
-      - Явный контент (секс/эротика) → жёсткий сигнал.
-      - Раздетость (нижнее бельё, обнажёнка, арт-ню, секс-игрушки) → блок.
-      - very_suggestive → сильный сигнал.
-      - Пляжные bikini / swimwear / cleavage → НЕ блокируем (норм для анкет).
-      - Дополнительно: если none очень низкий, а bikini/swimwear при этом
-        низкие, значит на фото раздетость → поднимаем скор.
+    Явный контент + раздетость (бельё, обнажёнка, арт-ню, секс-игрушки) блокируем.
+    Пляжные bikini / swimwear / cleavage разрешаем (норм для анкет).
     """
     sc = nudity.get("suggestive_classes", {}) or {}
 
@@ -63,9 +60,8 @@ def _score_nudity(nudity: dict) -> float:
         nudity.get("sexual_activity", 0.0),
         nudity.get("sexual_display", 0.0),
         nudity.get("erotica", 0.0),
-        nudity.get("raw", 0.0),  # nudity-2.1: полная обнажёнка
+        nudity.get("raw", 0.0),
     )
-
     undressed = max(
         sc.get("visibly_undressed", 0.0),
         sc.get("lingerie", 0.0),
@@ -74,10 +70,8 @@ def _score_nudity(nudity: dict) -> float:
         sc.get("sextoy", 0.0),
         sc.get("suggestive_pose", 0.0) * 0.6,
     )
-
     score = max(explicit, undressed, nudity.get("very_suggestive", 0.0) * 0.85)
 
-    # «Разрешённая» одежда: если фото уверенно пляжное/декольте, это не ню.
     allowed = max(
         sc.get("bikini", 0.0),
         sc.get("swimwear_one_piece", 0.0),
@@ -86,10 +80,6 @@ def _score_nudity(nudity: dict) -> float:
         sc.get("miniskirt", 0.0),
         sc.get("minishort", 0.0),
     )
-
-    # none = вероятность, что обнажёнки НЕТ вовсе. Если она низкая, а при этом
-    # это не «разрешённая» одежда — значит на фото раздетость, которую модель
-    # не разложила по явным классам. Подтягиваем скор.
     none_score = nudity.get("none", 1.0)
     if none_score < 0.5 and allowed < 0.5:
         score = max(score, 1.0 - none_score)
@@ -109,8 +99,6 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
 
     try:
         api_user, api_secret = NSFW_API_KEY.split(":", 1)
-        log.info("Sightengine credentials: user=%s... secret=%s...",
-                 api_user[:5], api_secret[:5])
     except ValueError as e:
         log.error("Failed to parse NSFW_API_KEY (expected user:secret): %s", e)
         return 0.0, 0.0
@@ -123,7 +111,6 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
     data.add_field("api_secret", api_secret)
     data.add_field("models", "nudity-2.1,weapon,violence,offensive")
 
-    log.info("Sending request to Sightengine API...")
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
             async with session.post("https://api.sightengine.com/1.0/check.json", data=data) as resp:
@@ -147,11 +134,15 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
 
 
 async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
-    """Sightengine Text Moderation API.
+    """Sightengine Text Moderation (ML + rules).
 
     Returns: (is_blocked, details)
+
+    ML-модели (general, self-harm) → moderation_classes со скорами 0..1.
+    Rules-модель → profanity.matches (готовый список брани по языкам).
+    Блокируем, если сработал профанити-словарь ИЛИ любой ML-класс >= порога.
     """
-    if not NSFW_API_KEY or not NSFW_API_PROVIDER:
+    if not NSFW_API_KEY or NSFW_API_PROVIDER != "sightengine":
         return False, {"reason": "no_api_config"}
 
     try:
@@ -164,10 +155,9 @@ async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
 
     data = {
         "text": text,
-        "lang": "ru,en",
-        "mode": "ml,rules",
+        "lang": "ru,en",              # русский + английский
+        "mode": "ml,rules",           # ML + встроенный профанити-словарь
         "models": "general,self-harm",
-        "categories": "profanity,personal,link,drug,weapon,violence,self-harm,medical,extremism,spam,content-trade,money-transaction",
         "api_user": api_user,
         "api_secret": api_secret,
     }
@@ -180,36 +170,39 @@ async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
                 data=data,
             ) as resp:
                 log.info("Sightengine text response status: %s", resp.status)
-                if resp.status == 200:
-                    result = await resp.json()
-                    log.info("Sightengine text raw: %s", result)
-
-                    details = {
-                        "sexual": result.get("moderation_classes", {}).get("sexual", 0),
-                        "toxic": result.get("moderation_classes", {}).get("toxic", 0),
-                        "insulting": result.get("moderation_classes", {}).get("insulting", 0),
-                        "violent": result.get("moderation_classes", {}).get("violent", 0),
-                        "discriminatory": result.get("moderation_classes", {}).get("discriminatory", 0),
-                        "self_harm": result.get("moderation_classes", {}).get("self-harm", 0),
-                    }
-
-                    profanity = result.get("profanity", [])
-                    if profanity:
-                        details["profanity_found"] = profanity
-                        log.info("Sightengine found profanity: %s", profanity)
-                        return True, details
-
-                    threshold = 0.5
-                    for category, score in details.items():
-                        if score >= threshold:
-                            log.info("Sightengine ML blocked: %s=%.3f", category, score)
-                            return True, details
-
-                    log.info("Sightengine text passed")
-                    return False, details
-                else:
+                if resp.status != 200:
                     body = await resp.text()
                     log.warning("Sightengine text error status=%s body=%s", resp.status, body[:200])
+                    return False, {"reason": "api_error", "status": resp.status}
+
+                result = await resp.json()
+                log.info("Sightengine text raw: %s", result)
+
+                # 1) Rules: встроенный словарь брани. profanity = {"matches": [...]}
+                profanity = result.get("profanity") or {}
+                matches = profanity.get("matches", []) if isinstance(profanity, dict) else []
+                if matches:
+                    found = [m.get("match") for m in matches if isinstance(m, dict)]
+                    log.info("Sightengine profanity matched: %s", found)
+                    return True, {"reason": "profanity", "matches": found}
+
+                # 2) ML-классы
+                mc = result.get("moderation_classes", {}) or {}
+                scores = {
+                    k: mc.get(k, 0)
+                    for k in ("sexual", "discriminatory", "insulting", "violent", "toxic", "self-harm")
+                }
+                for category, score in scores.items():
+                    try:
+                        if float(score) >= TEXT_ML_THRESHOLD:
+                            log.info("Sightengine ML blocked: %s=%.3f", category, score)
+                            return True, {"reason": f"ml:{category}", "score": score, "scores": scores}
+                    except (TypeError, ValueError):
+                        continue
+
+                log.info("Sightengine text passed: %s", scores)
+                return False, {"reason": "clean", "scores": scores}
+
     except asyncio.TimeoutError:
         log.warning("Sightengine text timeout")
     except Exception as e:
@@ -246,10 +239,7 @@ async def _check_deepai(photo_bytes: bytes) -> float:
 
 
 async def _ai_check(photo_bytes: bytes) -> tuple[float, float]:
-    """Запускает AI-проверку. Возвращает (nsfw_score, violence_score).
-
-    Гарантированно возвращает кортеж, даже если провайдер вернул None.
-    """
+    """AI-проверка изображения. Гарантированно возвращает кортеж."""
     log.info("AI check started. Provider=%s", NSFW_API_PROVIDER)
     if NSFW_API_PROVIDER == "sightengine":
         res = await _check_sightengine(photo_bytes)
@@ -302,7 +292,6 @@ async def check_photo(
         return False, {"reason": "no_photo"}
 
     try:
-        log.info("Downloading photo file_id=%s", photo.file_id)
         file = await bot.get_file(photo.file_id)
         photo_bytes = await bot.download_file(file.file_path)
         photo_bytes = photo_bytes.read() if hasattr(photo_bytes, "read") else photo_bytes
@@ -311,14 +300,12 @@ async def check_photo(
         log.warning("Failed to download photo for NSFW check: %s", e)
         return False, {"reason": "download_error"}
 
-    log.info("Running heuristic check...")
     is_nsfw, reason = await _heuristic_check(photo_bytes, message.caption)
     if is_nsfw:
         log.info("Heuristic check BLOCKED photo")
         await _take_action(message, reason, photo_bytes)
         return True, {"reason": reason, "action": "blocked"}
 
-    log.info("Running AI check...")
     nsfw_score, violence_score = await _ai_check(photo_bytes)
     details = {
         "ai_nsfw_score": round(nsfw_score, 3),
@@ -351,16 +338,11 @@ async def _take_action(message: Message, reason: str, photo_bytes: bytes) -> Non
 
     try:
         await message.delete()
-        log.info("Message deleted")
     except Exception as e:
         log.debug("Could not delete NSFW message: %s", e)
 
     try:
-        await safe_send(
-            message.answer(Msg.NSFW_BLOCKED),
-            log_prefix="nsfw_notify",
-        )
-        log.info("User notified")
+        await safe_send(message.answer(Msg.NSFW_BLOCKED), log_prefix="nsfw_notify")
     except Exception:
         pass
 
@@ -372,7 +354,6 @@ async def _take_action(message: Message, reason: str, photo_bytes: bytes) -> Non
                 "INSERT OR IGNORE INTO nsfw_banned_hashes (image_hash, reason, created_at) VALUES (?, ?, ?)",
                 (img_hash, reason, int(asyncio.get_event_loop().time())),
             )
-        log.info("Hash saved to banned list")
     except Exception as e:
         log.warning("Failed to save banned hash: %s", e)
 
@@ -406,7 +387,6 @@ async def _log_suspicious(message: Message, score: float, photo_bytes: bytes) ->
                 (message.from_user.id, message.message_id, message.chat.id,
                  score, "pending", int(asyncio.get_event_loop().time())),
             )
-        log.info("Logged suspicious content for review")
     except Exception as e:
         log.debug("Failed to log suspicious content: %s", e)
 
@@ -415,21 +395,15 @@ async def moderate_photo_message(bot: Bot, message: Message) -> bool:
     """Хендлер-обёртка: проверяет фото в сообщении."""
     log.info("moderate_photo_message called for user %d", message.from_user.id)
     if not message.photo:
-        log.info("No photo in message, skipping")
         return False
     blocked, details = await check_photo(bot, message)
-    if blocked:
-        log.info("NSFW blocked from user %d: %s", message.from_user.id, details)
-    else:
-        log.info("NSFW passed for user %d: %s", message.from_user.id, details)
+    log.info("NSFW %s for user %d: %s", "blocked" if blocked else "passed",
+             message.from_user.id, details)
     return blocked
 
 
 async def moderate_profile_photo(bot: Bot, tg_id: int, photo_file_id: str) -> tuple[bool, str]:
-    """Проверяет фото анкеты перед сохранением. Returns: (is_allowed, reason).
-
-    Не вызывает _take_action — нет auto-ban/strikes для фото профиля.
-    """
+    """Проверяет фото анкеты. Returns: (is_allowed, reason). Без strikes/ban."""
     log.info("moderate_profile_photo called for user %d", tg_id)
     try:
         file = await bot.get_file(photo_file_id)
@@ -438,7 +412,7 @@ async def moderate_profile_photo(bot: Bot, tg_id: int, photo_file_id: str) -> tu
         log.info("Profile photo downloaded: %d bytes", len(photo_bytes))
     except Exception as e:
         log.warning("Failed to download profile photo: %s", e)
-        return True, ""  # fallback: разрешаем если не смогли проверить
+        return True, ""
 
     is_nsfw, reason = await _heuristic_check(photo_bytes)
     if is_nsfw:
