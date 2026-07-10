@@ -39,8 +39,8 @@ async def add_photo(tg_id: int, photo_id: str) -> tuple[bool, str]:
     async with db() as conn:
         # Сначала считаем текущее количество фото
         cursor = await conn.execute(
-            "SELECT COUNT(*) AS c, COALESCE(MAX(position), -1) + 1 AS next_pos 
-             FROM photos WHERE tg_id = ?",
+            """SELECT COUNT(*) AS c, COALESCE(MAX(position), -1) + 1 AS next_pos
+               FROM photos WHERE tg_id = ?""",
             (tg_id,),
         )
         row = await cursor.fetchone()
