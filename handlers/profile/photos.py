@@ -112,7 +112,13 @@ async def on_photos_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Edit.photos, F.photo)
 async def on_photo_received(message: Message, state: FSMContext) -> None:
-    """Сохраняет полученное фото — push + меню."""
+    """Сохраняет полученное фото — push + меню.
+
+    FIX v11: Явная проверка NSFW перед сохранением. Если фото заблокировано —
+             просим загрузить другое, остаёмся в состоянии Edit.photos.
+    """
+    from services.nsfw_moderation import moderate_profile_photo
+
     try:
         data = await state.get_data()
         action = data.get("photo_action")
@@ -125,6 +131,19 @@ async def on_photo_received(message: Message, state: FSMContext) -> None:
                 return
 
             photo_id = message.photo[-1].file_id
+
+            # Проверяем фото на NSFW
+            allowed, reason = await moderate_profile_photo(message.bot, message.from_user.id, photo_id)
+            if not allowed:
+                log.warning("Profile edit photo rejected for user %d: %s", message.from_user.id, reason)
+                await message.answer(
+                    "⚠️ <b>Это фото не подходит для анкеты</b>\n\n"
+                    "Пожалуйста, загрузите другое фото, которое соответствует правилам.",
+                    parse_mode="HTML",
+                )
+                # Остаёмся в состоянии Edit.photos — пользователь может повторить
+                return
+
             await photo_repo.add_photo(message.from_user.id, photo_id)
 
             if count == 0:
