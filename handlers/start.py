@@ -67,7 +67,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.message(Reg.name, F.text)
 async def reg_name(message: Message, state: FSMContext) -> None:
     from services.validation import sanitize_name
-    name = sanitize_name(message.text)
+    name = await sanitize_name(message.text)
     if name is None:
         await message.answer(
             "⚠️ <b>Имя содержит недопустимый контент</b>\n\n"
@@ -113,7 +113,7 @@ async def reg_seeking(call: CallbackQuery, state: FSMContext) -> None:
 @router.message(Reg.city, F.text)
 async def reg_city(message: Message, state: FSMContext) -> None:
     from services.validation import sanitize_city
-    city = sanitize_city(message.text)
+    city = await sanitize_city(message.text)
     if city is None:
         await message.answer(
             "⚠️ <b>Название города содержит недопустимый контент</b>\n\n"
@@ -165,7 +165,7 @@ async def reg_bio(message: Message, state: FSMContext) -> None:
     """
     from services.validation import sanitize_bio
 
-    bio = sanitize_bio(message.text)
+    bio = await sanitize_bio(message.text)
     if bio is None:
         await message.answer(
             "⚠️ <b>Био содержит недопустимый контент</b>\n\n"
