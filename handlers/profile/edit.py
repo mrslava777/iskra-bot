@@ -97,7 +97,7 @@ async def edit_value(message: Message, state: FSMContext) -> None:
 
     try:
         if field == EditField.NAME.value:
-            name = sanitize_name(text)
+            name = await sanitize_name(text)
             if name is None:
                 await message.answer(Msg.NAME_TOO_LONG)
                 return
@@ -111,14 +111,14 @@ async def edit_value(message: Message, state: FSMContext) -> None:
             await user_repo.upsert_user(message.from_user.id, age=age)
 
         elif field == EditField.CITY.value:
-            city = sanitize_city(text)
+            city = await sanitize_city(text)
             if city is None:
                 await message.answer("Неверное название города.")
                 return
             await user_repo.upsert_user(message.from_user.id, city=city)
 
         elif field == EditField.BIO.value:
-            bio = sanitize_bio(text)
+            bio = await sanitize_bio(text)
             if bio is None:
                 await message.answer(
                     "⚠️ <b>Био содержит недопустимый контент</b>\n\n"
