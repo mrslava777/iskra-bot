@@ -1,9 +1,11 @@
 """Бизнес-логика проверки и выдачи значков — только через репозитории.
 
 FIX: _collect_stats параллелизирует независимые запросы через asyncio.gather.
-FIX: check_and_award кэширует результат на 30 сек, чтобы не гонять тяжёлые
+FIX: check_and_award кэширует результат на 5 сек, чтобы не гонять тяжёлые
      запросы при каждом свайпе/клике (вызывается из 6+ точек).
 FIX v5: get_user_stats принимает предзагруженного user — убирает лишний запрос.
+FIX v8: TTL cache уменьшен с 30 → 5 сек для более быстрого обнаружения новых значков.
+        Добавлена invalidate_award_cache() для ручного сброса кэша.
 """
 import asyncio
 import time
@@ -17,14 +19,27 @@ import repositories.user_repo as user_repo
 # Кэш недавних проверок: {tg_id: (result_badges, timestamp)}
 # Предотвращает тяжёлые повторные проверки при быстрых действиях
 _award_cache: dict[int, tuple[list[dict], float]] = {}
-_AWARD_CACHE_TTL = 30  # секунд
+_AWARD_CACHE_TTL = 5  # секунд (FIX v8: уменьшено с 30 для быстрого обнаружения)
 _AWARD_CACHE_MAX = 500
+
+
+def invalidate_award_cache(tg_id: int | None = None) -> None:
+    """Сбрасывает кэш выдачи значков.
+
+    FIX v8: публичная функция для ручного сброса кэша.
+    Если tg_id не указан — сбрасывает весь кэш.
+    """
+    global _award_cache
+    if tg_id is None:
+        _award_cache.clear()
+    else:
+        _award_cache.pop(tg_id, None)
 
 
 async def check_and_award(tg_id: int) -> list[dict]:
     """Проверяет все значки для пользователя и выдаёт новые.
 
-    FIX: добавлен TTL-кэш — при множественных вызовах за короткий период
+    FIX v8: TTL-кэш 5 сек — при множественных вызовах за короткий период
     (свайп → лайк → мэтч → уведомление) повторная проверка пропускается.
     """
     now = time.monotonic()
