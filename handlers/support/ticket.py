@@ -1,8 +1,7 @@
 """Создание тикетов поддержки — меню категорий, отправка.
 
 FIX: добавлено логирование ошибок доставки тикетов админам.
-FIX: unterminated f-string literals (line 37).
-FIX v8: логирование ошибок доставки тикетов админам.
+FIX: используется safe_send из services.safe_send.
 """
 import logging
 
@@ -10,7 +9,6 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 
 import repositories.support_repo as support_repo
 import repositories.user_repo as user_repo
@@ -18,35 +16,12 @@ from config import ADMIN_IDS
 from data.constants import Length, EMOJI, MenuText, Message, Format
 from data.enums import CallbackPrefix, SupportCategory, Command as Cmd
 from keyboards import MAIN_MENU
+from services.safe_send import safe_send
+from services.validation import sanitize_ticket_text
 from states import Support
-import asyncio
-
-
-log = logging.getLogger("iskra." + __name__.split(".")[-1])
-
-async def _safe_send(coro, fallback=None):
-    """Safe wrapper for Telegram send operations."""
-    try:
-        return await coro
-    except TelegramRetryAfter as e:
-        await asyncio.sleep(e.retry_after)
-        try:
-            return await coro
-        except Exception as e2:
-            log.warning("Retry failed after TelegramRetryAfter: %s", e2)
-    except TelegramForbiddenError:
-        log.debug("User blocked bot, skipping send")
-    except Exception as e:
-        log.warning("Send failed: %s", e)
-        if fallback:
-            try:
-                return await fallback
-            except Exception as e2:
-                log.warning("Fallback failed: %s", e2)
-    return None
 
 router = Router()
-log = logging.getLogger("iskra.support")
+log = logging.getLogger("iskra.support.ticket")
 
 
 @router.message(Command(Cmd.SUPPORT.value[1:]))
@@ -62,22 +37,22 @@ async def cmd_support(message: Message, state: FSMContext) -> None:
             [InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.SUPPORT.with_param("back"))],
         ]
     )
-    # FIX: unterminated f-string — use single-line with \n
-    await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>\nС чем у вас возникла проблема?", reply_markup=kb)
+    await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>
+С чем у вас возникла проблема?", reply_markup=kb)
 
 
 @router.callback_query(F.data == CallbackPrefix.SUPPORT.with_param("back"))
 async def on_support_back(call: CallbackQuery, state: FSMContext) -> None:
-    """Кнопка «Назад» из меню поддержки — возврат в главное меню."""
+    """Кнопка «Назад» из меню поддержки."""
     await state.clear()
     try:
         await call.message.edit_reply_markup(reply_markup=None)
     except Exception as e:
         log.debug("edit_reply_markup failed: %s", e)
-    try:
-        await call.message.answer("Главное меню:", reply_markup=MAIN_MENU)
-    except Exception as e:
-        log.error("Failed to send main menu to %d: %s", call.from_user.id, e)
+    await safe_send(
+        call.message.answer("Главное меню:", reply_markup=MAIN_MENU),
+        log_prefix="support_back",
+    )
     await call.answer()
 
 
@@ -92,9 +67,12 @@ async def on_support_category(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(support_cat=cat, support_label=category.display_name)
     await state.set_state(Support.message)
     await call.message.edit_text(
-        f"{category.display_name}\n"
-        "Опишите вашу проблему одним сообщением.\n"
-        "Можете прикрепить скриншот 📷\n"
+        f"{category.display_name}
+"
+        "Опишите вашу проблему одним сообщением.
+"
+        "Можете прикрепить скриншот 📷
+"
         f"Для отмены — {Cmd.CANCEL.value}"
     )
     await call.answer()
@@ -139,6 +117,12 @@ async def _process_ticket(
     cat_key = data.get("support_cat", SupportCategory.OTHER.value)
     await state.clear()
 
+    # Валидация текста тикета
+    clean_text = sanitize_ticket_text(text)
+    if clean_text is None:
+        await message.answer("Текст содержит недопустимые символы.", reply_markup=MAIN_MENU)
+        return
+
     try:
         user = await user_repo.get_user(message.from_user.id)
     except Exception as e:
@@ -150,46 +134,31 @@ async def _process_ticket(
     uid = message.from_user.id
 
     try:
-        ticket_id = await support_repo.create_ticket(uid, cat_key, text[:Length.TICKET_TEXT], photo_id)
+        ticket_id = await support_repo.create_ticket(uid, cat_key, clean_text, photo_id)
     except Exception as e:
         log.error("Failed to create ticket for %d: %s", uid, e)
         await message.answer("Не удалось создать обращение 😕", reply_markup=MAIN_MENU)
         return
 
-    ticket_text = Format.TICKET_CAPTION.format(ticket_id, cat_label, name, username, uid, text[:Length.TICKET_TEXT])
+    ticket_text = Format.TICKET_CAPTION.format(ticket_id, cat_label, name, username, uid, clean_text)
 
     from keyboards import support_reply_kb
     for admin_id in ADMIN_IDS:
-        try:
-            if photo_id:
-                await message.bot.send_photo(
+        if photo_id:
+            await safe_send(
+                message.bot.send_photo(
                     admin_id, photo=photo_id, caption=ticket_text,
                     reply_markup=support_reply_kb(uid, ticket_id),
-                )
-            else:
-                await message.bot.send_message(
+                ),
+                log_prefix=f"ticket_{ticket_id}_admin_{admin_id}",
+            )
+        else:
+            await safe_send(
+                message.bot.send_message(
                     admin_id, text=ticket_text,
                     reply_markup=support_reply_kb(uid, ticket_id),
-                )
-        except TelegramRetryAfter as e:
-            log.warning("Rate limit sending ticket #%s to admin %d, retry after %s", ticket_id, admin_id, e.retry_after)
-            await asyncio.sleep(e.retry_after)
-            try:
-                if photo_id:
-                    await message.bot.send_photo(
-                        admin_id, photo=photo_id, caption=ticket_text,
-                        reply_markup=support_reply_kb(uid, ticket_id),
-                    )
-                else:
-                    await message.bot.send_message(
-                        admin_id, text=ticket_text,
-                        reply_markup=support_reply_kb(uid, ticket_id),
-                    )
-            except Exception as e2:
-                log.error("Failed to retry ticket #%s to admin %d: %s", ticket_id, admin_id, e2)
-        except TelegramForbiddenError:
-            log.warning("Admin %d blocked bot, cannot send ticket #%s", admin_id, ticket_id)
-        except Exception as e:
-            log.error("Failed to send ticket #%s to admin %d: %s", ticket_id, admin_id, e)
+                ),
+                log_prefix=f"ticket_{ticket_id}_admin_{admin_id}",
+            )
 
     await message.answer(Message.TICKET_SENT, reply_markup=MAIN_MENU)
