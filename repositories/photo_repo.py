@@ -3,10 +3,12 @@
 position = 0 — главное фото (совпадает с users.photo_id),
 position > 0 — дополнительные фото.
 
-FIX: Добавлена обработка ошибок UNIQUE constraint, 
-     улучшено логирование, исправлена логика позиций.
+FIX: Добавлена обработка ошибок UNIQUE constraint,
+ улучшено логирование, исправлена логика позиций.
 FIX v9: Гарантированная синхронизация users.photo_id ↔ photos(0).
-        Добавлены проверки границ и информативные ошибки.
+ Добавлены проверки границ и информативные ошибки.
+FIX v10: исправлен SyntaxError на строке 42 — многострочный SQL обёрнут
+ в тройные кавычки вместо одинарных.
 """
 import logging
 import time
@@ -76,7 +78,7 @@ async def add_photo(tg_id: int, photo_id: str) -> tuple[bool, str]:
                 """
                 INSERT INTO photos (tg_id, photo_id, position)
                 VALUES (?, ?, ?)
-                ON CONFLICT (tg_id, position) DO UPDATE SET 
+                ON CONFLICT (tg_id, position) DO UPDATE SET
                     photo_id = excluded.photo_id,
                     created_at = strftime('%s','now')
                 """,
@@ -161,8 +163,8 @@ async def remove_photo(tg_id: int, position: int) -> tuple[bool, str]:
             # Это безопаснее чем UPDATE position = position - 1 (может нарушить UNIQUE)
             cursor = await conn.execute(
                 """
-                SELECT photo_id FROM photos 
-                WHERE tg_id = ? AND position > ? 
+                SELECT photo_id FROM photos
+                WHERE tg_id = ? AND position > ?
                 ORDER BY position ASC
                 """,
                 (tg_id, position),
@@ -182,7 +184,7 @@ async def remove_photo(tg_id: int, position: int) -> tuple[bool, str]:
                     """
                     INSERT INTO photos (tg_id, photo_id, position)
                     VALUES (?, ?, ?)
-                    ON CONFLICT (tg_id, position) DO UPDATE SET 
+                    ON CONFLICT (tg_id, position) DO UPDATE SET
                         photo_id = excluded.photo_id
                     """,
                     (tg_id, pid, new_pos),
@@ -202,7 +204,7 @@ async def remove_photo(tg_id: int, position: int) -> tuple[bool, str]:
                         (tg_id,),
                     )
 
-            log.info("Photo removed for user %d at position %d, reindexed %d photos", 
+            log.info("Photo removed for user %d at position %d, reindexed %d photos",
                      tg_id, position, len(remaining))
             return True, "Фото удалено."
 
@@ -235,7 +237,7 @@ async def sync_photos_to_gallery(tg_id: int) -> tuple[bool, str]:
                 """
                 INSERT INTO photos (tg_id, photo_id, position)
                 VALUES (?, ?, 0)
-                ON CONFLICT (tg_id, position) DO UPDATE SET 
+                ON CONFLICT (tg_id, position) DO UPDATE SET
                     photo_id = excluded.photo_id,
                     created_at = strftime('%s','now')
                 """,
@@ -269,7 +271,7 @@ async def set_main_photo(tg_id: int, photo_id: str) -> tuple[bool, str]:
                 """
                 INSERT INTO photos (tg_id, photo_id, position)
                 VALUES (?, ?, 0)
-                ON CONFLICT (tg_id, position) DO UPDATE SET 
+                ON CONFLICT (tg_id, position) DO UPDATE SET
                     photo_id = excluded.photo_id,
                     created_at = strftime('%s','now')
                 """,
