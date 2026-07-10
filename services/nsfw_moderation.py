@@ -7,6 +7,7 @@
   4. Ручная модерация админами
 
 FIX: все внешние API-вызовы — с таймаутом и fallback.
+FIX v9: добавлены детальные логи для отладки.
 """
 import asyncio
 import hashlib
@@ -53,11 +54,23 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
 
     https://sightengine.com/docs/
     """
+    log.info("Sightengine check started. API_KEY set=%s, provider=%s",
+             bool(NSFW_API_KEY), NSFW_API_PROVIDER)
+
     if not NSFW_API_KEY or NSFW_API_PROVIDER != "sightengine":
+        log.warning("Sightengine skipped: key=%s provider=%s", 
+                   bool(NSFW_API_KEY), NSFW_API_PROVIDER)
+        return 0.0, 0.0
+
+    try:
+        api_user, api_secret = NSFW_API_KEY.split(":", 1)
+        log.info("Sightengine credentials: user=%s... secret=%s...", 
+                api_user[:5], api_secret[:5])
+    except ValueError as e:
+        log.error("Failed to parse NSFW_API_KEY (expected user:secret): %s", e)
         return 0.0, 0.0
 
     import aiohttp
-    api_user, api_secret = NSFW_API_KEY.split(":", 1)
 
     data = aiohttp.FormData()
     data.add_field("media", io.BytesIO(photo_bytes), filename="photo.jpg")
@@ -65,11 +78,14 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
     data.add_field("api_secret", api_secret)
     data.add_field("models", "nudity-2.1,weapon,violence,offensive")
 
+    log.info("Sending request to Sightengine API...")
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
             async with session.post("https://api.sightengine.com/1.0/check.json", data=data) as resp:
+                log.info("Sightengine response status: %s", resp.status)
                 if resp.status == 200:
                     result = await resp.json()
+                    log.info("Sightengine raw response: %s", result)
                     nudity = result.get("nudity", {})
                     # score от 0 до 1, где 1 = точно NSFW
                     score = max(
@@ -78,7 +94,11 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
                         nudity.get("erotica", 0),
                     )
                     violence = result.get("violence", {}).get("prob", 0)
+                    log.info("Sightengine scores: nudity=%.3f, violence=%.3f", score, violence)
                     return score, violence
+                else:
+                    body = await resp.text()
+                    log.warning("Sightengine error status=%s body=%s", resp.status, body[:200])
     except asyncio.TimeoutError:
         log.warning("Sightengine timeout")
     except Exception as e:
@@ -115,11 +135,13 @@ async def _check_deepai(photo_bytes: bytes) -> float:
 
 async def _ai_check(photo_bytes: bytes) -> tuple[float, float]:
     """Запускает AI-проверку. Возвращает (nsfw_score, violence_score)."""
+    log.info("AI check started. Provider=%s", NSFW_API_PROVIDER)
     if NSFW_API_PROVIDER == "sightengine":
         return await _check_sightengine(photo_bytes)
     elif NSFW_API_PROVIDER == "deepai":
         score = await _check_deepai(photo_bytes)
         return score, 0.0
+    log.warning("No AI provider configured")
     return 0.0, 0.0
 
 
@@ -135,9 +157,13 @@ async def _heuristic_check(
 
     Returns: (is_nsfw, reason)
     """
+    log.info("Heuristic check started. Photo size=%d bytes", len(photo_bytes))
+
     # 1. Проверка по хешу
     img_hash = _compute_hash(photo_bytes)
+    log.info("Computed hash: %s", img_hash)
     if img_hash in _banned_hashes:
+        log.info("Hash match found in banned list!")
         return True, "hash_match"
 
     # 2. Проверка подписи на запрещённые слова
@@ -146,8 +172,10 @@ async def _heuristic_check(
         caption_lower = caption.lower()
         for word in banned_words:
             if word in caption_lower:
+                log.info("Banned word found in caption: %s", word)
                 return True, f"caption_banned_word:{word}"
 
+    log.info("Heuristic check passed")
     return False, ""
 
 
@@ -166,44 +194,57 @@ async def check_photo(
         (is_blocked, details_dict)
         details: {reason, score, ai_score, hash_match, action_taken}
     """
+    log.info("=== check_photo START for user %d ===", message.from_user.id)
+
     if photo is None and message.photo:
         photo = message.photo[-1]  # highest resolution
 
     if not photo:
+        log.warning("No photo found in message")
         return False, {"reason": "no_photo"}
 
     # Скачиваем фото
     try:
+        log.info("Downloading photo file_id=%s", photo.file_id)
         file = await bot.get_file(photo.file_id)
         photo_bytes = await bot.download_file(file.file_path)
         photo_bytes = photo_bytes.read() if hasattr(photo_bytes, "read") else photo_bytes
+        log.info("Photo downloaded: %d bytes", len(photo_bytes))
     except Exception as e:
         log.warning("Failed to download photo for NSFW check: %s", e)
         return False, {"reason": "download_error"}
 
     # 1. Эвристика
+    log.info("Running heuristic check...")
     is_nsfw, reason = await _heuristic_check(photo_bytes, message.caption)
     if is_nsfw:
+        log.info("Heuristic check BLOCKED photo")
         await _take_action(message, reason, photo_bytes)
         return True, {"reason": reason, "action": "blocked"}
 
     # 2. AI-проверка (если настроена)
+    log.info("Running AI check...")
     nsfw_score, violence_score = await _ai_check(photo_bytes)
     details = {
         "ai_nsfw_score": round(nsfw_score, 3),
         "ai_violence_score": round(violence_score, 3),
     }
+    log.info("AI scores: nudity=%.3f, violence=%.3f, threshold=%.1f", 
+            nsfw_score, violence_score, NSFWThreshold.NUDITY)
 
     if nsfw_score >= NSFWThreshold.NUDITY or violence_score >= NSFWThreshold.VIOLENCE:
+        log.info("AI check BLOCKED photo (score above threshold)")
         await _take_action(message, f"ai_score:{nsfw_score:.2f}", photo_bytes)
         details["action"] = "blocked"
         return True, details
 
     # 3. Подозрительно, но не критично — логируем для ручной проверки
     if nsfw_score >= NSFWThreshold.SUSPICIOUS:
+        log.info("Photo flagged as suspicious (score=%.3f)", nsfw_score)
         await _log_suspicious(message, nsfw_score, photo_bytes)
         details["action"] = "flagged_for_review"
     else:
+        log.info("Photo passed all checks")
         details["action"] = "passed"
 
     return False, details
@@ -212,10 +253,12 @@ async def check_photo(
 async def _take_action(message: Message, reason: str, photo_bytes: bytes) -> None:
     """Блокирует контент и наказывает пользователя."""
     tg_id = message.from_user.id
+    log.info("Taking action against user %d, reason=%s", tg_id, reason)
 
     # Удаляем сообщение
     try:
         await message.delete()
+        log.info("Message deleted")
     except Exception as e:
         log.debug("Could not delete NSFW message: %s", e)
 
@@ -225,6 +268,7 @@ async def _take_action(message: Message, reason: str, photo_bytes: bytes) -> Non
             message.answer(Msg.NSFW_BLOCKED),
             log_prefix="nsfw_notify",
         )
+        log.info("User notified")
     except Exception:
         pass
 
@@ -237,6 +281,7 @@ async def _take_action(message: Message, reason: str, photo_bytes: bytes) -> Non
                 "INSERT OR IGNORE INTO nsfw_banned_hashes (image_hash, reason, created_at) VALUES (?, ?, ?)",
                 (img_hash, reason, int(asyncio.get_event_loop().time())),
             )
+        log.info("Hash saved to banned list")
     except Exception as e:
         log.warning("Failed to save banned hash: %s", e)
 
@@ -272,6 +317,7 @@ async def _log_suspicious(message: Message, score: float, photo_bytes: bytes) ->
                 (message.from_user.id, message.message_id, message.chat.id,
                  score, "pending", int(asyncio.get_event_loop().time())),
             )
+        log.info("Logged suspicious content for review")
     except Exception as e:
         log.debug("Failed to log suspicious content: %s", e)
 
@@ -285,11 +331,15 @@ async def moderate_photo_message(bot: Bot, message: Message) -> bool:
 
     Returns True если сообщение заблокировано.
     """
+    log.info("moderate_photo_message called for user %d", message.from_user.id)
     if not message.photo:
+        log.info("No photo in message, skipping")
         return False
     blocked, details = await check_photo(bot, message)
     if blocked:
         log.info("NSFW blocked from user %d: %s", message.from_user.id, details)
+    else:
+        log.info("NSFW passed for user %d: %s", message.from_user.id, details)
     return blocked
 
 
@@ -298,22 +348,27 @@ async def moderate_profile_photo(bot: Bot, tg_id: int, photo_file_id: str) -> tu
 
     Returns: (is_allowed, reason)
     """
+    log.info("moderate_profile_photo called for user %d", tg_id)
     try:
         file = await bot.get_file(photo_file_id)
         photo_bytes = await bot.download_file(file.file_path)
         photo_bytes = photo_bytes.read() if hasattr(photo_bytes, "read") else photo_bytes
+        log.info("Profile photo downloaded: %d bytes", len(photo_bytes))
     except Exception as e:
         log.warning("Failed to download profile photo: %s", e)
         return True, ""  # fallback: разрешаем если не смогли проверить
 
     is_nsfw, reason = await _heuristic_check(photo_bytes)
     if is_nsfw:
+        log.info("Profile photo blocked by heuristic: %s", reason)
         return False, reason
 
     nsfw_score, _ = await _ai_check(photo_bytes)
     if nsfw_score >= NSFWThreshold.NUDITY:
+        log.info("Profile photo blocked by AI: score=%.3f", nsfw_score)
         return False, f"ai_nsfw:{nsfw_score:.2f}"
 
+    log.info("Profile photo passed checks")
     return True, ""
 
 
