@@ -37,8 +37,7 @@ async def cmd_support(message: Message, state: FSMContext) -> None:
             [InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.SUPPORT.with_param("back"))],
         ]
     )
-    await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>
-С чем у вас возникла проблема?", reply_markup=kb)
+    await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>\nС чем у вас возникла проблема?", reply_markup=kb)
 
 
 @router.callback_query(F.data == CallbackPrefix.SUPPORT.with_param("back"))
