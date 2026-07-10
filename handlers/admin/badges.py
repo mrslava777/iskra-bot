@@ -64,7 +64,6 @@ async def cb_badges_stats(call: CallbackQuery) -> None:
             lines.append(f"{i}. <b>{name}</b> — {r['cnt']} значков")
 
     await safe_send(
-        await safe_send(
         call.message.edit_text("\n".join(lines), reply_markup=back_kb()),
         log_prefix="badges_stats",
     )
