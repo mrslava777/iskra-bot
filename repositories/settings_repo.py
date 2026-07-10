@@ -1,6 +1,10 @@
-"""Settings/Admin repository — операции админ-панели, статистики, жалоб, банов."""
-from database.connection import db
+"""Settings/Admin repository — операции админ-панели, статистики, жалоб, банов.
 
+FIX (#8): убран inline __import__('time'); импорт time вынесен наверх модуля.
+"""
+import time
+
+from database.connection import db
 
 # ── Statistics ────────────────────────────────────────────────────
 
@@ -8,7 +12,7 @@ async def stats() -> dict:
     """Возвращает базовую статистику одним запросом."""
     async with db() as conn:
         cursor = await conn.execute("""
-            SELECT 
+            SELECT
                 COUNT(*) as users,
                 SUM(CASE WHEN active = 1 AND is_banned = 0 THEN 1 ELSE 0 END) as active,
                 (SELECT COUNT(*) FROM likes WHERE is_like = 1) as likes,
@@ -21,13 +25,12 @@ async def stats() -> dict:
 
 async def admin_extended_stats() -> dict:
     """Возвращает расширенную статистику для админ-панели одним запросом."""
-    import time
     async with db() as conn:
         now = int(time.time())
         today_start = now - (now % 86400)
 
         cursor = await conn.execute("""
-            SELECT 
+            SELECT
                 SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as new_today,
                 SUM(CASE WHEN is_banned = 1 THEN 1 ELSE 0 END) as banned,
                 (SELECT COUNT(*) FROM reports) as reports,
@@ -37,7 +40,6 @@ async def admin_extended_stats() -> dict:
         """, (today_start,))
         row = await cursor.fetchone()
         return dict(row)
-
 
 # ── Users management ──────────────────────────────────────────────
 
@@ -64,12 +66,11 @@ async def admin_all_active_ids() -> list:
         rows = await cursor.fetchall()
         return [r["tg_id"] for r in rows]
 
-
 # ── Reports ───────────────────────────────────────────────────────
 
 async def add_report(from_id: int, to_id: int) -> None:
     """Добавляет жалобу."""
-    now = int(__import__('time').time())
+    now = int(time.time())
     async with db() as conn:
         await conn.execute(
             """
@@ -95,7 +96,6 @@ async def admin_recent_reports(limit: int = 10) -> list:
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
-
 
 # ── Ban/Unban ─────────────────────────────────────────────────────
 

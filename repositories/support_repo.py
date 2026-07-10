@@ -1,4 +1,8 @@
-"""Репозиторий тикетов поддержки."""
+"""Репозиторий тикетов поддержки.
+
+FIX (#8): убран inline __import__('time'); импорт вынесен наверх модуля.
+"""
+import time
 from typing import Optional
 
 from database.connection import db
@@ -11,7 +15,7 @@ async def create_ticket(
     photo_id: Optional[str] = None,
 ) -> int:
     """Создаёт тикет и возвращает его id."""
-    now = int(__import__('time').time())
+    now = int(time.time())
     async with db() as conn:
         cursor = await conn.execute(
             """
