@@ -120,7 +120,11 @@ async def edit_value(message: Message, state: FSMContext) -> None:
         elif field == EditField.BIO.value:
             bio = sanitize_bio(text)
             if bio is None:
-                await message.answer("Недопустимые символы в био.")
+                await message.answer(
+                    "⚠️ <b>Био содержит недопустимый контент</b>\n\n"
+                    "Пожалуйста, уберите запрещённые слова или HTML-теги и попробуйте снова.",
+                    parse_mode="HTML",
+                )
                 return
             await user_repo.upsert_user(message.from_user.id, bio=bio)
 
