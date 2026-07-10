@@ -66,9 +66,14 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 @router.message(Reg.name, F.text)
 async def reg_name(message: Message, state: FSMContext) -> None:
-    name = message.text.strip()
-    if len(name) > Length.NAME:
-        await message.answer(Message.NAME_TOO_LONG)
+    from services.validation import sanitize_name
+    name = sanitize_name(message.text)
+    if name is None:
+        await message.answer(
+            "⚠️ <b>Имя содержит недопустимый контент</b>\n\n"
+            "Пожалуйста, используй другое имя (2–32 символа, без запрещённых слов).",
+            parse_mode="HTML",
+        )
         return
     await state.update_data(name=name)
     await message.answer("Сколько тебе лет?")
@@ -107,7 +112,16 @@ async def reg_seeking(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Reg.city, F.text)
 async def reg_city(message: Message, state: FSMContext) -> None:
-    await state.update_data(city=message.text.strip()[:Length.CITY])
+    from services.validation import sanitize_city
+    city = sanitize_city(message.text)
+    if city is None:
+        await message.answer(
+            "⚠️ <b>Название города содержит недопустимый контент</b>\n\n"
+            "Пожалуйста, укажи другой город (1–48 символов, без запрещённых слов).",
+            parse_mode="HTML",
+        )
+        return
+    await state.update_data(city=city)
     await state.update_data(sel_interests=[])
     await message.answer(
         f"Выбери интересы (до {Interest.MAX_SELECTED}) — по ним считается совместимость {EMOJI.COMPAT}",
