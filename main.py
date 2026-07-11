@@ -5,6 +5,13 @@ FIX v10: FSM-хранилище теперь Redis (если задан REDIS_UR
  редактирование, тикеты, верификация) — юзеры застревали на полпути. С Redis
  состояния переживают рестарт. Fallback на MemoryStorage сохранён, чтобы бот
  поднимался даже без Redis.
+
+FIX v11 (security): webhook защищён secret_token.
+ Раньше любой POST на /webhook принимался без проверки — можно было инжектить
+ фейковые update'ы, зная URL. Теперь:
+  1) bot.set_webhook передаёт secret_token — Telegram включает его в заголовок
+     X-Telegram-Bot-Api-Secret-Token при каждом запросе;
+  2) _webhook_handler проверяет этот заголовок и отбивает 401, если не совпал.
 """
 import asyncio
 import logging
@@ -24,7 +31,7 @@ from aiogram.exceptions import (
 )
 from aiogram.types import ErrorEvent
 
-from config import BOT_TOKEN, SENTRY_DSN, WEBHOOK_URL, REDIS_URL
+from config import BOT_TOKEN, SENTRY_DSN, WEBHOOK_URL, REDIS_URL, WEBHOOK_SECRET_TOKEN
 from database.connection import close_db_pool, ping_db, wait_until_db_ready
 from handlers import setup_routers
 from middlewares.rate_limit import RateLimitMiddleware
@@ -82,7 +89,22 @@ async def _metrics_handler(request: web.Request) -> web.Response:
 
 
 async def _webhook_handler(request: web.Request) -> web.Response:
-    """Обработчик входящих webhook-обновлений от Telegram."""
+    """Обработчик входящих webhook-обновлений от Telegram.
+
+    FIX v11: проверяем X-Telegram-Bot-Api-Secret-Token. Без него любой,
+    кто знает URL, мог слать фейковые update'ы.
+    """
+    # --- Security check ---
+    secret_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if secret_header != WEBHOOK_SECRET_TOKEN:
+        log.warning(
+            "Webhook rejected: invalid secret token from %s (header=%r, expected=%r)",
+            request.remote,
+            secret_header[:10] + "..." if len(secret_header) > 10 else secret_header,
+            WEBHOOK_SECRET_TOKEN[:10] + "...",
+        )
+        return web.Response(status=401, text="Unauthorized")
+
     try:
         raw_update = await request.json()
     except Exception as e:
@@ -117,9 +139,10 @@ async def on_startup(app: web.Application) -> None:
     try:
         await bot.set_webhook(
             url=WEBHOOK_FULL_URL,
+            secret_token=WEBHOOK_SECRET_TOKEN,
             allowed_updates=dp.resolve_used_update_types(),
         )
-        log.info("Webhook registered at %s", WEBHOOK_FULL_URL)
+        log.info("Webhook registered at %s (secret_token enabled)", WEBHOOK_FULL_URL)
     except TelegramUnauthorizedError:
         log.error("Невозможно зарегистрировать webhook: токен невалиден. Проверь BOT_TOKEN.")
         raise

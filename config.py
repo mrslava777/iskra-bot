@@ -1,6 +1,7 @@
 """Конфигурация бота Искра — все переменные окружения в одном месте."""
 import logging
 import os
+import secrets
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -42,6 +43,24 @@ if not BOT_TOKEN:
     raise RuntimeError(
         "BOT_TOKEN не задан! Добавь переменную окружения BOT_TOKEN. "
         "Получить токен можно у @BotFather в Telegram."
+    )
+
+# ── Webhook Security ──────────────────────────────────────────────
+# FIX: secret_token для защиты webhook от подделки.
+# Telegram отправляет его в заголовке X-Telegram-Bot-Api-Secret-Token.
+# Если не задан — генерируем автоматически и логируем (чтобы можно было
+# настроить в переменных окружения при следующем деплое).
+_WEBHOOK_SECRET_RAW = os.getenv("WEBHOOK_SECRET_TOKEN", "")
+if _WEBHOOK_SECRET_RAW and len(_WEBHOOK_SECRET_RAW) >= 8:
+    WEBHOOK_SECRET_TOKEN = _WEBHOOK_SECRET_RAW
+else:
+    WEBHOOK_SECRET_TOKEN = secrets.token_urlsafe(32)
+    log.warning(
+        "WEBHOOK_SECRET_TOKEN не задан или слишком короткий! "
+        "Сгенерирован автоматически: %s. "
+        "Сохрани это значение в переменную окружения WEBHOOK_SECRET_TOKEN, "
+        "чтобы оно не менялось при перезапуске.",
+        WEBHOOK_SECRET_TOKEN,
     )
 
 # ── Database ──────────────────────────────────────────────────────
@@ -86,4 +105,3 @@ BROADCAST_CONCURRENT = _safe_int(
 NSFW_API_KEY = os.getenv("NSFW_API_KEY", "")
 NSFW_API_PROVIDER = os.getenv("NSFW_API_PROVIDER", "")  # sightengine | deepai | ""
 NSFW_ENABLED = os.getenv("NSFW_ENABLED", "true").lower() in ("1", "true", "yes")
-
