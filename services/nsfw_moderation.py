@@ -87,50 +87,82 @@ def _score_nudity(nudity: dict) -> float:
     return min(score, 1.0)
 
 
-async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
-    """Sightengine (image): возвращает (nudity_score, violence_score)."""
-    log.info("Sightengine check started. API_KEY set=%s, provider=%s",
-             bool(NSFW_API_KEY), NSFW_API_PROVIDER)
+async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
+    """Sightengine Text Moderation API.
 
-    if not NSFW_API_KEY or NSFW_API_PROVIDER != "sightengine":
-        log.warning("Sightengine skipped: key=%s provider=%s",
-                    bool(NSFW_API_KEY), NSFW_API_PROVIDER)
-        return 0.0, 0.0
+    Returns: (is_blocked, details)
+    details: {sexual_score, toxic_score, insult_score, profanity_found}
+    """
+    if not NSFW_API_KEY or not NSFW_API_PROVIDER:
+        return False, {"reason": "no_api_config"}
 
     try:
         api_user, api_secret = NSFW_API_KEY.split(":", 1)
-    except ValueError as e:
-        log.error("Failed to parse NSFW_API_KEY (expected user:secret): %s", e)
-        return 0.0, 0.0
+    except ValueError:
+        log.error("Failed to parse NSFW_API_KEY (expected user:secret)")
+        return False, {"reason": "bad_api_key_format"}
 
     import aiohttp
 
-    data = aiohttp.FormData()
-    data.add_field("media", io.BytesIO(photo_bytes), filename="photo.jpg")
-    data.add_field("api_user", api_user)
-    data.add_field("api_secret", api_secret)
-    data.add_field("models", "nudity-2.1,weapon,violence,offensive")
+    data = {
+        "text": text,
+        "lang": "ru,en",
+        "mode": "standard,ml",   # FIX: было "ml,rules" — режим "rules" невалиден, API отбивал 400
+        "models": "general,self-harm",
+        "categories": "profanity,personal,link,drug,weapon,violence,self-harm,medical,extremism,spam,content-trade,money-transaction",
+        "api_user": api_user,
+        "api_secret": api_secret,
+    }
 
+    log.info("Sightengine text check: text_len=%d", len(text))
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.post("https://api.sightengine.com/1.0/check.json", data=data) as resp:
-                log.info("Sightengine response status: %s", resp.status)
+            async with session.post(
+                "https://api.sightengine.com/1.0/text/check.json",
+                data=data,
+            ) as resp:
+                log.info("Sightengine text response status: %s", resp.status)
                 if resp.status == 200:
                     result = await resp.json()
-                    log.info("Sightengine raw response: %s", result)
-                    nudity = result.get("nudity", {})
-                    score = _score_nudity(nudity)
-                    violence = result.get("violence", {}).get("prob", 0)
-                    log.info("Sightengine scores: nudity=%.3f, violence=%.3f", score, violence)
-                    return score, violence
+                    log.info("Sightengine text raw: %s", result)
+
+                    details = {
+                        "sexual": result.get("moderation_classes", {}).get("sexual", 0),
+                        "toxic": result.get("moderation_classes", {}).get("toxic", 0),
+                        "insulting": result.get("moderation_classes", {}).get("insulting", 0),
+                        "violent": result.get("moderation_classes", {}).get("violent", 0),
+                        "discriminatory": result.get("moderation_classes", {}).get("discriminatory", 0),
+                        "self_harm": result.get("moderation_classes", {}).get("self-harm", 0),
+                    }
+
+                    # FIX: profanity в rules-ответе — это dict {"matches": [...]},
+                    # старый код блокировал всё подряд, когда ключ просто присутствовал
+                    profanity = result.get("profanity", {})
+                    matches = profanity.get("matches", []) if isinstance(profanity, dict) else profanity
+                    if matches:
+                        details["profanity_found"] = matches
+                        log.info("Sightengine found profanity: %s", matches)
+                        return True, details
+
+                    # ML-скоры — порог 0.5 по любой категории
+                    threshold = 0.5
+                    for category, score in details.items():
+                        if isinstance(score, (int, float)) and score >= threshold:
+                            log.info("Sightengine ML blocked: %s=%.3f", category, score)
+                            return True, details
+
+                    log.info("Sightengine text passed")
+                    return False, details
                 else:
                     body = await resp.text()
-                    log.warning("Sightengine error status=%s body=%s", resp.status, body[:200])
+                    log.warning("Sightengine text error status=%s body=%s", resp.status, body)  # FIX: убрал срез [:200]
     except asyncio.TimeoutError:
-        log.warning("Sightengine timeout")
+        log.warning("Sightengine text timeout")
     except Exception as e:
-        log.warning("Sightengine error: %s", e)
-    return 0.0, 0.0
+        log.warning("Sightengine text error: %s", e)
+
+    return False, {"reason": "api_error"}
+
 
 
 async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
