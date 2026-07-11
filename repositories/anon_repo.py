@@ -10,6 +10,16 @@ FIX (#5 транзакционность reveal): добавлена finalize_re
  гарантирует, что финализацию выполнит ровно один клиент, даже если оба
  нажали «Открыться» одновременно — нет двойного announce_match и полу-записей.
 FIX (#8 __import__): убраны inline __import__('time'), импорт вынесен наверх.
+FIX (race condition matching): anon_find_or_queue() теперь использует
+ BEGIN IMMEDIATE — эксклюзивная блокировка с первой инструкции. Это
+ предотвращает ситуацию, когда два пользователя одновременно выбирают
+ одного и того же партнёра из очереди. Раньше SELECT шёл без блокировки
+ (DEFERRED), и оба конкурентных await-точки могли прочитать одну строку
+ до того, как кто-либо успел DELETE.
+FIX (race condition reveal): finalize_reveal() теперь тоже BEGIN IMMEDIATE.
+ Без этого оба одновременных вызова могли видеть ended_at IS NULL в своём
+ снапшоте, оба проходили проверку total_changes, и оба создавали дубли
+ лайков/мэтчей/relationship.
 """
 import time as _time
 from typing import Optional
@@ -62,6 +72,12 @@ async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
     """
     now = int(_time.time())
     async with db() as conn:
+        # FIX (race): BEGIN IMMEDIATE — эксклюзивная блокировка сразу.
+        # Без этого две конкурентные корутины могли одновременно прочитать
+        # одного и того же партнёра из очереди (DEFERRED tx даёт shared lock
+        # на чтение), и оба создали бы сессии с одним человеком.
+        await conn.execute("BEGIN IMMEDIATE")
+
         # Уже в сессии?
         existing = await _active_session_row(conn, tg_id)
         if existing:
@@ -151,6 +167,12 @@ async def finalize_reveal(tg_id: int) -> dict:
     """
     now = int(_time.time())
     async with db() as conn:
+        # FIX (race): BEGIN IMMEDIATE — эксклюзивная блокировка сразу.
+        # Без этого два одновременных вызова могли видеть ended_at IS NULL
+        # в своём DEFERRED-снапшоте, оба проходили проверку total_changes,
+        # и оба создавали дубли лайков/мэтчей/relationship.
+        await conn.execute("BEGIN IMMEDIATE")
+
         row = await _active_session_row(conn, tg_id)
         if not row:
             return {"status": "no_session"}
