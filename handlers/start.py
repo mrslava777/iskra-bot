@@ -1,7 +1,7 @@
 """Регистрация анкеты (FSM) и /start.
 
 PERF: _finish_registration параллелизирует загрузку user + photo_count + badges.
-FIX v8: _background_tasks + логирование ошибок регистрации.
+FIX v9: fire-and-forget вынесен в общий services.tasks.spawn (убран локальный дубль).
 """
 import asyncio
 import logging
@@ -19,16 +19,15 @@ from keyboards import MAIN_MENU, extra_photos_kb, gender_kb, interests_kb, seeki
 from services.profile_formatter import format_profile
 from services.badge_service import check_and_award
 from services.badge_formatter import format_badge_card
+from services.tasks import spawn
 from states import Reg
 
-_background_tasks: set[asyncio.Task] = set()
 log = logging.getLogger("iskra.start")
-
 router = Router()
 
 
 async def _safe_touch(tg_id: int) -> None:
-    """Fire-and-forget touch_activity с перехватом ошибок."""
+    """touch_activity с перехватом ошибок."""
     try:
         await user_repo.touch_activity(tg_id)
     except Exception as e:
@@ -36,8 +35,8 @@ async def _safe_touch(tg_id: int) -> None:
 
 
 WELCOME = (
-    f"{EMOJI.FIRE_MID} <b>Момент</b> — бот знакомств, где важно не только фото.\n\n"
-    "Здесь мы считаем <b>совместимость по интересам</b>, подсказываем, "
+    f"{EMOJI.FIRE_MID} Момент — бот знакомств, где важно не только фото.\n\n"
+    "Здесь мы считаем совместимость по интересам, подсказываем, "
     "с чего начать разговор, и даём уникальные артефакты за активность.\n\n"
     "Давай создадим твою анкету за минуту. Как тебя зовут?"
 )
@@ -53,11 +52,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         user = None
 
     if user and user["name"] and user["photo_id"]:
-        # touch_activity — fire-and-forget, не блокирует ответ
-        # FIX: create_task for actual coroutine
-        _task = asyncio.create_task(_safe_touch(message.from_user.id))
-        _background_tasks.add(_task)
-        _task.add_done_callback(_background_tasks.discard)
+        spawn(_safe_touch(message.from_user.id))
         await message.answer(Message.WELCOME_BACK, reply_markup=MAIN_MENU)
         return
     await message.answer(WELCOME)
@@ -70,9 +65,8 @@ async def reg_name(message: Message, state: FSMContext) -> None:
     name = await sanitize_name(message.text)
     if name is None:
         await message.answer(
-            "⚠️ <b>Имя содержит недопустимый контент</b>\n\n"
+            "⚠️ Имя содержит недопустимый контент\n\n"
             "Пожалуйста, используй другое имя (2–32 символа, без запрещённых слов).",
-            parse_mode="HTML",
         )
         return
     await state.update_data(name=name)
@@ -116,9 +110,8 @@ async def reg_city(message: Message, state: FSMContext) -> None:
     city = await sanitize_city(message.text)
     if city is None:
         await message.answer(
-            "⚠️ <b>Название города содержит недопустимый контент</b>\n\n"
+            "⚠️ Название города содержит недопустимый контент\n\n"
             "Пожалуйста, укажи другой город (1–48 символов, без запрещённых слов).",
-            parse_mode="HTML",
         )
         return
     await state.update_data(city=city)
@@ -159,20 +152,15 @@ async def reg_interests(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Reg.bio, F.text)
 async def reg_bio(message: Message, state: FSMContext) -> None:
-    """Сохраняет био с валидацией.
-
-    FIX v11: используем sanitize_bio для проверки запрещённых слов и HTML.
-    """
+    """Сохраняет био с валидацией."""
     from services.validation import sanitize_bio
 
     bio = await sanitize_bio(message.text)
     if bio is None:
         await message.answer(
-            "⚠️ <b>Био содержит недопустимый контент</b>\n\n"
+            "⚠️ Био содержит недопустимый контент\n\n"
             "Пожалуйста, уберите запрещённые слова или HTML-теги и попробуйте снова.",
-            parse_mode="HTML",
         )
-        # Остаёмся в состоянии Reg.bio — пользователь может повторить
         return
 
     await state.update_data(bio=bio)
@@ -265,7 +253,6 @@ async def reg_extra_photo(message: Message, state: FSMContext) -> None:
 async def _finish_registration(message: Message, user_id: int, state: FSMContext) -> None:
     await state.clear()
 
-    # Параллельно: user + photo_count + badges
     try:
         user, n_photos, new_badges = await asyncio.gather(
             user_repo.get_user(user_id),
