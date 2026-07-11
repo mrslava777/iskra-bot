@@ -1,7 +1,9 @@
 """Модерация — бан, разбан, жалобы.
 
 FIX v8: логирование ошибок бана/разбана.
-        Используется safe_send из services.safe_send.
+NEW: раздел «Жалобы» показывает статус цели (активна / скрыта / забанена),
+ чтобы было видно, сработал ли порог автоскрытия. Для скрытых/забаненных
+ добавлена кнопка «Вернуть» (разбан + возврат в ленту).
 """
 import logging
 from aiogram import F, Router
@@ -21,17 +23,26 @@ router = Router()
 log = logging.getLogger("iskra.admin.moderation")
 
 
+def _status_label(active, is_banned) -> str:
+    """Человекочитаемый статус анкеты для списка жалоб."""
+    if is_banned:
+        return f"{EMOJI.BANNED} забанен"
+    if not active:
+        return f"{EMOJI.INACTIVE} скрыт"
+    return f"{EMOJI.ACTIVE} активен"
+
+
 @router.callback_query(F.data == f"{CallbackPrefix.ADMIN.value}:{AdminAction.BAN.value}")
 async def cb_ban_help(call: CallbackQuery) -> None:
     """Инструкция по бану."""
     if not is_admin(call.from_user.id):
         return await call.answer(Msg.ADMIN_ONLY)
     text = (
-        f"{EMOJI.REPORT} <b>Бан / Разбан</b>\n"
+        f"{EMOJI.REPORT} Бан / Разбан \n"
         "Отправь команду:\n"
-        f"<code>{Cmd.BAN.value} 123456789</code> — забанить\n"
-        f"<code>{Cmd.UNBAN.value} 123456789</code> — разбанить\n"
-        "Или нажми кнопку бана в разделе «Жалобы»."
+        f" {Cmd.BAN.value} 123456789 — забанить\n"
+        f" {Cmd.UNBAN.value} 123456789 — разбанить\n"
+        "Или нажми кнопку в разделе «Жалобы»."
     )
     await safe_send(
         call.message.edit_text(text, reply_markup=back_kb()),
@@ -42,7 +53,7 @@ async def cb_ban_help(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == f"{CallbackPrefix.ADMIN.value}:{AdminAction.REPORTS.value}")
 async def cb_reports(call: CallbackQuery) -> None:
-    """Показывает последние жалобы."""
+    """Показывает последние жалобы со статусом цели."""
     if not is_admin(call.from_user.id):
         return await call.answer(Msg.ADMIN_ONLY)
     try:
@@ -62,18 +73,42 @@ async def cb_reports(call: CallbackQuery) -> None:
         log.error("Failed to load user names for reports: %s", e)
         users_map = {}
 
-    lines = [f"{EMOJI.REPORT} <b>Последние жалобы:</b>"]
+    lines = [f"{EMOJI.REPORT} Последние жалобы: "]
     buttons = []
     for r in reports:
         target_id = r["to_id"]
         name = users_map.get(target_id, "удалён")
-        lines.append(f"• <b>{name}</b> (ID: <code>{target_id}</code>) — {r['report_count']} жалоб(ы)")
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"{EMOJI.REPORT} Бан {target_id}",
-                callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.DO_BAN.value, target_id),
-            )
-        ])
+        status = _status_label(r.get("active"), r.get("is_banned"))
+        lines.append(f"• {name} (ID: {target_id}) — {r['report_count']} жалоб(ы) · {status}")
+
+        # Кнопка зависит от текущего статуса.
+        if r.get("is_banned"):
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{EMOJI.ACTIVE} Вернуть {target_id}",
+                    callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.DO_UNBAN.value, target_id),
+                )
+            ])
+        elif not r.get("active"):
+            # Скрыт автоскрытием: можно вернуть в ленту или добить баном.
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{EMOJI.ACTIVE} Вернуть {target_id}",
+                    callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.DO_UNBAN.value, target_id),
+                ),
+                InlineKeyboardButton(
+                    text=f"{EMOJI.BANNED} Бан {target_id}",
+                    callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.DO_BAN.value, target_id),
+                ),
+            ])
+        else:
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{EMOJI.REPORT} Бан {target_id}",
+                    callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.DO_BAN.value, target_id),
+                )
+            ])
+
     buttons.append([InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.ADMIN.with_param(AdminAction.MENU.value))])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await safe_send(
@@ -104,6 +139,28 @@ async def cb_do_ban(call: CallbackQuery) -> None:
 
     name = user["name"] if user else "?"
     await call.answer(f"{EMOJI.VERIFIED} {name} забанен")
+    await cb_reports(call)
+
+
+@router.callback_query(F.data.startswith(f"{CallbackPrefix.ADMIN.value}:{AdminAction.DO_UNBAN.value}:"))
+async def cb_do_unban(call: CallbackQuery) -> None:
+    """Возвращает пользователя в ленту из списка жалоб (разбан + active=1)."""
+    if not is_admin(call.from_user.id):
+        return await call.answer(Msg.ADMIN_ONLY)
+    tg_id = int(call.data.split(":")[2])
+    try:
+        await settings_repo.admin_unban_user(tg_id)
+    except Exception as e:
+        log.error("Failed to unban user %d: %s", tg_id, e)
+        await call.answer("Ошибка возврата 😕", show_alert=True)
+        return
+
+    try:
+        user = await user_repo.get_user(tg_id)
+    except Exception:
+        user = None
+    name = user["name"] if user else "?"
+    await call.answer(f"{EMOJI.ACTIVE} {name} возвращён в ленту")
     await cb_reports(call)
 
 
