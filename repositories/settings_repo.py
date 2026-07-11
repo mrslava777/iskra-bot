@@ -1,13 +1,10 @@
 """Settings/Admin repository — операции админ-панели, статистики, жалоб, банов.
 
-FIX (#8): убран inline __import__('time'); импорт time вынесен наверх модуля.
+FIX (#8): import time наверху.
 PERF (пул): чистые чтения помечены db(write=False).
-
-NEW (порог автоскрытия по жалобам): add_report теперь считает УНИКАЛЬНЫХ
- жалобщиков на цель и при достижении REPORTS_AUTO_HIDE автоматически скрывает
- анкету из ленты (active=0) и помечает на ручную проверку админом. Считаем
- именно уникальных from_id (COUNT(DISTINCT)), чтобы один человек не мог
- «нафлудить» жалобами и снести кого угодно.
+NEW: порог автоскрытия по жалобам (REPORTS_AUTO_HIDE уникальных жалобщиков).
+NEW v2: admin_recent_reports отдаёт статус цели (active/is_banned), чтобы админ
+ в разделе «Жалобы» сразу видел — анкета уже скрыта/забанена или ещё висит.
 """
 import time
 
@@ -84,16 +81,10 @@ async def admin_all_active_ids() -> list:
 async def add_report(from_id: int, to_id: int) -> dict:
     """Добавляет жалобу и применяет порог автоскрытия.
 
-    Возвращает dict:
-      {"unique_reporters": N, "auto_hidden": bool}
-
-    Логика:
-      1) пишем жалобу;
-      2) считаем УНИКАЛЬНЫХ жалобщиков на цель (COUNT(DISTINCT from_id));
-      3) если >= REPORTS_AUTO_HIDE и анкета ещё видима — скрываем (active=0).
-         Это не бан: админ может вернуть через разбан/ревью. Просто убираем
-         из ленты, пока не разберутся.
-    Всё в одной транзакции — счёт и скрытие консистентны.
+    Возвращает {"unique_reporters": N, "auto_hidden": bool}.
+    Считаем УНИКАЛЬНЫХ жалобщиков (COUNT(DISTINCT from_id)), чтобы один человек
+    не мог снести кого угодно флудом. При >= REPORTS_AUTO_HIDE и ещё видимой
+    анкете — скрываем из ленты (active=0). Это не бан. Всё в одной транзакции.
     """
     now = int(time.time())
     async with db() as conn:
@@ -127,13 +118,22 @@ async def add_report(from_id: int, to_id: int) -> dict:
 
 
 async def admin_recent_reports(limit: int = 10) -> list:
-    """Возвращает последние жалобы (по уникальным жалобщикам)."""
+    """Последние жалобы с уникальными жалобщиками И статусом цели.
+
+    Возвращает список dict: to_id, report_count, active, is_banned.
+    Статус нужен, чтобы админ видел, скрыта ли уже анкета (сработал ли порог).
+    """
     async with db(write=False) as conn:
         cursor = await conn.execute(
             """
-            SELECT to_id, COUNT(DISTINCT from_id) as report_count
-            FROM reports
-            GROUP BY to_id
+            SELECT
+                r.to_id AS to_id,
+                COUNT(DISTINCT r.from_id) AS report_count,
+                u.active AS active,
+                u.is_banned AS is_banned
+            FROM reports r
+            LEFT JOIN users u ON u.tg_id = r.to_id
+            GROUP BY r.to_id
             ORDER BY report_count DESC
             LIMIT ?
             """,
