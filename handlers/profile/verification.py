@@ -1,8 +1,8 @@
 """Верификация профиля через кружочек со случайным жестом.
 
-FIX: добавлено логирование ошибок доставки уведомлений.
-FIX v8: try/except при отправке video_note админам + логирование.
-        Используется safe_send из services.safe_send.
+FIX v8: try/except при отправке video_note админам + логирование, safe_send.
+FIX v9 (бан-чек): забаненный пользователь больше не может запросить верификацию
+ и не может прислать кружок — заявки таких юзеров не летят админам.
 """
 import logging
 import random
@@ -20,7 +20,6 @@ from services.profile_formatter import format_profile_async
 from services.safe_send import safe_send
 from states import Verify
 
-
 log = logging.getLogger("iskra.profile.verification")
 
 router = Router()
@@ -31,7 +30,10 @@ async def on_request_verify(call: CallbackQuery, state: FSMContext) -> None:
     """Запрашивает кружочек для верификации."""
     try:
         user = await user_repo.get_user(call.from_user.id)
-        if user.get("verified"):
+        if user and user.get("is_banned"):
+            await call.answer("Верификация недоступна.", show_alert=True)
+            return
+        if user and user.get("verified"):
             await call.answer(f"{EMOJI.VERIFIED} Ты уже верифицирован!")
             return
     except Exception as e:
@@ -68,17 +70,24 @@ async def on_verify_back(call: CallbackQuery, state: FSMContext) -> None:
 @router.message(Verify.video_note, F.video_note)
 async def on_verify_video_note(message: Message, state: FSMContext) -> None:
     """Принимает кружочек — push + меню."""
-    video_note_id = message.video_note.file_id
     data = await state.get_data()
     gesture = data.get("required_gesture", "?")
-    await state.clear()
 
     try:
         user = await user_repo.get_user(message.from_user.id)
-        name = user["name"] if user else "?"
     except Exception as e:
         log.error("Failed to load user %d for verification: %s", message.from_user.id, e)
-        name = "?"
+        user = None
+
+    # Бан-чек: забаненные заявки не отправляем.
+    if user and user.get("is_banned"):
+        await state.clear()
+        await message.answer("Верификация недоступна.", reply_markup=MAIN_MENU)
+        return
+
+    video_note_id = message.video_note.file_id
+    await state.clear()
+    name = user["name"] if user else "?"
 
     for admin_id in ADMIN_IDS:
         await safe_send(
@@ -88,16 +97,15 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
         await safe_send(
             message.bot.send_message(
                 admin_id,
-                "🔍 <b>Запрос верификации</b>\n"
-                "Пользователь: <b>" + name + "</b>\n"
-                "ID: <code>" + str(message.from_user.id) + "</code>\n"
-                "Требуемый жест: <b>" + gesture + "</b>\n"
+                "🔍 Запрос верификации \n"
+                "Пользователь: " + name + " \n"
+                "ID: " + str(message.from_user.id) + " \n"
+                "Требуемый жест: " + gesture + " \n"
                 "Проверь, что жест виден в кадре и лицо совпадает с анкетой.",
                 reply_markup=verify_kb(message.from_user.id),
             ),
             log_prefix=f"verify_msg_{admin_id}",
         )
-
 
     await message.answer(Message.VERIFICATION_SENT, reply_markup=MAIN_MENU)
 
@@ -105,7 +113,7 @@ async def on_verify_video_note(message: Message, state: FSMContext) -> None:
 @router.message(Verify.video_note)
 async def on_verify_invalid(message: Message) -> None:
     """Напоминает, что нужен именно кружочек."""
-    await message.answer("🎥 Нужно записать <b>кружочек</b> (видеосообщение), а не фото или текст.")
+    await message.answer("🎥 Нужно записать кружочек (видеосообщение), а не фото или текст.")
 
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.VERIFY.value}:{VerifyAction.APPROVE.value}:"))
@@ -126,11 +134,11 @@ async def on_approve_verify(call: CallbackQuery) -> None:
     try:
         if call.message.photo:
             await call.message.edit_caption(
-                caption=call.message.caption + "\n\n" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
+                caption=call.message.caption + "\n\n" + f"{EMOJI.VERIFIED} Верифицирован "
             )
         else:
             await call.message.edit_text(
-                call.message.text + "\n\n" + f"{EMOJI.VERIFIED} <b>Верифицирован</b>"
+                call.message.text + "\n\n" + f"{EMOJI.VERIFIED} Верифицирован "
             )
     except Exception as e:
         log.debug("Failed to edit verification status: %s", e)
@@ -152,11 +160,11 @@ async def on_reject_verify(call: CallbackQuery) -> None:
     try:
         if call.message.photo:
             await call.message.edit_caption(
-                caption=call.message.caption + "\n\n" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
+                caption=call.message.caption + "\n\n" + f"{EMOJI.DISLIKE} Отклонено "
             )
         else:
             await call.message.edit_text(
-                call.message.text + "\n\n" + f"{EMOJI.DISLIKE} <b>Отклонено</b>"
+                call.message.text + "\n\n" + f"{EMOJI.DISLIKE} Отклонено "
             )
     except Exception as e:
         log.debug("Failed to edit rejection status: %s", e)
