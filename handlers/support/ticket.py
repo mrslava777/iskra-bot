@@ -1,14 +1,23 @@
 """Создание тикетов поддержки — меню категорий, отправка.
 
-FIX: добавлено логирование ошибок доставки тикетов админам.
-FIX: используется safe_send из services.safe_send.
+FIX: логирование ошибок доставки тикетов админам, safe_send.
+NEW: на шаге ввода проблемы внизу показывается кнопка «↩️ Назад» (вместо
+ «Меню»). По ней пользователь возвращается к выбору категорий без команды
+ /cancel, и снова показывается обычное меню. /cancel тоже поддержан.
 """
 import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
 
 import repositories.support_repo as support_repo
 import repositories.user_repo as user_repo
@@ -23,13 +32,19 @@ from states import Support
 router = Router()
 log = logging.getLogger("iskra.support.ticket")
 
+# Текст reply-кнопки «Назад» на шаге ввода проблемы.
+SUPPORT_BACK_TEXT = f"{EMOJI.BACK} Назад"
 
-@router.message(Command(Cmd.SUPPORT.value[1:]))
-@router.message(F.text == MenuText.SUPPORT)
-async def cmd_support(message: Message, state: FSMContext) -> None:
-    """Показывает меню поддержки."""
-    await state.clear()
-    kb = InlineKeyboardMarkup(
+# Reply-клавиатура для шага ввода: одна кнопка «Назад» вместо «Меню».
+SUPPORT_INPUT_MENU = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=SUPPORT_BACK_TEXT)]],
+    resize_keyboard=True,
+)
+
+
+def _categories_kb() -> InlineKeyboardMarkup:
+    """Inline-меню категорий поддержки."""
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=SupportCategory.REPORT.display_name, callback_data=CallbackPrefix.SUPPORT.with_param(SupportCategory.REPORT.value))],
             [InlineKeyboardButton(text=SupportCategory.RIGHTS.display_name, callback_data=CallbackPrefix.SUPPORT.with_param(SupportCategory.RIGHTS.value))],
@@ -37,12 +52,27 @@ async def cmd_support(message: Message, state: FSMContext) -> None:
             [InlineKeyboardButton(text=f"{EMOJI.BACK} Назад", callback_data=CallbackPrefix.SUPPORT.with_param("back"))],
         ]
     )
-    await message.answer(f"{EMOJI.SUPPORT} <b>Поддержка</b>\nС чем у вас возникла проблема?", reply_markup=kb)
+
+
+async def _show_categories(message: Message) -> None:
+    """Показывает меню категорий поддержки."""
+    await message.answer(
+        f"{EMOJI.SUPPORT} Поддержка \nС чем у вас возникла проблема?",
+        reply_markup=_categories_kb(),
+    )
+
+
+@router.message(Command(Cmd.SUPPORT.value[1:]))
+@router.message(F.text == MenuText.SUPPORT)
+async def cmd_support(message: Message, state: FSMContext) -> None:
+    """Показывает меню поддержки."""
+    await state.clear()
+    await _show_categories(message)
 
 
 @router.callback_query(F.data == CallbackPrefix.SUPPORT.with_param("back"))
 async def on_support_back(call: CallbackQuery, state: FSMContext) -> None:
-    """Кнопка «Назад» из меню поддержки."""
+    """Кнопка «Назад» из меню категорий — выход в главное меню."""
     await state.clear()
     try:
         await call.message.edit_reply_markup(reply_markup=None)
@@ -57,7 +87,7 @@ async def on_support_back(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith(f"{CallbackPrefix.SUPPORT.value}:"))
 async def on_support_category(call: CallbackQuery, state: FSMContext) -> None:
-    """Обработчик выбора категории."""
+    """Обработчик выбора категории — переход к вводу проблемы."""
     cat = call.data.split(":")[1]
     if cat not in (SupportCategory.REPORT.value, SupportCategory.RIGHTS.value, SupportCategory.OTHER.value):
         await call.answer("Неизвестная категория")
@@ -65,18 +95,36 @@ async def on_support_category(call: CallbackQuery, state: FSMContext) -> None:
     category = SupportCategory(cat)
     await state.update_data(support_cat=cat, support_label=category.display_name)
     await state.set_state(Support.message)
-    await call.message.edit_text(
-        f"{category.display_name}\n"
+
+    # Убираем inline-кнопки категорий у прошлого сообщения.
+    try:
+        await call.message.edit_text(f"{category.display_name}")
+    except Exception as e:
+        log.debug("edit_text failed on category select: %s", e)
+
+    # Шаг ввода: внизу кнопка «Назад» вместо «Меню».
+    await call.message.answer(
         "Опишите вашу проблему одним сообщением.\n"
-        "Можете прикрепить скриншот 📷\n"
-        f"Для отмены — {Cmd.CANCEL.value}"
+        "Можете прикрепить скриншот 📷\n\n"
+        f"Чтобы вернуться — нажмите «{SUPPORT_BACK_TEXT}».",
+        reply_markup=SUPPORT_INPUT_MENU,
     )
     await call.answer()
 
 
+@router.message(Support.message, F.text == SUPPORT_BACK_TEXT)
+async def support_back_button(message: Message, state: FSMContext) -> None:
+    """Кнопка «Назад» на шаге ввода — возврат к выбору категорий + обычное меню."""
+    await state.clear()
+    # Возвращаем обычную нижнюю клавиатуру (с кнопкой «Меню»).
+    await message.answer("↩️ Возврат в поддержку", reply_markup=MAIN_MENU)
+    # И снова показываем категории.
+    await _show_categories(message)
+
+
 @router.message(Support.message, Command(Cmd.CANCEL.value[1:]))
 async def support_cancel(message: Message, state: FSMContext) -> None:
-    """Отмена обращения."""
+    """Отмена обращения командой /cancel."""
     await state.clear()
     await message.answer(Message.TICKET_CANCELLED, reply_markup=MAIN_MENU)
 
@@ -113,7 +161,6 @@ async def _process_ticket(
     cat_key = data.get("support_cat", SupportCategory.OTHER.value)
     await state.clear()
 
-    # Валидация текста тикета
     clean_text = await sanitize_ticket_text(text)
     if clean_text is None:
         await message.answer("Текст содержит недопустимые символы.", reply_markup=MAIN_MENU)
