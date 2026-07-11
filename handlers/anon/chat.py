@@ -25,7 +25,7 @@ from services.anon_rate_limiter import check_rate_limit
 from services.badge_formatter import format_badge_card
 from services.badge_service import check_and_award
 from services.notification import announce_match
-from services.relationship_service import add_message_event
+from services.relationship_service import add_message_event, get_milestone_message
 
 router = Router()
 log = logging.getLogger("iskra.anon")
@@ -115,7 +115,18 @@ async def relay(message: Message, bot: Bot, anon_partner_id: int) -> None:
 
     await user_repo.increment_anon_messages(message.from_user.id)
     try:
-        await add_message_event(message.from_user.id, anon_partner_id)
+        milestones = await add_message_event(message.from_user.id, anon_partner_id)
+        # Отправляем уведомления о вехах обоим
+        for m in milestones:
+            msg = get_milestone_message(m)
+            try:
+                await bot.send_message(message.from_user.id, msg)
+            except Exception:
+                pass
+            try:
+                await bot.send_message(anon_partner_id, msg)
+            except Exception:
+                pass
     except Exception as e:
         log.debug("Failed to add message event: %s", e)
 
