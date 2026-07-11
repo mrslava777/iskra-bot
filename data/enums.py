@@ -2,9 +2,9 @@
 
 FIX: убраны runtime-импорты из data.constants — предотвращает циклические зависимости.
 Все строковые значения вынесены в inline-константы.
+FIX v9: добавлен AdminAction.DO_UNBAN (кнопка «Вернуть» в разделе «Жалобы»).
 """
 from enum import Enum
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # INLINE КОНСТАНТЫ (были импортированы из data.constants, вызывали циклы)
@@ -52,7 +52,6 @@ _REL_NAMES = {
 }
 _REL_THRESHOLDS = [0, 50, 150, 350, 750]
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # ENUMS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -71,13 +70,11 @@ class Gender(Enum):
             Gender.ANY: _EMOJI_UNKNOWN,
         }[self]
 
-
 class Seeking(Enum):
     """Кого ищет пользователь."""
     MALE = "m"
     FEMALE = "f"
     ANY = "any"
-
 
 class Rarity(Enum):
     """Редкость значка (артефакта)."""
@@ -102,13 +99,11 @@ class Rarity(Enum):
     def color(self) -> str:
         return _RARITY_COLORS[self.value]
 
-
 class TicketStatus(Enum):
     """Статус тикета поддержки."""
     OPEN = "open"
     REPLIED = "replied"
     CLOSED = "closed"
-
 
 class SupportCategory(Enum):
     """Категория обращения в поддержку."""
@@ -123,7 +118,6 @@ class SupportCategory(Enum):
     @property
     def description(self) -> str:
         return _SUPPORT_DESCS.get(self.value, "")
-
 
 class CallbackPrefix(Enum):
     """Префиксы callback_data кнопок."""
@@ -153,7 +147,6 @@ class CallbackPrefix(Enum):
         """Формирует callback_data с параметрами."""
         return ":".join([self.value, *(str(p) for p in parts)])
 
-
 class Command(Enum):
     """Команды бота."""
     START = "/start"
@@ -168,7 +161,6 @@ class Command(Enum):
     UNVERIFY = "/unverify"
     SUPPORT = "/support"
     CANCEL = "/cancel"
-
 
 class RelationshipLevel(Enum):
     """Уровни отношений между мэтчами — от общения до пары."""
@@ -186,13 +178,11 @@ class RelationshipLevel(Enum):
     def threshold(self) -> int:
         return _REL_THRESHOLDS[self.value]
 
-
 class UserStatus(Enum):
     """Статус пользователя в системе."""
     ACTIVE = "active"
     INACTIVE = "inactive"
     BANNED = "banned"
-
 
 class SwipeAction(Enum):
     """Действия при свайпе в ленте."""
@@ -203,12 +193,10 @@ class SwipeAction(Enum):
     REPORT = "report"
     STOP = "stop"
 
-
 class LikeResponse(Enum):
     """Ответ на входящий лайк."""
     YES = "yes"
     NO = "no"
-
 
 class PhotoAction(Enum):
     """Действия с фотографиями."""
@@ -216,12 +204,10 @@ class PhotoAction(Enum):
     DELETE = "del"
     BACK = "back"
 
-
 class VerifyAction(Enum):
     """Действия верификации админом."""
     APPROVE = "approve"
     REJECT = "reject"
-
 
 class AdminAction(Enum):
     """Действия в админ-панели."""
@@ -233,9 +219,9 @@ class AdminAction(Enum):
     BAN = "ban"
     REPORTS = "reports"
     DO_BAN = "doban"
+    DO_UNBAN = "dounban"
     BROADCAST = "broadcast"
     BADGES = "badges"
-
 
 class BadgeAction(Enum):
     """Действия в разделе артефактов."""
@@ -243,13 +229,11 @@ class BadgeAction(Enum):
     COLLECTION = "collection"
     BACK = "back"
 
-
 class AnonAction(Enum):
     """Действия в анонимном чате."""
     REVEAL = "reveal"
     STOP = "stop"
     CANCEL_QUEUE = "cancelq"
-
 
 class SettingsAction(Enum):
     """Действия в настройках."""
@@ -261,7 +245,6 @@ class SettingsAction(Enum):
     DELETE_CONFIRM = "delete_confirm"
     DELETE_CANCEL = "delete_cancel"
 
-
 class EditField(Enum):
     """Поля анкеты для редактирования."""
     NAME = "name"
@@ -271,7 +254,6 @@ class EditField(Enum):
     INTERESTS = "interests"
     PHOTOS = "photos"
     VERIFY = "verify"
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ОБРАТНЫЕ МАППИНГИ (для совместимости с существующим кодом)
