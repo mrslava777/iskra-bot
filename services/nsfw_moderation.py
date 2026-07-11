@@ -53,10 +53,7 @@ def _compute_hash(photo_bytes: bytes) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
-    """Sightengine image check: возвращает (nudity_score, violence_score).
-
-    https://sightengine.com/docs/
-    """
+    """Sightengine image check: возвращает (nudity_score, violence_score)."""
     log.info("Sightengine check started. API_KEY set=%s, provider=%s",
              bool(NSFW_API_KEY), NSFW_API_PROVIDER)
 
@@ -87,14 +84,22 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
                     result = await resp.json()
                     log.info("Sightengine raw response: %s", result)
                     nudity = result.get("nudity", {})
-                    # FIX v12: только реальные признаки наготы, без раздувания suggestive.
-                    # Старая логика блокировала обычные фото (suggestive=0.99 → score=0.99).
+                    sc = nudity.get("suggestive_classes", {})
+
+                    # nudity-2.1: явная нагота + ключевые suggestive-подклассы.
+                    # НЕ берём общий suggestive/mildly_suggestive — они почти всегда ~0.99.
                     score = max(
                         nudity.get("sexual_activity", 0),
                         nudity.get("sexual_display", 0),
                         nudity.get("erotica", 0),
                         nudity.get("very_suggestive", 0),
+                        sc.get("visibly_undressed", 0),
+                        sc.get("nudity_art", 0),
+                        sc.get("lingerie", 0),
+                        sc.get("male_underwear", 0),
+                        sc.get("sextoy", 0),
                     )
+
                     violence = result.get("violence", {}).get("prob", 0)
                     log.info("Sightengine scores: nudity=%.3f, violence=%.3f", score, violence)
                     return score, violence
@@ -106,6 +111,7 @@ async def _check_sightengine(photo_bytes: bytes) -> tuple[float, float]:
     except Exception as e:
         log.warning("Sightengine error: %s", e)
     return 0.0, 0.0
+
 
 
 async def _check_sightengine_text(text: str) -> tuple[bool, dict]:
