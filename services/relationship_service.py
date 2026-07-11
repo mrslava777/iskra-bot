@@ -1,7 +1,11 @@
-"""Сервис уровней отношений между мэтчами — только через репозитории."""
+"""Сервис уровней отношений между мэтчами — только через репозитории.
+
+FIX: добавлена система вех (milestones) — микро-достижения между основными
+уровнями, чтобы разбить монотонный гринд на осмысленные этапы.
+"""
 from typing import Optional
 
-from data.constants import Relationship, RELATIONSHIP_LEVEL_NAMES, ProgressBar, Format
+from data.constants import Relationship, Message as Msg, Format
 import repositories.relationship_repo as rel_repo
 
 
@@ -31,11 +35,26 @@ async def get_relationship(user1_id: int, user2_id: int) -> Optional[dict]:
     return await _build_stats(user1_id, user2_id)
 
 
-async def add_message_event(user1_id: int, user2_id: int) -> None:
+async def add_message_event(user1_id: int, user2_id: int) -> list[dict]:
+    """Добавляет очко за сообщение и проверяет вехи.
+
+    Returns: список разблокированных вех (пустой, если ничего нового).
+    """
     rel = await rel_repo.get_relationship(user1_id, user2_id)
     if not rel:
-        return
+        return []
+
+    old_points = rel.get("points", 0)
     await rel_repo.add_points_with_level_update(user1_id, user2_id, 1)
+
+    # Проверяем вехи
+    new_points = old_points + 1
+    milestones = []
+    for threshold, info in sorted(Relationship.MILESTONES.items()):
+        if old_points < threshold <= new_points:
+            milestones.append(info)
+
+    return milestones
 
 
 def _calc_level(points: int) -> int:
@@ -63,18 +82,27 @@ async def _build_stats(user1_id: int, user2_id: int) -> dict:
 
 def format_status(rel_stats: dict, viewer_id: int) -> str:
     if not rel_stats or not rel_stats.get("exists"):
+        from data.constants import RELATIONSHIP_LEVEL_NAMES
         return RELATIONSHIP_LEVEL_NAMES.get(0)
 
     level = rel_stats["level"]
     points = rel_stats["points"]
     next_threshold = rel_stats["next"]
 
+    from data.constants import RELATIONSHIP_LEVEL_NAMES, ProgressBar
     level_name = RELATIONSHIP_LEVEL_NAMES.get(level)
     progress = min(100, int(points / next_threshold * 100)) if next_threshold > 0 else 100
     bar = ProgressBar.FILLED * (progress // ProgressBar.SIZE) + ProgressBar.EMPTY * (ProgressBar.SIZE - progress // ProgressBar.SIZE)
 
     return (
-        f"{level_name}\n"
+        f"{level_name}
+"
         f"{Format.REL_STATUS_POINTS.format(points, next_threshold)}"
         f"{Format.REL_STATUS_BAR.format(bar, progress)}"
     )
+
+
+def get_milestone_message(info: dict) -> str:
+    """Возвращает сообщение о достижении вехи."""
+    return f"{info['emoji']} <b>{info['name']}!</b>
+{info['desc']}"
