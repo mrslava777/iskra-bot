@@ -1,0 +1,28 @@
+# Telegram (обязательно)
+BOT_TOKEN=
+WEBHOOK_URL=https://your-service.up.railway.app
+
+# Постоянный случайный секрет: A-Z, a-z, 0-9, _ или -
+# Сгенерировать: python -c "import secrets; print(secrets.token_urlsafe(32))"
+WEBHOOK_SECRET_TOKEN=
+
+# ID администраторов через запятую
+ADMIN_IDS=
+
+# Railway Volume должен быть смонтирован в /data
+DB_PATH=/data/iskra.db
+DB_POOL_SIZE=5
+
+# Redis нужен, чтобы FSM-состояния переживали перезапуск
+REDIS_URL=
+
+# Опционально
+SENTRY_DSN=
+NSFW_ENABLED=true
+NSFW_API_PROVIDER=
+NSFW_API_KEY=
+ANON_RATE_LIMIT_MSG_PER_MIN=30
+MAX_TRACKED_USERS=10000
+BROADCAST_BATCH_SIZE=100
+BROADCAST_DELAY=0.05
+BROADCAST_CONCURRENT=10
