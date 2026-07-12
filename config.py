@@ -1,7 +1,13 @@
-"""Конфигурация бота Искра — все переменные окружения в одном месте."""
+"""Конфигурация бота Искра — все переменные окружения в одном месте.
+
+FIX: DB_PATH по умолчанию теперь /data/iskra.db (совпадает с README и
+     примонтированным Railway-томом). Раньше дефолт "database.db" писал БД
+     в эфемерную ФС контейнера, и данные терялись при каждом редеплое.
+FIX: убран raise RuntimeError на импорте при пустом BOT_TOKEN. Валидацию
+     токена делает main.py (с логированием и корректным exit code).
+"""
 import logging
 import os
-import secrets
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -35,6 +41,55 @@ def _parse_admin_ids(raw: Optional[str]) -> set[int]:
             log.warning("Невалидный ADMIN_ID: %r", part)
     return result
 
+
+# -- Telegram --------------------------------------------------------
+# FIX: не бросаем исключение на импорте. Пустой токен валидируется в main.py.
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+# -- Database --------------------------------------------------------
+# FIX: дефолт совпадает с README / Railway volume (/data). Иначе БД теряется
+#      при редеплое, т.к. пишется в эфемерную ФС контейнера.
+DB_PATH = os.getenv("DB_PATH", "/data/iskra.db")
+DB_POOL_SIZE = _safe_int(os.getenv("DB_POOL_SIZE"), 5, "DB_POOL_SIZE")
+REDIS_URL = os.getenv("REDIS_URL", "")
+
+# -- Admin -----------------------------------------------------------
+ADMIN_IDS: set[int] = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+if not ADMIN_IDS:
+    log.warning("ADMIN_IDS не задан — админ-панель недоступна")
+
+# -- Rate limiting ---------------------------------------------------
+ANON_RATE_LIMIT_MSG_PER_MIN = _safe_int(
+    os.getenv("ANON_RATE_LIMIT_MSG_PER_MIN"), 30, "ANON_RATE_LIMIT_MSG_PER_MIN"
+)
+MAX_TRACKED_USERS = _safe_int(
+    os.getenv("MAX_TRACKED_USERS"), 10000, "MAX_TRACKED_USERS"
+)
+
+# -- Sentry ----------------------------------------------------------
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+
+# Send queue / workers
+SEND_CONCURRENCY = _safe_int(os.getenv("SEND_CONCURRENCY"), 20, "SEND_CONCURRENCY")
+NUM_WORKERS = _safe_int(os.getenv("NUM_WORKERS"), 4, "NUM_WORKERS")
+MAX_MESSAGE_RATE_GLOBAL = _safe_int(
+    os.getenv("MAX_MESSAGE_RATE_GLOBAL"), 20, "MAX_MESSAGE_RATE_GLOBAL"
+)
+
+# -- Broadcast -------------------------------------------------------
+BROADCAST_BATCH_SIZE = _safe_int(
+    os.getenv("BROADCAST_BATCH_SIZE"), 100, "BROADCAST_BATCH_SIZE"
+)
+BROADCAST_DELAY = float(os.getenv("BROADCAST_DELAY", "0.05"))
+BROADCAST_CONCURRENT = _safe_int(
+    os.getenv("BROADCAST_CONCURRENT"), 10, "BROADCAST_CONCURRENT"
+)
+
+# -- NSFW Moderation -------------------------------------------------
+NSFW_API_KEY = os.getenv("NSFW_API_KEY", "")
+NSFW_API_PROVIDER = os.getenv("NSFW_API_PROVIDER", "")  # sightengine | deepai | ""
+NSFW_ENABLED = os.getenv("NSFW_ENABLED", "true").lower() in ("1", "true", "yes")
 
 # ── Telegram ──────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "") 
