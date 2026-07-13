@@ -30,12 +30,11 @@ async def safe_send(
     try:
         return await coro
     except TelegramRetryAfter as e:
-        log.warning("%s Rate limit, retry after %s sec", log_prefix, e.retry_after)
-        await asyncio.sleep(e.retry_after)
-        try:
-            return await coro
-        except Exception as e2:
-            log.error("%s Retry failed: %s", log_prefix, e2)
+        # `coro` уже был выполнен и его нельзя await-ить повторно. Повторная
+        # попытка здесь давала бы RuntimeError и маскировала исходный flood limit.
+        # Для массовых отправок retry реализован в safe_send_many, где запрос
+        # создаётся заново на каждой попытке.
+        log.warning("%s Rate limit, message was not sent (retry after %s sec)", log_prefix, e.retry_after)
     except TelegramForbiddenError:
         log.debug("%s User blocked bot, skipping", log_prefix)
     except Exception as e:
