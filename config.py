@@ -1,7 +1,6 @@
 """Конфигурация бота Искра — все переменные окружения в одном месте."""
 import logging
 import os
-import re
 import secrets
 from typing import Optional
 
@@ -37,32 +36,9 @@ def _parse_admin_ids(raw: Optional[str]) -> set[int]:
     return result
 
 
-def _build_webhook_url() -> Optional[str]:
-    """Формирует WEBHOOK_URL из переменных Railway или явно заданного URL.
-
-    Railway предоставляет публичный домен через RAILWAY_PUBLIC_DOMAIN.
-    Если задан WEBHOOK_URL явно — используем его.
-    """
-    explicit = os.getenv("WEBHOOK_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-
-    # Railway автоматически предоставляет домен
-    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
-    if railway_domain:
-        return f"https://{railway_domain}"
-
-    # Railway legacy variable names
-    railway_url = os.getenv("RAILWAY_STATIC_URL", "").strip()
-    if railway_url:
-        return railway_url.rstrip("/")
-
-    return None
-
-
 # ── Telegram ──────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-WEBHOOK_URL = _build_webhook_url()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "") 
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 if not BOT_TOKEN:
     raise RuntimeError(
         "BOT_TOKEN не задан! Добавь переменную окружения BOT_TOKEN. "
@@ -74,11 +50,7 @@ if not BOT_TOKEN:
 # Telegram отправляет его в заголовке X-Telegram-Bot-Api-Secret-Token.
 # Если не задан — генерируем автоматически и логируем (чтобы можно было
 # настроить в переменных окружения при следующем деплое).
-#
-# FIX v2: убрана проверка на "недопустимые символы" — token_urlsafe
-# генерирует URL-safe строку (A-Z, a-z, 0-9, -, _), и Railway
-# может добавлять свои префиксы. Проверяем только минимальную длину.
-_WEBHOOK_SECRET_RAW = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip()
+_WEBHOOK_SECRET_RAW = os.getenv("WEBHOOK_SECRET_TOKEN", "")
 if _WEBHOOK_SECRET_RAW and len(_WEBHOOK_SECRET_RAW) >= 8:
     WEBHOOK_SECRET_TOKEN = _WEBHOOK_SECRET_RAW
 else:
