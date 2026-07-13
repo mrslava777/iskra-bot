@@ -46,7 +46,18 @@ python main.py
 ## Деплой (Railway)
 
 `Procfile` и `railway.json` запускают `python main.py`. Для постоянного
-хранения БД смонтируйте Volume в `/data` (тогда используется `/data/iskra.db`).
+хранения БД смонтируйте Volume в `/data` и задайте `DB_PATH=/data/iskra.db`.
+
+1. В **Settings → Networking** создайте **Public Domain** для сервиса.
+2. В **Variables** задайте `BOT_TOKEN`, `ADMIN_IDS`, `DB_PATH` и
+   `WEBHOOK_SECRET_TOKEN`. Секрет должен состоять только из латинских букв,
+   цифр, `_` и `-` (8–256 символов), без кавычек и пробелов.
+3. `WEBHOOK_URL` можно не задавать: бот автоматически использует
+   `RAILWAY_PUBLIC_DOMAIN`. Если задаёте его вручную, укажите полный HTTPS URL,
+   например `https://my-bot.up.railway.app`, без `/webhook` на конце.
+
+После redeploy в логах должна появиться строка `Webhook registered at ...`.
+Не копируйте секрет в логи или чат.
 
 ## Переменные окружения
 
@@ -54,6 +65,9 @@ python main.py
 |---|---|---|
 | `BOT_TOKEN` | токен Telegram-бота | — (обязательно) |
 | `ADMIN_IDS` | id админов через запятую | пусто |
-| `DB_PATH` | путь к файлу SQLite | `/data/iskra.db` |
+| `DB_PATH` | путь к файлу SQLite | `database.db` (на Railway: `/data/iskra.db`) |
+| `WEBHOOK_URL` | публичный HTTPS URL (не нужен при `RAILWAY_PUBLIC_DOMAIN`) | — |
+| `WEBHOOK_SECRET_TOKEN` | постоянный секрет Telegram webhook, 8–256 безопасных символов | временный при отсутствии |
+| `DB_POOL_SIZE` | число соединений SQLite, 1–32 | `8` |
 | `BROADCAST_BATCH_SIZE` / `BROADCAST_DELAY` / `BROADCAST_CONCURRENT` | параметры рассылки | см. `data/constants.py` |
 | `ANON_RATE_LIMIT_MSG_PER_MIN` | лимит сообщений в анон-чате | см. `data/constants.py` |
