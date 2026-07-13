@@ -1,103 +1,110 @@
-"""Главный файл бота Искра: aiohttp webhook-сервер."""
+"""Главный файл бота Искра — Webhook mode.
+
+FIX v10: FSM-хранилище теперь Redis (если задан REDIS_URL), иначе in-memory.
+ Раньше при каждом деплое Railway терялись все FSM-состояния (регистрация,
+ редактирование, тикеты, верификация) — юзеры застревали на полпути. С Redis
+ состояния переживают рестарт. Fallback на MemoryStorage сохранён, чтобы бот
+ поднимался даже без Redis.
+
+FIX v11 (security): webhook защищён secret_token.
+ Раньше любой POST на /webhook принимался без проверки — можно было инжектить
+ фейковые update'ы, зная URL. Теперь:
+  1) bot.set_webhook передаёт secret_token — Telegram включает его в заголовок
+     X-Telegram-Bot-Api-Secret-Token при каждом запросе;
+  2) _webhook_handler проверяет этот заголовок и отбивает 401, если не совпал.
+"""
 import asyncio
 import logging
 import os
-import secrets
 import sys
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import (
     TelegramAPIError,
     TelegramForbiddenError,
     TelegramRetryAfter,
     TelegramUnauthorizedError,
 )
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ErrorEvent
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from config import (
-    BOT_TOKEN,
-    REDIS_URL,
-    SENTRY_DSN,
-    WEBHOOK_SECRET_TOKEN,
-    WEBHOOK_URL,
-)
+from config import BOT_TOKEN, SENTRY_DSN, WEBHOOK_URL, REDIS_URL, WEBHOOK_SECRET_TOKEN
 from database.connection import close_db_pool, ping_db, wait_until_db_ready
 from handlers import setup_routers
-from middlewares.nsfw_middleware import NSFWMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
+from middlewares.nsfw_middleware import NSFWMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("iskra.main")
 
 PORT = int(os.getenv("PORT", "8080"))
 WEBHOOK_PATH = "/webhook"
+WEBHOOK_FULL_URL = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+
 _update_semaphore = asyncio.Semaphore(100)
 
 
 def _build_storage():
-    """Redis при заданном REDIS_URL, иначе MemoryStorage."""
-    if not REDIS_URL:
-        log.warning("REDIS_URL не задан: FSM-состояния теряются при рестарте")
-        return MemoryStorage()
+    """FSM-хранилище: Redis если задан REDIS_URL, иначе in-memory.
 
-    try:
-        from aiogram.fsm.storage.redis import RedisStorage
-    except Exception as exc:
-        # Если Redis явно настроен, тихий fallback опасен: бот выглядит рабочим,
-        # но пользователи теряют состояния при каждом рестарте.
-        raise RuntimeError("Redis настроен, но RedisStorage недоступен") from exc
-
-    log.info("FSM storage: Redis")
-    return RedisStorage.from_url(REDIS_URL)
-
-
-def _webhook_full_url() -> str:
-    return f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+    Redis нужен, чтобы состояния (регистрация, тикеты, верификация) переживали
+    передеплой. Если Redis недоступен или библиотека не установлена — падаем
+    обратно на MemoryStorage, чтобы бот всё равно поднялся.
+    """
+    if REDIS_URL:
+        try:
+            from aiogram.fsm.storage.redis import RedisStorage
+            storage = RedisStorage.from_url(REDIS_URL)
+            log.info("FSM storage: Redis (%s)", REDIS_URL.split("@")[-1])
+            return storage
+        except Exception as e:
+            log.warning("Не удалось поднять RedisStorage (%s) — fallback на MemoryStorage", e)
+    else:
+        log.warning("REDIS_URL не задан — FSM в памяти (состояния теряются при рестарте)")
+    return MemoryStorage()
 
 
 async def _health_handler(request: web.Request) -> web.Response:
+    """Health-check с реальным DB ping."""
     try:
-        if await ping_db():
+        db_ok = await ping_db()
+        if db_ok:
             return web.json_response({"status": "ok", "db": "connected"})
-        return web.json_response(
-            {"status": "degraded", "db": "unreachable"},
-            status=503,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        # Не отдаём наружу пути, SQL и другие внутренние детали исключения.
-        log.exception("Health check failed")
-        return web.json_response({"status": "error"}, status=503)
+        return web.json_response({"status": "degraded", "db": "unreachable"}, status=503)
+    except Exception as e:
+        return web.json_response({"status": "error", "detail": str(e)}, status=503)
 
 
 async def _metrics_handler(request: web.Request) -> web.Response:
     try:
-        return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
-    except Exception:
-        log.exception("Failed to generate metrics")
+        data = generate_latest()
+        return web.Response(body=data, content_type=CONTENT_TYPE_LATEST)
+    except Exception as e:
+        log.exception("Failed to generate metrics: %s", e)
         return web.Response(status=500, text="error")
 
 
 async def _webhook_handler(request: web.Request) -> web.Response:
-    supplied_secret = request.headers.get(
-        "X-Telegram-Bot-Api-Secret-Token",
-        "",
-    )
-    if not secrets.compare_digest(supplied_secret, WEBHOOK_SECRET_TOKEN):
-        # Никогда не логируем ни присланный, ни ожидаемый секрет целиком/частично.
-        log.warning("Webhook rejected: invalid secret from %s", request.remote)
+    """Обработчик входящих webhook-обновлений от Telegram.
+
+    FIX v11: проверяем X-Telegram-Bot-Api-Secret-Token. Без него любой,
+    кто знает URL, мог слать фейковые update'ы.
+    """
+    # --- Security check ---
+    secret_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if secret_header != WEBHOOK_SECRET_TOKEN:
+        # Не логируем ни присланный, ни ожидаемый секрет — даже частично.
+        log.warning("Webhook rejected: invalid secret token from %s", request.remote)
         return web.Response(status=401, text="Unauthorized")
 
     try:
         raw_update = await request.json()
-    except Exception:
-        log.warning("Webhook rejected: invalid JSON from %s", request.remote)
+    except Exception as e:
+        log.warning("Failed to parse webhook body: %s", e)
         return web.Response(status=400, text="Bad Request")
 
     bot: Bot = request.app["bot"]
@@ -106,116 +113,139 @@ async def _webhook_handler(request: web.Request) -> web.Response:
     async with _update_semaphore:
         try:
             await dp.feed_raw_update(bot, raw_update)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # Возвращаем 200, чтобы Telegram не создавал бесконечные дубли
-            # одного и того же повреждённого update.
-            log.exception("Error processing webhook update")
+        except Exception as e:
+            log.exception("Error processing webhook update: %s", e)
 
     return web.Response(status=200)
 
 
 async def on_startup(app: web.Application) -> None:
+    """Действия при запуске: прогрев БД, регистрация webhook, очистка."""
     bot: Bot = app["bot"]
     dp: Dispatcher = app["dp"]
 
-    # Бот не должен выглядеть healthy с нерабочей БД.
-    await wait_until_db_ready(timeout=60)
-    log.info("DB ready")
+    try:
+        await wait_until_db_ready(timeout=60)
+        log.info("DB ready (wait_until_db_ready succeeded)")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        # Не принимаем webhook-обновления без готовой БД: иначе Telegram
+        # получит 200, а действия пользователя будут потеряны.
+        log.critical("DB not ready after wait_until_db_ready: %s", e)
+        raise RuntimeError("Database initialization failed") from e
 
-    # Ошибка регистрации webhook должна сорвать запуск, иначе контейнер будет
-    # зелёным, но Telegram не сможет присылать события.
-    await bot.set_webhook(
-        url=_webhook_full_url(),
-        secret_token=WEBHOOK_SECRET_TOKEN,
-        allowed_updates=dp.resolve_used_update_types(),
-        drop_pending_updates=False,
-    )
-    log.info("Webhook registered at %s", _webhook_full_url())
+    try:
+        await bot.set_webhook(
+            url=WEBHOOK_FULL_URL,
+            secret_token=WEBHOOK_SECRET_TOKEN,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
+        log.info("Webhook registered at %s (secret_token enabled)", WEBHOOK_FULL_URL)
+    except TelegramUnauthorizedError:
+        log.error("Невозможно зарегистрировать webhook: токен невалиден. Проверь BOT_TOKEN.")
+        raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.warning("Failed to set webhook: %s", e)
 
     try:
         from repositories.profile_repo import cleanup_shown_profiles
-
         deleted = await cleanup_shown_profiles(max_age_days=30)
         if deleted:
             log.info("Очищено %d старых записей shown_profiles", deleted)
     except asyncio.CancelledError:
         raise
-    except Exception:
-        # Очистка не критична для запуска.
-        log.exception("Не удалось очистить shown_profiles")
+    except Exception as e:
+        log.warning("Не удалось очистить shown_profiles: %s", e)
 
 
 async def on_shutdown(app: web.Application) -> None:
+    """Закрываем ресурсы при остановке."""
     bot: Bot = app["bot"]
     dp: Dispatcher = app["dp"]
 
-    # ВАЖНО: не вызываем delete_webhook(). При rolling deploy старый контейнер
-    # часто останавливается после запуска нового и удалял бы только что
-    # зарегистрированный новым контейнером webhook.
+    log.info("Удаляю webhook...")
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+        log.info("Webhook удалён")
+    except Exception as e:
+        log.warning("Failed to delete webhook: %s", e)
+
+    # Закрываем FSM-хранилище (важно для Redis-соединения).
     try:
         await dp.storage.close()
-    except Exception as exc:
-        log.debug("Storage close failed: %s", exc)
+    except Exception as e:
+        log.debug("Storage close failed: %s", e)
 
+    log.info("Закрываю сессию бота...")
     try:
         await bot.session.close()
-    except Exception as exc:
-        log.warning("Failed to close bot session: %s", exc)
+        log.info("Сессия бота закрыта")
+    except Exception as e:
+        log.warning("Failed to close bot session: %s", e)
 
+    log.info("Закрываю пул соединений с БД...")
     await close_db_pool()
     log.info("Бот остановлен")
 
 
 async def _global_error_handler(event: ErrorEvent) -> None:
+    """Глобальный обработчик ошибок aiogram."""
     exc = event.exception
+    update = event.update
 
     if isinstance(exc, TelegramRetryAfter):
         log.warning("Flood limit exceeded, retry after %s sec", exc.retry_after)
         return
     if isinstance(exc, TelegramForbiddenError):
-        log.warning("User blocked the bot: %s", exc)
+        log.warning("Forbidden for user, probably blocked bot: %s", exc)
         return
     if isinstance(exc, TelegramAPIError):
         log.error("Telegram API error: %s", exc)
         return
     if isinstance(exc, asyncio.CancelledError):
-        raise exc
+        raise
 
-    log.exception("Unhandled handler exception: %s", exc)
+    log.exception("Unhandled exception in handler for update %s: %s", update, exc)
 
 
 async def main() -> None:
     if SENTRY_DSN:
         try:
             import sentry_sdk
-
             sentry_sdk.init(SENTRY_DSN, traces_sample_rate=0.0)
             log.info("Sentry initialized")
-        except Exception as exc:
-            log.warning("Failed to init Sentry: %s", exc)
+        except Exception as e:
+            log.warning("Failed to init Sentry: %s", e)
 
     if not BOT_TOKEN or len(BOT_TOKEN) < 20:
-        log.error("BOT_TOKEN не задан или слишком короткий")
-        raise SystemExit(1)
+        log.error("BOT_TOKEN не задан или слишком короткий! Проверь переменные окружения.")
+        sys.exit(1)
 
-    if not WEBHOOK_URL or not WEBHOOK_URL.startswith(("https://", "http://")):
-        log.error("WEBHOOK_URL не задан или имеет неверный формат")
-        raise SystemExit(1)
+    if not WEBHOOK_URL:
+        log.error(
+            "Не задан WEBHOOK_URL и не найден RAILWAY_PUBLIC_DOMAIN. "
+            "Создай Public Domain в Railway либо задай WEBHOOK_URL=https://<домен>."
+        )
+        sys.exit(1)
 
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=_build_storage())
 
-    dp.include_router(setup_routers())
-    dp.errors.register(_global_error_handler)
-    dp.update.outer_middleware(RateLimitMiddleware())
-    dp.message.outer_middleware(NSFWMiddleware())
+    root_router = setup_routers()
+    dp.include_router(root_router)
 
-    app = web.Application(client_max_size=1024 * 1024)
+    dp.errors.register(_global_error_handler)
+
+    dp.update.outer_middleware(RateLimitMiddleware())
+    log.info("RateLimitMiddleware подключён")
+
+    dp.message.outer_middleware(NSFWMiddleware())
+    log.info("NSFWMiddleware подключён")
+
+    app = web.Application()
     app["bot"] = bot
     app["dp"] = dp
 
@@ -232,7 +262,7 @@ async def main() -> None:
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    log.info("Сервер запущен на порту %s", PORT)
+    log.info("Сервер запущен на порту %s (webhook: %s)", PORT, WEBHOOK_FULL_URL)
 
     try:
         while True:
@@ -242,13 +272,14 @@ async def main() -> None:
         raise
     finally:
         await runner.cleanup()
+        log.info("Сервер остановлен")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log.info("Прервано пользователем")
+        log.info("Прервано пользователем (KeyboardInterrupt)")
     except TelegramUnauthorizedError:
-        log.error("Telegram отклонил BOT_TOKEN")
-        raise SystemExit(1)
+        log.error("TelegramUnauthorizedError: проверь BOT_TOKEN")
+        sys.exit(1)

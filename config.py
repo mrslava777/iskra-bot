@@ -24,6 +24,17 @@ def _safe_int(value: Optional[str], default: int, name: str) -> int:
         return default
 
 
+def _safe_float(value: Optional[str], default: float, name: str) -> float:
+    """Безопасно парсит float из строки."""
+    if not value:
+        return default
+    try:
+        return float(value.strip())
+    except (ValueError, TypeError):
+        log.warning("Невалидное значение %s=%r, используем default=%s", name, value, default)
+        return default
+
+
 def _parse_admin_ids(raw: Optional[str]) -> set[int]:
     """Парсит список ID админов из строки."""
     if not raw:
@@ -57,9 +68,16 @@ def _get_webhook_url() -> str:
         return ""
 
     parsed = urlparse(raw)
-    if parsed.scheme != "https" or not parsed.netloc or parsed.params or parsed.query or parsed.fragment:
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
         raise RuntimeError(
-            "WEBHOOK_URL должен быть публичным HTTPS-адресом без query/fragment, "
+            "WEBHOOK_URL должен быть публичным базовым HTTPS-адресом без пути, query или fragment, "
             "например https://my-bot.up.railway.app"
         )
     return raw
@@ -126,7 +144,7 @@ MAX_MESSAGE_RATE_GLOBAL = _safe_int(
 BROADCAST_BATCH_SIZE = _safe_int(
     os.getenv("BROADCAST_BATCH_SIZE"), 100, "BROADCAST_BATCH_SIZE"
 )
-BROADCAST_DELAY = float(os.getenv("BROADCAST_DELAY", "0.05"))
+BROADCAST_DELAY = max(0.0, _safe_float(os.getenv("BROADCAST_DELAY"), 0.05, "BROADCAST_DELAY"))
 BROADCAST_CONCURRENT = _safe_int(
     os.getenv("BROADCAST_CONCURRENT"), 10, "BROADCAST_CONCURRENT"
 )
