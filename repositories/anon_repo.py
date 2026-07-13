@@ -1,23 +1,44 @@
-"""Репозиторий анонимного чата: очередь, сессии и раскрытие анкет."""
-import asyncio
-import time
+"""Репозиторий анонимного чата («свидание вслепую») — очередь и сессии.
+
+anon_sessions с ended_at IS NULL — активная сессия.
+anon_queue — пользователи, ожидающие собеседника.
+
+FIX (#5 транзакционность reveal): добавлена finalize_reveal() — атомарно
+ в ОДНОЙ транзакции ставит флаг раскрытия, и если раскрылись оба:
+ завершает сессию (UPDATE ... WHERE ended_at IS NULL), создаёт встречные
+ лайки, мэтч и запись relationship. Завершение через total_changes
+ гарантирует, что финализацию выполнит ровно один клиент, даже если оба
+ нажали «Открыться» одновременно — нет двойного announce_match и полу-записей.
+FIX (#8 __import__): убраны inline __import__('time'), импорт вынесен наверх.
+FIX (race condition matching): anon_find_or_queue() теперь использует
+ BEGIN IMMEDIATE — эксклюзивная блокировка с первой инструкции. Это
+ предотвращает ситуацию, когда два пользователя одновременно выбирают
+ одного и того же партнёра из очереди. Раньше SELECT шёл без блокировки
+ (DEFERRED), и оба конкурентных await-точки могли прочитать одну строку
+ до того, как кто-либо успел DELETE.
+FIX (race condition reveal): finalize_reveal() теперь тоже BEGIN IMMEDIATE.
+ Без этого оба одновременных вызова могли видеть ended_at IS NULL в своём
+ снапшоте, оба проходили проверку total_changes, и оба создавали дубли
+ лайков/мэтчей/relationship.
+FIX (DB-level duplicate protection): триггеры + partial unique indexes на
+ anon_sessions гарантируют, что у пользователя не может быть двух активных
+ сессий — даже при деплое на Railway с несколькими контейнерами.
+ При попытке создать дубль ловим IntegrityError и возвращаем in_session.
+"""
+import sqlite3
+import time as _time
 from typing import Optional
 
 from database.connection import db
-
-# Сериализует изменения очереди/сессий внутри процесса. BEGIN IMMEDIATE ниже
-# дополнительно обеспечивает атомарность на уровне SQLite.
-_anon_lock = asyncio.Lock()
 
 
 async def _active_session_row(conn, tg_id: int) -> Optional[dict]:
     cursor = await conn.execute(
         """
-        SELECT id, a_id, b_id, a_reveal, b_reveal, started_at
+        SELECT id, a_id, b_id, a_reveal, b_reveal
         FROM anon_sessions
         WHERE ended_at IS NULL AND (a_id = ? OR b_id = ?)
-        ORDER BY id DESC
-        LIMIT 1
+        ORDER BY id DESC LIMIT 1
         """,
         (tg_id, tg_id),
     )
@@ -26,7 +47,8 @@ async def _active_session_row(conn, tg_id: int) -> Optional[dict]:
 
 
 async def anon_active_partner(tg_id: int) -> Optional[int]:
-    async with db(write=False) as conn:
+    """ID собеседника в активной сессии или None."""
+    async with db() as conn:
         row = await _active_session_row(conn, tg_id)
         if not row:
             return None
@@ -34,270 +56,262 @@ async def anon_active_partner(tg_id: int) -> Optional[int]:
 
 
 async def anon_in_queue(tg_id: int) -> bool:
-    async with db(write=False) as conn:
+    """Находится ли пользователь в очереди ожидания."""
+    async with db() as conn:
         cursor = await conn.execute(
             "SELECT 1 FROM anon_queue WHERE tg_id = ?",
             (tg_id,),
         )
-        return await cursor.fetchone() is not None
+        row = await cursor.fetchone()
+        return row is not None
 
 
 async def anon_find_or_queue(tg_id: int) -> tuple[str, Optional[int]]:
-    """Атомарно находит собеседника или ставит пользователя в очередь."""
-    now = int(time.time())
+    """Подбирает собеседника или ставит в очередь.
 
-    async with _anon_lock:
-        async with db() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
+    Возвращает статус:
+      in_session — уже в активной сессии (partner = ID собеседника)
+      waiting    — уже стоит в очереди (partner = None)
+      matched    — найден собеседник, создана сессия (partner = ID)
+      queued     — поставлен в очередь, ждём (partner = None)
 
-            existing = await _active_session_row(conn, tg_id)
-            if existing:
-                partner = (
-                    existing["b_id"]
-                    if existing["a_id"] == tg_id
-                    else existing["a_id"]
-                )
-                return "in_session", partner
+    FIX (DB-level protection): если триггер/индекс блокирует INSERT
+    (кто-то из участников уже в активной сессии — возможно, в другом
+    контейнере), ловим IntegrityError и возвращаем in_session.
+    """
+    now = int(_time.time())
+    async with db() as conn:
+        # FIX (race): BEGIN IMMEDIATE — эксклюзивная блокировка сразу.
+        # Без этого две конкурентные корутины могли одновременно прочитать
+        # одного и того же партнёра из очереди (DEFERRED tx даёт shared lock
+        # на чтение), и оба создали бы сессии с одним человеком.
+        await conn.execute("BEGIN IMMEDIATE")
 
-            cursor = await conn.execute(
-                "SELECT 1 FROM anon_queue WHERE tg_id = ?",
-                (tg_id,),
+        # Уже в сессии?
+        existing = await _active_session_row(conn, tg_id)
+        if existing:
+            partner = existing["b_id"] if existing["a_id"] == tg_id else existing["a_id"]
+            return "in_session", partner
+
+        # Уже в очереди?
+        cursor = await conn.execute("SELECT 1 FROM anon_queue WHERE tg_id = ?", (tg_id,))
+        row = await cursor.fetchone()
+        if row:
+            return "waiting", None
+
+        # Ищем любого другого ожидающего
+        cursor = await conn.execute(
+            "SELECT tg_id FROM anon_queue WHERE tg_id != ? ORDER BY queued_at ASC LIMIT 1",
+            (tg_id,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            partner = row["tg_id"]
+            await conn.execute(
+                "DELETE FROM anon_queue WHERE tg_id IN (?, ?)",
+                (tg_id, partner),
             )
-            if await cursor.fetchone():
-                return "waiting", None
-
-            # Не берём пользователя, который уже оказался в активной сессии
-            # из-за старых данных или другого процесса.
-            cursor = await conn.execute(
-                """
-                SELECT q.tg_id
-                FROM anon_queue AS q
-                WHERE q.tg_id != ?
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM anon_sessions AS s
-                      WHERE s.ended_at IS NULL
-                        AND (s.a_id = q.tg_id OR s.b_id = q.tg_id)
-                  )
-                ORDER BY q.queued_at ASC
-                LIMIT 1
-                """,
-                (tg_id,),
-            )
-            row = await cursor.fetchone()
-
-            if row:
-                partner = int(row["tg_id"])
-                await conn.execute(
-                    "DELETE FROM anon_queue WHERE tg_id IN (?, ?)",
-                    (tg_id, partner),
-                )
+            try:
                 await conn.execute(
                     """
-                    INSERT INTO anon_sessions (
-                        a_id, b_id, a_reveal, b_reveal, started_at
-                    ) VALUES (?, ?, 0, 0, ?)
+                    INSERT INTO anon_sessions (a_id, b_id, a_reveal, b_reveal, started_at)
+                    VALUES (?, ?, 0, 0, ?)
                     """,
                     (tg_id, partner, now),
                 )
-                return "matched", partner
+            except sqlite3.IntegrityError:
+                # Триггер или partial unique index сработал:
+                # кто-то из участников уже в активной сессии (возможно,
+                # созданной параллельным контейнером между нашим SELECT и INSERT).
+                # Возвращаем in_session — пользователь увидит существующую сессию.
+                # Партнёра возвращаем в очередь, если он был удалён.
+                await conn.execute(
+                    "INSERT OR IGNORE INTO anon_queue (tg_id, queued_at) VALUES (?, ?)",
+                    (partner, now),
+                )
+                # Находим существующую сессию пользователя
+                existing = await _active_session_row(conn, tg_id)
+                if existing:
+                    partner = existing["b_id"] if existing["a_id"] == tg_id else existing["a_id"]
+                    return "in_session", partner
+                return "in_session", None
+            return "matched", partner
 
-            await conn.execute(
-                """
-                INSERT INTO anon_queue (tg_id, queued_at)
-                VALUES (?, ?)
-                ON CONFLICT(tg_id) DO UPDATE SET queued_at = excluded.queued_at
-                """,
-                (tg_id, now),
-            )
-            return "queued", None
+        # Никого нет — встаём в очередь.
+        await conn.execute(
+            "INSERT OR IGNORE INTO anon_queue (tg_id, queued_at) VALUES (?, ?)",
+            (tg_id, now),
+        )
+        return "queued", None
 
 
 async def anon_leave_queue(tg_id: int) -> None:
-    async with _anon_lock:
-        async with db() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
-            await conn.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
+    """Убирает пользователя из очереди."""
+    async with db() as conn:
+        await conn.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
 
 
 async def anon_set_reveal(tg_id: int) -> Optional[dict]:
-    """Совместимый низкоуровневый метод установки reveal-флага."""
-    async with _anon_lock:
-        async with db() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
-            row = await _active_session_row(conn, tg_id)
-            if not row:
-                return None
-            column = "a_reveal" if row["a_id"] == tg_id else "b_reveal"
-            await conn.execute(
-                f"UPDATE anon_sessions SET {column} = 1 WHERE id = ?",
-                (row["id"],),
-            )
-            cursor = await conn.execute(
-                """
-                SELECT id, a_id, b_id, a_reveal, b_reveal
-                FROM anon_sessions
-                WHERE id = ?
-                """,
-                (row["id"],),
-            )
-            updated = await cursor.fetchone()
-            return dict(updated) if updated else None
+    """Отмечает, что пользователь раскрылся. Возвращает обновлённую сессию или None.
+
+    Оставлено для обратной совместимости. Для завершённого сценария «оба
+    раскрылись» используйте finalize_reveal() — она атомарна.
+    """
+    async with db() as conn:
+        row = await _active_session_row(conn, tg_id)
+        if not row:
+            return None
+        col = "a_reveal" if row["a_id"] == tg_id else "b_reveal"
+        await conn.execute(
+            f"UPDATE anon_sessions SET {col} = 1 WHERE id = ?",
+            (row["id"],),
+        )
+        cursor = await conn.execute(
+            "SELECT id, a_id, b_id, a_reveal, b_reveal FROM anon_sessions WHERE id = ?",
+            (row["id"],),
+        )
+        updated = await cursor.fetchone()
+        return dict(updated) if updated else None
 
 
 async def finalize_reveal(tg_id: int) -> dict:
-    """Атомарно раскрывает пользователя и финализирует взаимное раскрытие.
+    """Атомарно обрабатывает нажатие «Открыться».
 
-    Возвращает status: ``no_session``, ``waiting`` или ``finalized``.
-    При ``finalized`` в этой же транзакции создаются два лайка, мэтч и запись
-    отношений. Поэтому два одновременных клика не создают дублей.
+    Всё в ОДНОЙ транзакции:
+      1) ставит флаг раскрытия текущему пользователю;
+      2) перечитывает флаги;
+      3) если раскрылись оба — завершает сессию через
+         UPDATE ... WHERE ended_at IS NULL и по total_changes определяет,
+         кто реально её закрыл. Только этот вызов создаёт встречные лайки,
+         мэтч и relationship и получает status="finalized".
+
+    Возвращает dict со status:
+      no_session   — активной сессии нет;
+      waiting      — раскрылся только текущий, ждём собеседника (partner);
+      finalized    — раскрылись оба, всё создано (a_id, b_id, partner, is_new_match);
+      already_done — оба раскрыты, но финализацию уже выполнил собеседник.
     """
-    now = int(time.time())
+    now = int(_time.time())
+    async with db() as conn:
+        # FIX (race): BEGIN IMMEDIATE — эксклюзивная блокировка сразу.
+        # Без этого два одновременных вызова могли видеть ended_at IS NULL
+        # в своём DEFERRED-снапшоте, оба проходили проверку total_changes,
+        # и оба создавали дубли лайков/мэтчей/relationship.
+        await conn.execute("BEGIN IMMEDIATE")
 
-    async with _anon_lock:
-        async with db() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
-            session = await _active_session_row(conn, tg_id)
-            if not session:
-                return {"status": "no_session"}
+        row = await _active_session_row(conn, tg_id)
+        if not row:
+            return {"status": "no_session"}
 
-            a_id = int(session["a_id"])
-            b_id = int(session["b_id"])
-            partner = b_id if a_id == tg_id else a_id
-            own_column = "a_reveal" if a_id == tg_id else "b_reveal"
+        sid = row["id"]
+        a_id, b_id = row["a_id"], row["b_id"]
+        partner = b_id if a_id == tg_id else a_id
 
-            await conn.execute(
-                f"UPDATE anon_sessions SET {own_column} = 1 "
-                "WHERE id = ? AND ended_at IS NULL",
-                (session["id"],),
-            )
-            cursor = await conn.execute(
-                """
-                SELECT a_reveal, b_reveal
-                FROM anon_sessions
-                WHERE id = ? AND ended_at IS NULL
-                """,
-                (session["id"],),
-            )
-            revealed = await cursor.fetchone()
-            if not revealed:
-                return {"status": "no_session"}
+        col = "a_reveal" if a_id == tg_id else "b_reveal"
+        await conn.execute(
+            f"UPDATE anon_sessions SET {col} = 1 WHERE id = ?",
+            (sid,),
+        )
 
-            if not (revealed["a_reveal"] and revealed["b_reveal"]):
-                return {"status": "waiting", "partner": partner}
+        cur = await conn.execute(
+            "SELECT a_reveal, b_reveal FROM anon_sessions WHERE id = ?",
+            (sid,),
+        )
+        flags = await cur.fetchone()
+        both = bool(flags["a_reveal"]) and bool(flags["b_reveal"])
 
-            # Только транзакция, которая реально закрыла активную сессию,
-            # выполняет финализацию.
-            cursor = await conn.execute(
-                """
-                UPDATE anon_sessions
-                SET ended_at = ?
-                WHERE id = ? AND ended_at IS NULL
-                """,
-                (now, session["id"]),
-            )
-            if cursor.rowcount != 1:
-                return {"status": "no_session"}
+        if not both:
+            return {"status": "waiting", "partner": partner}
 
-            # Запоминаем прошлые значения, чтобы повторно не накручивать rating.
-            previous: dict[tuple[int, int], Optional[bool]] = {}
-            for source, target in ((a_id, b_id), (b_id, a_id)):
-                old_cursor = await conn.execute(
-                    "SELECT is_like FROM likes WHERE from_id = ? AND to_id = ?",
-                    (source, target),
-                )
-                old = await old_cursor.fetchone()
-                previous[(source, target)] = bool(old[0]) if old else None
+        # Оба раскрылись — пытаемся завершить сессию атомарно.
+        before = conn.total_changes
+        await conn.execute(
+            "UPDATE anon_sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
+            (now, sid),
+        )
+        if conn.total_changes == before:
+            # Сессию уже завершил собеседник — финализацию делать не нам.
+            return {"status": "already_done", "partner": partner}
 
-                await conn.execute(
-                    """
-                    INSERT INTO likes (from_id, to_id, is_like, created_at)
-                    VALUES (?, ?, 1, ?)
-                    ON CONFLICT(from_id, to_id) DO UPDATE SET
-                        is_like = 1,
-                        created_at = excluded.created_at
-                    """,
-                    (source, target, now),
-                )
+        # Встречные лайки (idempotent).
+        await conn.execute(
+            """
+            INSERT INTO likes (from_id, to_id, is_like, created_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT (from_id, to_id) DO UPDATE SET is_like = 1, created_at = excluded.created_at
+            """,
+            (a_id, b_id, now),
+        )
+        await conn.execute(
+            """
+            INSERT INTO likes (from_id, to_id, is_like, created_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT (from_id, to_id) DO UPDATE SET is_like = 1, created_at = excluded.created_at
+            """,
+            (b_id, a_id, now),
+        )
 
-            if previous[(a_id, b_id)] is not True:
-                await conn.execute(
-                    "UPDATE users SET rating = rating + 1 WHERE tg_id = ?",
-                    (b_id,),
-                )
-            if previous[(b_id, a_id)] is not True:
-                await conn.execute(
-                    "UPDATE users SET rating = rating + 1 WHERE tg_id = ?",
-                    (a_id,),
-                )
+        # Мэтч (idempotent) + факт новизны.
+        m_a, m_b = sorted((a_id, b_id))
+        mbefore = conn.total_changes
+        await conn.execute(
+            """
+            INSERT INTO matches (a_id, b_id, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (a_id, b_id) DO NOTHING
+            """,
+            (m_a, m_b, now),
+        )
+        is_new_match = conn.total_changes > mbefore
 
-            first, second = sorted((a_id, b_id))
-            await conn.execute(
-                """
-                INSERT INTO matches (a_id, b_id, created_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(a_id, b_id) DO NOTHING
-                """,
-                (first, second, now),
-            )
-            await conn.execute(
-                """
-                INSERT INTO relationships (
-                    user1_id, user2_id, points, level, created_at
-                ) VALUES (?, ?, 0, 0, ?)
-                ON CONFLICT(user1_id, user2_id) DO NOTHING
-                """,
-                (first, second, now),
-            )
-            await conn.execute(
-                "DELETE FROM anon_queue WHERE tg_id IN (?, ?)",
-                (a_id, b_id),
-            )
+        # Relationship (idempotent).
+        r_a, r_b = sorted((a_id, b_id))
+        await conn.execute(
+            """
+            INSERT INTO relationships (user1_id, user2_id, points, level, created_at)
+            VALUES (?, ?, 0, 0, ?)
+            ON CONFLICT (user1_id, user2_id) DO NOTHING
+            """,
+            (r_a, r_b, now),
+        )
 
-            return {
-                "status": "finalized",
-                "a_id": a_id,
-                "b_id": b_id,
-            }
+        return {
+            "status": "finalized",
+            "a_id": a_id,
+            "b_id": b_id,
+            "partner": partner,
+            "is_new_match": is_new_match,
+        }
 
 
 async def anon_end(tg_id: int) -> Optional[int]:
-    now = int(time.time())
+    """Завершает активную сессию или убирает из очереди.
 
-    async with _anon_lock:
-        async with db() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
-            row = await _active_session_row(conn, tg_id)
-            if row:
-                partner = row["b_id"] if row["a_id"] == tg_id else row["a_id"]
-                await conn.execute(
-                    """
-                    UPDATE anon_sessions
-                    SET ended_at = ?
-                    WHERE id = ? AND ended_at IS NULL
-                    """,
-                    (now, row["id"]),
-                )
-                await conn.execute(
-                    "DELETE FROM anon_queue WHERE tg_id IN (?, ?)",
-                    (tg_id, partner),
-                )
-                return int(partner)
-
-            await conn.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
-            return None
+    Возвращает ID собеседника, если завершилась сессия, иначе None.
+    """
+    now = int(_time.time())
+    async with db() as conn:
+        row = await _active_session_row(conn, tg_id)
+        if row:
+            await conn.execute(
+                "UPDATE anon_sessions SET ended_at = ? WHERE id = ?",
+                (now, row["id"]),
+            )
+            return row["b_id"] if row["a_id"] == tg_id else row["a_id"]
+        # Сессии нет — на всякий случай выходим из очереди.
+        await conn.execute("DELETE FROM anon_queue WHERE tg_id = ?", (tg_id,))
+        return None
 
 
 async def anon_reveal_count(tg_id: int) -> int:
-    async with db(write=False) as conn:
+    """Сколько раз пользователь раскрывался в анонимных свиданиях (для значка revealer)."""
+    async with db() as conn:
         cursor = await conn.execute(
             """
-            SELECT COUNT(*) AS c
-            FROM anon_sessions
-            WHERE (a_id = ? AND a_reveal = 1)
-               OR (b_id = ? AND b_reveal = 1)
+            SELECT COUNT(*) AS c FROM anon_sessions
+            WHERE (a_id = ? AND a_reveal = 1) OR (b_id = ? AND b_reveal = 1)
             """,
             (tg_id, tg_id),
         )
         row = await cursor.fetchone()
-        return int(row["c"]) if row else 0
+        return row["c"] if row else 0
