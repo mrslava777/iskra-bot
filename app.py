@@ -1,27 +1,27 @@
 from flask import Flask
 import os
-from threading import Thread
+import threading
 from telegram.ext import Application, CommandHandler
 
-# --- 1. Запуск ТВОЕГО бота (через polling) ---
-TOKEN = os.environ.get("TELEGRAM_TOKEN") # Токен из переменных окружения
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
+# --- Функция бота ---
 async def start(update, context):
-    await update.message.reply_text("Бот работает!")
-
-application = Application.builder().token(TOKEN).build()
-application.add_handler(CommandHandler("start", start))
+    await update.message.reply_text("Бот работает! 🚀")
 
 def run_bot():
-    print("Бот запущен...")
-    application.run_polling()
+    """Запускает бота в отдельном потоке"""
+    app_bot = Application.builder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    print("✅ Бот запущен и ждёт команды...")
+    app_bot.run_polling()
 
-# --- 2. Веб-сервер Flask (для Render) ---
+# --- Flask для Render ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Бот запущен!"
+    return "Бот работает!"
 
 @app.route('/health')
 def health():
@@ -29,8 +29,9 @@ def health():
 
 if __name__ == "__main__":
     # Запускаем бота в фоновом потоке
-    thread = Thread(target=run_bot)
-    thread.start()
-    # Запускаем Flask-сервер на порту, который выдал Render
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Запускаем Flask
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
